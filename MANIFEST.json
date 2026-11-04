@@ -1,6 +1,7 @@
 {
   "format": 1,
   "files": {
+    ".gitattributes": "68610d978dd3565ead3285beffe49c928bfbcdb5c51934ac2b165dbb35b091b9",
     ".github/workflows/platforms.yml": "131b34550f4804bad3c2af8b22334fb07ee73af3ad37a7ef3a77e51b76e57045",
     ".gitignore": "6127e487eccf2773f1273d4d86858106ecc1705216bb814bf6b396e9504c0f83",
     "AGENTS.md": "9dea82c6e95c859cd784210fa81524314a9629b80799adbdeec0543baf6d9429",
@@ -43,7 +44,7 @@
     "tools/build_portable.py": "4a9ca94deb8e0d9576d4b6c6091307302682fc18865f4b46484071fbc93da456",
     "tools/runtime-lock.json": "bc0298c993654d7472414c91011d25395a37bffee1572e4f7db776587a4c2dd7",
     "tools/smoke_install.py": "709396746ac001747b81df9024bf8e10caa8d641ffe4a4c169045bf239fbd135",
-    "tools/update_manifest.py": "389fe055c186d90d42e28efcf00d548876ccef5b897ac1414ff64041cfe5da08",
+    "tools/update_manifest.py": "51d264e2cbe454737dec11baa7e26f832da89b880fa58e12e46227798557b0d4",
     "trade-console/cli.mjs": "1821d0c9106c6ed4fa2df6e7fc79a8b67e259975956cef550a037fcf92145046",
     "trade-console/lib/abi-hints.mjs": "fa750d8dd70db437b1414cf1c6fe2c4f755806858898463f2b5c4d54e893b530",
     "trade-console/lib/adaptive-mint.mjs": "6f1fce0b4b7bcd6c832c73c091b9da41a31afedde1c65e68cced59b3fcb90840",
