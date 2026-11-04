@@ -143,7 +143,7 @@ def dependencies(node,npm):
     with (LOCAL/'dependency-install.log').open('w') as log:
         os.chmod(LOCAL/'dependency-install.log',0o600)
         result=subprocess.run(command,cwd=ROOT/'trade-console',env=env,stdout=log,stderr=log,timeout=240,**hidden_process_options())
-    if result.returncode: raise RuntimeError('依赖安装失败，查看 local/dependency-install.log；不需要提供任何密钥')
+    if result.returncode: raise RuntimeError('依赖安装失败，查看 '+str(LOCAL/'dependency-install.log')+'；不需要提供任何密钥')
     save(marker,{'sha256':want})
 
 def http(url,payload=None,token=None):
@@ -191,7 +191,7 @@ def start(cfg,live=True):
     for _ in range(100):
         running=current(cfg)
         if running:return running
-        if child.poll() is not None: raise RuntimeError('服务启动失败；查看 local/runtime/service.log')
+        if child.poll() is not None: raise RuntimeError('服务启动失败；查看 '+str(runtime/'service.log'))
         time.sleep(.1)
     raise RuntimeError('服务仍未就绪，未连接其他安装的服务')
 

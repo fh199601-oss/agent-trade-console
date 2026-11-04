@@ -42,6 +42,13 @@ def run_smoke(archive=None):
             boot=request(first['url']+'/api/bootstrap');assert boot['installationId']
             for asset in ['/','/app.js','/style.css','/favicon.svg']:assert request(first['url']+asset)
             assert cmd()['url']==first['url'],'repeated install started another server'
+            # Exercise the desktop entry, including pythonw on Windows, without
+            # opening a real browser or discovering any recipient wallet.
+            desktop_python=str(Path(python).with_name('pythonw.exe')) if os.name=='nt' else python
+            desktop=subprocess.run([desktop_python,str(root/'desktop.py'),'--no-browser'],cwd=root,env=env,capture_output=True,timeout=120)
+            assert desktop.returncode==0,'desktop entry failed'
+            launch=json.loads((Path(env['AGENT_TRADE_HOME'])/'last-launch.json').read_text(encoding='utf-8'))
+            assert launch.get('success') and launch['url']==first['url'] and launch['mode']=='LIVE',launch
             cfg=json.loads((Path(env['AGENT_TRADE_HOME'])/'install.json').read_text(encoding='utf-8'))
             assert cfg['installationId']==boot['installationId']
             cmd('stop')
@@ -67,7 +74,7 @@ def run_smoke(archive=None):
             commands=[json.loads(x) for x in calls.read_text(encoding='utf-8').splitlines()]
             assert all(' '.join(c[:2]) in {'wallet status','wallet address','wallet settings'} and '--json' in c for c in commands)
             cmd('stop');assert not cmd('status')['running']
-            print(json.dumps({'success':True,'platform':sys.platform,'portable':bool(archive),'checks':['install','LIVE without writes','paths with spaces and Chinese','repeat install','assets','numbered wrapper','read-only readiness','no automatic jobs','stop'],'fakeWalletCommands':len(commands),'realWalletCommands':0,'submittedTransactions':0}))
+            print(json.dumps({'success':True,'platform':sys.platform,'portable':bool(archive),'checks':['install','LIVE without writes','paths with spaces and Chinese','repeat install','desktop entry','assets','numbered wrapper','read-only readiness','no automatic jobs','stop'],'fakeWalletCommands':len(commands),'realWalletCommands':0,'submittedTransactions':0}))
         finally:
             try:cmd('stop')
             except Exception:pass
