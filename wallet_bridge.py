@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
+sys.path.insert(0,str(Path(__file__).resolve().parent))
 from runtime_paths import LOCAL, hidden_process_options, runtime_environment
 
 ROOT = Path(__file__).resolve().parent

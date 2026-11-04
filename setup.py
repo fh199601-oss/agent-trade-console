@@ -12,6 +12,9 @@ import sys
 import time
 from urllib.request import build_opener, ProxyHandler, Request
 from uuid import uuid4
+# Embedded Windows Python intentionally omits the script directory. Resolve
+# only this entry's own directory, independent of cwd/PYTHONPATH/user sites.
+sys.path.insert(0,str(Path(__file__).resolve().parent))
 from wallet_bridge import invoke, account_lock, bsc_address, BridgeError, check_environment
 from runtime_paths import LOCAL, hidden_process_options, runtime_environment
 

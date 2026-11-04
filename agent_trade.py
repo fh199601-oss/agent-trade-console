@@ -3,6 +3,7 @@
 import argparse, json, subprocess, sys
 from pathlib import Path
 from uuid import uuid4
+sys.path.insert(0,str(Path(__file__).resolve().parent))
 from runtime_paths import LOCAL, hidden_process_options, runtime_environment
 
 ROOT=Path(__file__).resolve().parent

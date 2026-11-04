@@ -1,6 +1,7 @@
 """Double-click entry; Windows starts with bundled pythonw, no terminal loop."""
 import html,json,os,sys,webbrowser
 from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parent))
 import setup
 from runtime_paths import LOCAL
 from wallet_bridge import account_lock,BridgeError

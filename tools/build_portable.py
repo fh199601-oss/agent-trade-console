@@ -45,10 +45,8 @@ def build(platform,output):
                 if p.is_symlink() and not p.resolve().is_relative_to(dirs[0].resolve()):raise ValueError('Runtime link escapes archive')
             shutil.copytree(dirs[0],app/'portable'/name,symlinks=False)
             if spec.get('embedded'):
-                # Official embedded Python disables script-directory imports.
-                # Add only this application's root, not user site-packages.
-                pth=next((app/'portable/python').glob('python*._pth'))
-                pth.write_text(pth.read_text()+'\n../..\n',encoding='utf-8')
+                # Keep official isolated _pth configuration. Each app entry
+                # explicitly imports siblings relative to its own __file__.
                 if not (app/'portable/python/vcruntime140.dll').is_file():raise ValueError('Embedded Python is missing its VC runtime')
         node=app/'portable/node'/('node.exe' if platform.startswith('windows') else 'bin/node')
         npm=app/'portable/node'/('node_modules/npm/bin/npm-cli.js' if platform.startswith('windows') else 'lib/node_modules/npm/bin/npm-cli.js')

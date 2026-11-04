@@ -13,8 +13,8 @@
     "Start.command": "e7411fc6cb44f438822cf13ee49c1a8aa6b7c135503c98096bc6b440e7416941",
     "Start.vbs": "e148d783d6b24b6e8f52aa696353193b460d1ee78e53e4652780f0679e8e9128",
     "THIRD_PARTY.md": "093155bf70752e90d6f8a67cf5a110c5175853f7c36e1c3020b4245db76265f2",
-    "agent_trade.py": "e7dc8be1380bf8397e71461f527e81de1719afce85422a01404f2cf8cf4a6b8a",
-    "desktop.py": "70481484d90dc0d4553801386cc13e99582b1c4e48d55cfe7c2979e573bacf7e",
+    "agent_trade.py": "ae7fd0ccbfbee1e860d3e1053df62f6569a01057c9548138537ca59411bd117e",
+    "desktop.py": "cad5b143710f40c0045e37c2db689800d59a27c870db68856ab8d28fa89af94d",
     "licenses/bsc-mint-preflight-MIT.txt": "4728263e9a4d65847691de13d2f43c3d9802da86eb3deb0baa83260a88ae8ae8",
     "licenses/python-build-standalone/LICENSE.bdb.txt": "3bdff06e69991c94664f2ef5c5f8096f60b7dbec071756ea6cc26b445e06ec5b",
     "licenses/python-build-standalone/LICENSE.bzip2.txt": "1f38bbc7caacafd65169276d759c0d88c991b753b643ce35d0e45ea1971dd441",
@@ -39,9 +39,9 @@
     "licenses/python-build-standalone/LICENSE.zstd.txt": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8",
     "licenses/python-build-standalone/SOURCE.md": "f2e0d8d5027565975aebd166e3aa75624e080ef74a1b98143626bdb021c2f26a",
     "runtime_paths.py": "537618ec563bcd559d474873b26942fb595b65930b18a257ea2db719392531bc",
-    "setup.py": "39e9dd4f3cdd29d492edde210171d50ffe82dad8c74f07f0aba4c4aab6ff3b51",
+    "setup.py": "28f057212f05a0a4cd550b2dfab1c65f9cd2179778332e1d48150462b7d6b860",
     "tests/test_install.py": "945240e31282b0f12a58581105330f4329d48f09b901374b5f7a9e14d29e6426",
-    "tools/build_portable.py": "4a9ca94deb8e0d9576d4b6c6091307302682fc18865f4b46484071fbc93da456",
+    "tools/build_portable.py": "a9f8bdfd4c4b5121d8f7b0c5e8b34e590b392c8fa7d4711e8929695fde6e117c",
     "tools/runtime-lock.json": "bc0298c993654d7472414c91011d25395a37bffee1572e4f7db776587a4c2dd7",
     "tools/smoke_install.py": "e8180e178bc568ea16eea8b9330144b07d7423225328464017bf7ac1f9188493",
     "tools/update_manifest.py": "51d264e2cbe454737dec11baa7e26f832da89b880fa58e12e46227798557b0d4",
@@ -133,6 +133,6 @@
     "trade-console/support/curve-trader/transport.mjs": "2c6070596cdd9db1dd8df7c6b7e066219e8757d3120e79106260ea0425b829b4",
     "trade-console/test/optional-tools.test.mjs": "265a5e61732956ad7567968e92bbd20e4b7e186ac28def9238a7547b327b9d2b",
     "trade-console/test/share.test.mjs": "0d25da7a889bb894b891f3e8835625eb614483f06f3c523f0306a122a9f72085",
-    "wallet_bridge.py": "d26b00d53108e856df44d2c6466e93ac4341345b245902f9da1aedf51593cf21"
+    "wallet_bridge.py": "bad521b970901b31f49c9bd1cea98d080b86df040f7215db97c564c1f944eafd"
   }
 }
