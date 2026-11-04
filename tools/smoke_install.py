@@ -22,7 +22,8 @@ def run_smoke(archive=None):
             for name in [*manifest['files'],'MANIFEST.json']:
                 p=root/name;p.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(SOURCE/name,p)
             shutil.copytree(SOURCE/'trade-console/node_modules',root/'trade-console/node_modules')
-        env=dict(os.environ,AGENT_TRADE_HOME=str(temp/'用户 data'),PYTHONIOENCODING='utf-8')
+        # Fresh app-data ancestors do not exist on a recipient's first install.
+        env=dict(os.environ,AGENT_TRADE_HOME=str(temp/'用户 data'/'AgentTradeConsole'/'new-install'),PYTHONIOENCODING='utf-8')
         python=str(root/'portable/python'/('python.exe' if os.name=='nt' else 'bin/python3')) if archive else sys.executable
         def cmd(*args):
             r=subprocess.run([python,str(root/'setup.py'),*args],cwd=root,env=env,capture_output=True,text=True,encoding='utf-8',timeout=120)

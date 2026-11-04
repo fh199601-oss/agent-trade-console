@@ -217,7 +217,7 @@ def main():
             running=current(cfg) if cfg else None
             return {'success':True,'running':bool(running),'url':running[0] if running else None,'mode':running[1]['mode'] if running else None}
         node,npm=node_and_npm()
-        LOCAL.mkdir(exist_ok=True,mode=0o700)
+        LOCAL.mkdir(parents=True,exist_ok=True,mode=0o700)
         if args.action=='install':
             if cfg and current(cfg):
                 if args.wallet_dir or args.no_wallet or args.scan_root:raise RuntimeError('重新绑定前请先停止本安装的服务，不修改运行中的钱包配置')
