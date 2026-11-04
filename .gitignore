@@ -24,3 +24,6 @@ local/
 .migration/
 .idea/
 .vscode/
+portable/
+dist/
+PORTABLE.json

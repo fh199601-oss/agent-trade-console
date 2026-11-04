@@ -1,13 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
+import {ROOT,LOCAL} from './paths.mjs';
+export {ROOT,LOCAL};
 import {Interface,getAddress,parseUnits,formatUnits,ZeroAddress} from 'ethers';
 import {normalizeAssetInput} from '../public/asset-input.mjs';
 import {validateSiteProof} from './site-proof.mjs';
 export {Interface,parseUnits,formatUnits,ZeroAddress};
-export const ROOT=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
-export const DATA=path.join(ROOT,'local/runtime');
+export const DATA=path.join(LOCAL,'runtime');
 export const BNB='0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
 export const USDT='0x55d398326f99059fF775485246999027B3197955';
 export const WBNB='0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c';
@@ -17,9 +18,16 @@ export const native=a=>same(a,BNB)||same(a,ZeroAddress);
 export const json=v=>JSON.stringify(v,(_,x)=>typeof x==='bigint'?String(x):x,2);
 export const hash=v=>createHash('sha256').update(typeof v==='string'?v:json(v)).digest('hex');
 export const address=a=>{if(!/^0x[0-9a-f]{40}$/i.test(String(a)))throw Error('请输入完整的 42 字符 CA');return getAddress(a.toLowerCase());};
-export function bindings(){const c=load(path.join(ROOT,'local/install.json'),{wallets:[]});return c.wallets.map(w=>({account:w.account,address:address(w.address)}));}
+export function bindings(){const c=load(path.join(LOCAL,'install.json'),{wallets:[]});return c.wallets.map(w=>({account:w.account,address:address(w.address)}));}
 export function wallet(n){const w=bindings().find(x=>x.account===n);if(!w)throw Error('钱包编号未绑定');return w;}
-export function save(file,v){fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});const tmp=file+'.tmp';fs.writeFileSync(tmp,json(v),{mode:0o600});const fd=fs.openSync(tmp,'r');fs.fsyncSync(fd);fs.closeSync(fd);fs.renameSync(tmp,file);}
+export function save(file,v){
+ fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});const tmp=file+'.'+randomUUID()+'.tmp';let fd;
+ try{
+  // Flush the writable handle: Windows rejects fsync on an O_RDONLY handle.
+  fd=fs.openSync(tmp,'wx',0o600);fs.writeFileSync(fd,json(v));fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;
+  fs.renameSync(tmp,file);
+ }finally{if(fd!==undefined)fs.closeSync(fd);try{fs.unlinkSync(tmp);}catch(e){if(e.code!=='ENOENT')throw e;}}
+}
 export function load(file,fallback=null){try{return JSON.parse(fs.readFileSync(file,'utf8'));}catch(e){if(e.code==='ENOENT')return fallback;throw e;}}
 export const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 export function percentOf(balance,pct){if(!/^\d+(\.\d{1,6})?$/.test(String(pct)))throw Error('百分比最多 6 位小数');const n=parseUnits(String(pct),6);if(n<=0n||n>100000000n)throw Error('百分比需大于 0 且不超过 100');return BigInt(balance)*n/100000000n;}

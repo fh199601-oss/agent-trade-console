@@ -1,62 +1,50 @@
-# Agent 交易台 · 独立分享版
+# 安装与故障处理
 
-把原始 ZIP 发给能操作本机文件和终端的 AI，附这一句话：
+## 便携版
 
-> 请解压这个包并按 START_HERE.md 和 AGENTS.md 完成安装，自动查找我本机已有的 Binance Agentic Wallet 钱包入口，只读核验并绑定我的钱包，启动本地看板后把可点击的网址发给我；不要读取、导出或索要私钥、助记词、登录凭据，也不要做任何真实交易。
+下载对应系统/芯片的 Release ZIP，完整解压到固定目录。Windows 双击 `Start.vbs`；Mac 双击 `Start.command`。不要在压缩文件预览里运行，不需要管理员权限。系统对未签名下载程序的提示需由用户本人核对处理，AI 不得关闭安全检查或绕过系统拦截。
 
-普通网页聊天如果没有本机文件/终端权限，无法替你安装。Codex、可运行本机命令的 Grok/其他 AI 可以按下列流程完成。
+运行环境随包提供，不安装到系统、不修改全局 PATH。包内 Node/Python 与所有依赖均列入 MANIFEST；运行时来源和原始 SHA256 在 PORTABLE.json。发行 ZIP 的 SHA256 也在 Release 提供；校验和不是第三方审计或作者数字签名。
+
+仅提供真实交易模式。安装、识别、查询与预览不会提交交易；只有本人明确点击交易或给 bot 本次具体执行指令后才签名。开盘任务必须单独点击启动，重启不恢复旧任务。
 
 ## AI 安装流程
 
-1. 解压到使用者自己的固定目录，不覆盖现有交易台或钱包目录。阅读本包 AGENTS.md。
-2. 检查 Python 3.10+、Node.js 24+、npm。缺失时从 [Python](https://www.python.org/downloads/) / [Node.js](https://nodejs.org/en/download) 或操作系统官方包管理器安装；保留现有钱包环境。
-3. 在解压目录执行 `python3 setup.py`。Windows 可用 `py -3 setup.py`。脚本先校验发行文件，使用锁定依赖且禁用 npm 生命周期脚本，然后发现钱包、做只读核验并启动模拟看板。只需要网络下载依赖，不需要 API Key。
-4. 读取返回的 `url`，打开/GET 该页面验证可用，把**实际返回的网址**发给用户。端口由系统分配，不固定 8797；不会连接或重启另一份交易台。网址仅此电脑可用，不要开放到公网。
-5. 根据 `walletCount` 和 `issues` 如实处理。不能把“页面启动”说成“钱包已全部接入”。
+1. 先读 AGENTS.md。优先便携包，核对系统及 CPU，不覆盖现有钱包目录。
+2. 使用便携 Python 执行 setup.py，或双击启动入口。首次可用 `--no-wallet` 只装空看板，不调用任何钱包。源码安装才需要系统 Python 3.10+、Node 24+、npm。
+3. 按返回的 `url` 访问页面，核验 bootstrap 的 installationId 与 `dataDir/install.json` 相同。不要输出 token、完整会话或 settings。把完整的 `http://127.0.0.1:端口/` 发给用户。
+4. 查看 walletCount 和 issues，不把“页面打开”说成“钱包全部可用”。已有绑定在环境暂时故障时保留；实际连接实时检查。
 
-若返回 `READ_ONLY_CHECK_FAILED`，AI 应读取该钱包工作区现有的 AGENTS/README，检查其所需 Docker/Colima/PowerShell 等环境，并仅重试只读连接查询；不能重建/清空钱包数据卷、退出登录或绕过原账号锁。`ADDRESS_MISMATCH` 表示绑定与实时钱包不同，先让用户确认目标钱包，不自动覆盖原公开绑定。
+## 钱包发现
 
-钱包发现仅支持 **Binance Agentic Wallet**，不是任意钱包文件的通用解密器：
+只支持 Binance Agentic Wallet；不是任意钱包存储的读取器。搜索 Documents、Desktop、Projects 及已配置的 OneDrive Documents/Desktop；排除隐藏目录、AppData、Library、钱包凭据及浏览器目录。
 
-- 优先搜索 Documents、Desktop、Projects 下已有 `wallet-containers/accounts.json` 与 `accountN.sh`（Windows 为 `.ps1`）；读取的 JSON 仅是公开地址映射。编号不重排，最多接入 1–5 号。保留原编号脚本及跨聊天锁，Mac 编号入口使用现有 Colima 环境。
-- 目录不在默认范围：`python3 setup.py --wallet-dir "完整的钱包目录"`；可重复 `--scan-root "工作区目录"` 限定查找范围。`discover` 命令仅列候选目录，不调用钱包。
-- 多套钱包入口：安装器启动空看板并返回候选目录，AI 请用户选哪套，再 `stop` 和带 `--wallet-dir` 重新安装。不能自动合并同名账号。
-- 无编号钱包时尝试 PATH 中现有 `baw` 官方 CLI，仅 `wallet status --json` 和 `wallet address --json`，将唯一已连接的 BSC 地址绑定为 1 号。已有编号目录却断线时不会偷偷改用默认钱包。
-- 没有 CLI 或未连接：先把已启动的看板网址发给用户，再按 [Binance 官方技能](https://github.com/binance/binance-skills-hub) 安装/登录。App 确认须由用户完成；不要索取私钥，不要退出其他账号。之后 `stop`，再 `setup.py --wallet-dir ...`；没有编号入口且原来为空绑定时，`stop` 后直接重新运行 `setup.py` 即可。
+已有编号环境只读 accounts.json 的公开绑定，执行相应 account1–5.sh / .ps1 的官方 `wallet status --json` 与 `wallet address --json`。不更换编号、不读取 .baw、不绕过入口的账号锁。Mac 旧编号环境沿用 Colima。没有编号入口时才尝试 PATH 中官方 baw CLI；编号入口断线不会改用主机默认钱包。
 
-仅装空看板：`python3 setup.py --no-wallet`。这不会搜索或调用钱包。
+多套入口：先让用户选择目录，停止本安装后 `setup.py --wallet-dir "完整目录"`。目录不在默认范围时可用 `--scan-root "目录"`，可重复。`setup.py discover` 仅扫描文件名，不查询钱包。
 
-## 启停与 AI 调用
+没有钱包或需要登录时，按 Binance 官方技能由用户本人在 App 确认，绝不要求私钥、密码或登录凭据，不退出已有会话。完成后停止本安装，重新绑定。
 
-```text
-python3 setup.py status
-python3 setup.py stop
-python3 setup.py start
-python3 agent_trade.py --url example.com --preflight
-python3 agent_trade.py --url example.com --scope free --shares max
-python3 agent_trade.py --ca <代币CA> --side sell --percent 50 --account 1
-```
+## Windows 故障
 
-以上默认模拟/预览。准备好后，**使用者另行明确要求**启用真实交易时，先停止本安装，再 `python3 setup.py start --live`。实盘 `--go` 仍要求稳定 `--id`、当前用户 `--authorization`，并经过服务端预览。看板开启的开盘自动卖出也必须由使用者选择 CA、钱包和比例后启动。安装器不自动授权、不自动交易、不创建开机任务。
+- **WALLET_ENVIRONMENT_NOT_READY**：现有 Docker 编号钱包环境尚未运行。启动该钱包原有的专用启动入口或 Docker Desktop 后重试。不要反复安装 Docker、改注册表、重置数据卷、切换固定实例或停止其他软件。新看板不会自动尝试修复 Docker。
+- **黑窗口反复弹出**：1.1 的 Node、Python、PowerShell 子进程均使用隐藏启动；断线检查采用退避。先停止旧 1.0 服务，再使用新入口。不要同时开旧看板与新看板的相同钱包。
+- **fsync / EPERM**：1.1 改为同步写句柄，保留持久化与原子替换；新安装的数据默认写入 LocalAppData，避开 Documents 保护路径。不会通过关闭安全软件、放宽文件权限或忽略写入错误来继续交易。
+- **入口无 JSON / 超时**：检查原钱包入口的 `--json` 输出和所需环境；看板不会展示可能含凭据的原始 stderr。
+- **PowerShell 执行策略阻止**：由用户按所在环境的管理要求处理；安装器不修改系统执行策略。
 
-网址识别、链上 Mint 回查、免费/付费额度、邀请、快捷买卖和开盘自动卖出保留在这份独立代码里。历史经验库从空白开始；不附带任何发布者交易历史、参考钱包、推荐链接或个性化按钮配置。特殊合约/过期项目/网络故障仍可能无法预览，不能保证所有网站通用或固定成交速度。
+## 数据与更新
 
-## 文件和隐私
+新安装数据位于 Windows `%LOCALAPPDATA%/AgentTradeConsole/<安装目录标识>` 或 Mac `~/Library/Application Support/AgentTradeConsole/<安装目录标识>`。安装 JSON 返回确切 dataDir。已有 `local/install.json` 的旧安装继续使用原 local，保留地址、历史、稳定 ID。移动安装目录前先停止服务；不要同时启动同一钱包的多个安装。
 
-原始 ZIP 仅含程序、静态 UI、锁定依赖清单、说明和测试。**不含账户绑定、钱包存储、私钥、助记词、登录状态、个人环境文件或历史记录。** 合约/路由器等公开协议地址是代码的一部分，不能据此操作发布者钱包。
+更新前执行旧目录的 `setup.py stop`；若有待核对原单，先核对原单，不强杀、清空历史或换 ID 下单。随后在原安装目录更新源码/便携文件，保留数据。重新运行 setup.py。没有公开发布者的钱包映射，也不会向发布者上传数据；RPC、项目网站和 Binance 请求按功能执行。
 
-安装产生的 `local/` 属于使用者自己：包括公开钱包映射、入口路径、本地服务身份、订单/预览记录和日志。包本身不设置遥测或向发布者回传数据；查询区块链、行情及官网时会按功能访问公开 RPC、项目网站及 Binance 服务。签名留在使用者已有官方钱包入口。
+再次分享只能发送原始 ZIP；不要压缩已使用的目录，也不要提交 dataDir、local、日志、钱包目录或环境文件。
 
-要转发给别人，只转发最初的 ZIP 和校验文件。**不要转发已经运行过的目录**。
+## 可选专属内盘工具
 
-Mac 已做隔离安装验证；Windows/Linux 提供兼容入口，但本次没有在对应实机完成端到端验证。PoW 原生加速需要可用的 C 编译器，不可用时按现有回退/错误提示处理。
+Open Four 依赖使用者独立安装的官方只读工具 `agent-id-exclusive-token-launches.mjs`。可在 `.codex/skills`、`.agents/skills`、`.claude/skills` 的官方技能目录中发现，或在自己的 dataDir/install.json 设置绝对路径 openFourScript。公开版不复制未核实再分发许可的第三方工具。缺少该工具时对应专属内盘不可用，其他路线仍独立处理。
 
-## 校验与故障
+## 测试边界
 
-`python3 setup.py verify` 校验代码清单。ZIP 旁的 `.sha256` 可用于下载完整性校验；校验和不是第三方安全审计或作者数字签名。安装后停止服务再移动目录，重新 `setup.py` 更新运行环境。
-
-端口/服务身份不符时停止连接，不影响别的服务；App 登录过期时重新走官方登录；缺少钱包入口时报告路径/依赖问题，绝不转而读取凭据。开发测试见 `python3 -m unittest discover -s tests -v`，只使用临时假钱包，不需要接触真实资金。
-
-## 开源版可选工具
-
-Open Four 专属内盘依赖使用者另外安装的官方只读工具 `agent-id-exclusive-token-launches.mjs`。本仓库不复制该工具源码；会在使用者的 `.codex/skills`、`.agents/skills` 或 `.claude/skills` 下查找，亦可在自己的 `local/install.json` 设置绝对路径 `openFourScript`。缺少该工具时无法使用此专属内盘适配，普通聚合交易与其他已支持路线不受此依赖影响。没有接入看板的 BBF 连续批次辅助代码未包含在公开版本中。
+CI 仅使用合成钱包，覆盖不同 OS、中文/空格路径、只读连接、重复安装、启动/停止和下载包。它不能替代用户实际 Docker、钱包登录、App 审批、网络与 Windows 桌面环境的验证。任何开发验证不执行真实交易。

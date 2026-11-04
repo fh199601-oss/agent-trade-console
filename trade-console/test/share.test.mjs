@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {percentOf,ROOT,DATA} from '../lib/common.mjs';
+import {percentOf,ROOT,LOCAL,DATA,save,load} from '../lib/common.mjs';
+import os from 'node:os';
 import {normalizeAssetInput} from '../public/asset-input.mjs';
 import {ReadRpc} from '../support/curve-trader/rpc.mjs';
 
@@ -16,7 +17,12 @@ test('source dependency closure loads without a wallet or external workspace',as
  }
  await import('../server.mjs');
 });
-test('runtime is isolated inside this package',()=>assert.equal(DATA,path.join(ROOT,'local/runtime')));
+test('runtime is isolated in the installation data directory',()=>assert.equal(DATA,path.join(LOCAL,'runtime')));
+test('durable writes work on Windows and replace existing content atomically',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'agent-save-'));const file=path.join(dir,'账户 设置.json');
+ try{save(file,{value:'中文'});save(file,{value:'updated'});assert.deepEqual(load(file),{value:'updated'});assert.deepEqual(fs.readdirSync(dir),['账户 设置.json']);}
+ finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
 test('sell percentages always apply to remaining units',()=>{
  const sold=percentOf(100n,50);assert.equal(sold,50n);assert.equal(percentOf(100n-sold,50),25n);
 });

@@ -7,7 +7,7 @@ import * as gang from '../support/curve-trader/adapters/gang.mjs';
 import {wallet,read,Interface,ERC20,BNB,WBNB,USDT,ZeroAddress,native,same,parseUnits,formatUnits,percentOf} from './common.mjs';
 import {sellAmount,quotedSlippage} from './sell-policy.mjs';
 import {measure,count} from './diagnostics.mjs';
-const run=promisify(execFile),routeCache=new Map();
+const exec=promisify(execFile),run=(file,args,options={})=>exec(file,args,{...options,windowsHide:true}),routeCache=new Map();
 // Scheduling hints only: fresh registration checks still determine every route.
 // Never cache holdings, prices, calldata, allowances, or negative registrations.
 const aggregateHints=new WeakMap();

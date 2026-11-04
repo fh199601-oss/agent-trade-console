@@ -12,7 +12,7 @@ def check_path(name):
         raise ValueError('拒绝私有或不安全路径：'+name)
     target=ROOT/p
     if target.is_symlink() or not target.is_file() or not target.resolve().is_relative_to(ROOT):raise ValueError('只允许仓库内普通文件：'+name)
-    if name not in {'.gitignore','LICENSE'} and p.suffix not in {'.py','.mjs','.js','.c','.css','.svg','.html','.json','.md','.txt'}:raise ValueError('不支持的发行文件类型：'+name)
+    if name not in {'.gitignore','LICENSE'} and p.suffix not in {'.py','.mjs','.js','.c','.css','.svg','.html','.json','.md','.txt','.yml','.vbs','.command'}:raise ValueError('不支持的发行文件类型：'+name)
     return target
 
 def main():

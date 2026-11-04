@@ -3,6 +3,7 @@
 import argparse, json, subprocess, sys
 from pathlib import Path
 from uuid import uuid4
+from runtime_paths import LOCAL, hidden_process_options, runtime_environment
 
 ROOT=Path(__file__).resolve().parent
 
@@ -27,7 +28,7 @@ def main():
         if a.go and (not a.id or not a.authorization):raise ValueError('执行需要稳定 --id 和当前用户 --authorization；默认只预览')
         asset=a.url or a.ca
         if not asset and not (a.follow or a.orders):raise ValueError('请提供网址或 CA')
-        cfg=json.loads((ROOT/'local/install.json').read_text())
+        cfg=json.loads((LOCAL/'install.json').read_text(encoding='utf-8'))
         command=[cfg['node'],str(ROOT/'trade-console/cli.mjs')];body=None
         if a.follow:command+=['follow',a.follow]
         elif a.orders:command+=['orders']
@@ -51,7 +52,7 @@ def main():
             else:
                 if a.accounts:body['accounts']=[int(n) for n in a.accounts.split(',')]
                 command+=['batch','--file','-']
-        result=subprocess.run(command,cwd=ROOT,input=json.dumps(body) if body else None,capture_output=True,text=True,timeout=180)
+        result=subprocess.run(command,cwd=ROOT,env=runtime_environment(),input=json.dumps(body) if body else None,capture_output=True,text=True,encoding='utf-8',timeout=180,**hidden_process_options())
         if result.stdout:print(result.stdout.strip())
         else:print(json.dumps({'success':False,'error':'服务未就绪或调用失败，请运行 python3 setup.py status','id':a.id},ensure_ascii=False))
         return result.returncode

@@ -1,64 +1,56 @@
-# Agent Trade Console
+# AGENT · 本地交易台
 
-面向 Grok、Codex 等本地 AI 的 BNB Chain 项目 Mint 与交易看板。默认只读预览和模拟；钱包签名通过使用者已有的 Binance Agentic Wallet 官方入口完成。
+面向 Grok、Codex 等本地 AI 的 BNB Chain 项目 Mint 与交易看板。**1.1 起用户入口只有真实交易模式**；识别、余额查询、交易预览仍只读，安装和打开网页不会下单。每笔交易需要用户本次操作或明确指令。
 
-**不包含作者的钱包地址、登录会话、私钥、助记词或历史交易数据。**
+## 最简单的使用方式
 
-## 一句话让 AI 安装
+从 [Releases](https://github.com/fh199601-oss/agent-trade-console/releases/latest) 下载对应系统的 **便携 ZIP**，完整解压后：
 
-将下面这句话发给能操作你本机文件和终端的 AI：
+| 系统 | 下载包后缀 | 双击启动 |
+| --- | --- | --- |
+| Windows 10/11，普通 Intel/AMD 电脑 | `windows-x64.zip` | `Start.vbs` |
+| Windows 11，ARM 电脑 | `windows-arm64.zip` | `Start.vbs` |
+| Mac，Apple 芯片 | `macos-arm64.zip` | `Start.command` |
+| Mac，Intel 芯片 | `macos-x64.zip` | `Start.command` |
 
-> 请下载 https://github.com/fh199601-oss/agent-trade-console ，按照 START_HERE.md 和 AGENTS.md 完成安装，只读查找并绑定我自己本机的 Binance Agentic Wallet 钱包入口，启动本地看板后把可点击的网址发给我。不要读取、导出或索要私钥、助记词、登录凭据，不要进行真实交易。
+便携包自带固定版本的 Python、Node 和 npm 依赖，**不用手动安装 Python、Node、npm 或 Git**，也不修改系统 PATH。启动时先显示进度，再打开实际看板地址。Windows 钱包查询在后台静默运行。不要选 GitHub 自动生成的 Source code ZIP，那是开发用源码包。
 
-AI 需要本机终端权限。钱包未登录时，仍需使用者通过币安 App 完成官方登录确认。
+看板不是钱包客户端：仍需要你自己已连接的 Binance Agentic Wallet。现有编号入口如果依赖 Docker，Docker 必须正常运行；看板不会重新注册、重置或反复启动 Docker。直接使用官方 CLI 的用户不因看板而需要 Docker。
+
+## 发给 AI 的安装提示词
+
+```text
+请安装 https://github.com/fh199601-oss/agent-trade-console 最新 Release 中适合我系统和芯片的便携包，先读 README.md、START_HERE.md、AGENTS.md，完整解压并核验文件。优先使用包内运行环境，不要让我手动装 Python/Node，也不要修改现有钱包或 Docker。只通过我已有的官方 CLI 或编号钱包入口核验并接入钱包，多套入口先让我选择；需要登录时由我在币安 App 确认。启动真实交易看板，验证网页、钱包连接和余额读取，并把包含端口的完整看板网址发给我。安装与验证不得买卖、Mint、授权或签名，不得读取、导出或索要私钥、助记词、登录凭据。遇到失败请报告具体原因，不反复拉起黑窗口。
+```
 
 ## 功能
 
-- 支持项目网址、裸域名及 CA 输入，识别地址用途、Mint 方法、免费/付费额度和邀请方式。
-- 识别不足时，回查链上成功 Mint 记录；目标、参数、额度和钱包资格仍需验证。
-- 本地交易看板、持仓与行情、可自定义的五个买入金额按钮和五个卖出比例按钮。
-- 卖出比例按每次操作时的剩余持仓计算；支持由用户手动启动的单次开盘自动卖出。
-- Grok / Codex 共用 CLI 与 JSON 输出；稳定操作 ID、防重复提交、原单跟踪。
-- 多钱包入口隔离、地址交叉核验、会话恢复、独立本地服务身份。
+- 官网 / 域名 / CA 识别，区分地址用途，结合 ABI、源码与链上成功样本识别 Mint。
+- 免费 / 付费 / 全部额度、预算检查、邀请识别与官方交易预览。不同钱包绑定的签名、证明和资格不能直接复制别人交易。
+- 5 个自定义买入按钮、5 个按**实时剩余持仓**计算的卖出按钮。
+- 开盘自动卖出必须由用户选择 CA、钱包、比例后启动；服务重启暂停旧任务。
+- 稳定订单 ID、防重复提交、历史经验与耗时记录。未知提交结果只核对原单。
 
-Mint 方式、网站接口和池子差异很大；本项目不保证所有项目通用，也不保证固定成交时间。新钱包的历史经验库为空，运行后在其本机逐步积累。
+不能保证每个项目、池子或开盘时间都支持。未验证的目标、失败的预览和钱包硬拦截不会被跳过。
 
-## 手动安装
+## 源码安装与 AI 调用
 
-需要 Python 3.10+、Node.js 24+ 和 npm，以及你自己的 Binance Agentic Wallet 环境。
+源码用户需 Python 3.10+、Node.js 24+ 与 npm，执行 `python3 setup.py`（Windows：`py -3 setup.py`）。便携版使用 `portable/python/python.exe setup.py`（Windows）或 `./portable/python/bin/python3 setup.py`（Mac）。
 
-```bash
-git clone https://github.com/fh199601-oss/agent-trade-console.git
-cd agent-trade-console
-python3 setup.py
-```
-
-Windows 可使用 `py -3 setup.py`。脚本输出 JSON，其中 `url` 是本机网页地址，`walletCount` 是实际通过核验的钱包数，`issues` 说明未接入的原因。首次启动为 **SIMULATION**。
-
-只启动空看板：`python3 setup.py --no-wallet`。指定现有钱包入口：`python3 setup.py --wallet-dir "钱包工作区或 wallet-containers 目录"`。
-
-支持官方 CLI 和 account1–account5 的 `.sh` / `.ps1` 编号入口；不会解析任意钱包存储文件。自动发现多个钱包工作区时，请先选择目标目录。详细流程和故障处理见 [START_HERE.md](START_HERE.md)。
-
-## 使用与启停
+安装结果为 JSON：`url`、`mode`、`walletCount`、`issues`、`dataDir`。`walletCount` 是保存的绑定数；实际连接以看板 / `issues` / 官方 CLI 为准。只有唯一入口会自动绑定；多套入口需选择。使用方式详见 [START_HERE.md](START_HERE.md)。
 
 ```bash
+python3 setup.py --wallet-dir "已有钱包工作区"
 python3 setup.py status
 python3 setup.py stop
 python3 setup.py start
 python3 agent_trade.py --url example.com --preflight
-python3 agent_trade.py --url example.com --scope free --shares max
 python3 agent_trade.py --ca <TOKEN_CA> --side sell --percent 50 --account 1
 ```
 
-以上默认只读/模拟。只有使用者明确要求启用真实交易后，才运行 `python3 setup.py start --live`；切换模式前先停止本安装。实盘 CLI 需要 `--go`、稳定 `--id` 和当前用户的 `--authorization`，仍须通过交易预览。安装行为不授权测试下单。
+AI 交易脚本没有 `--go` 时只预览；提交须同时提供稳定 `--id` 和本次 `--authorization`。真实交易模式不等于允许安装 AI 自动测试下单。
 
-## 适配与许可边界
-
-Open Four 专属内盘适配会调用使用者独立安装的官方只读工具；该工具源码不在本仓库内。缺少工具时，这条专属路线不可用。未接入看板的 BBF 连续批次专用辅助代码也不包含在公开版本中。普通 Mint、聚合交易及其他已支持路线保留。
-
-本项目代码采用 [MIT](LICENSE)。第三方依赖和预检流程参考说明见 [THIRD_PARTY.md](THIRD_PARTY.md)。本项目为独立项目，不代表 Binance 官方。
-
-## 开发与隐私
+## 开发与验证
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -67,6 +59,6 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm test
 ```
 
-这些测试使用合成数据，不需要真实钱包。Mac 已做隔离验证；Windows/Linux 尚未在对应实机完成全流程验证。
+GitHub Actions 在 Windows x64 / ARM64、Mac Intel / Apple 芯片环境中运行测试、假钱包全流程检查、便携包构建与解压复测。以 [实际运行结果](https://github.com/fh199601-oss/agent-trade-console/actions) 为准；CI 不代表已验证所有真实 Docker 安装、钱包会话或桌面安全软件。
 
-修改源码后运行 `python3 tools/update_manifest.py` 更新安装校验清单。不要将 `local/`、任何钱包目录、环境文件、日志或使用后的目录加入 Git。每次发布前检查 `git diff --cached`。提交问题时也不要附上凭据或完整运行目录，见 [SECURITY.md](SECURITY.md)。
+自有代码采用 [MIT](LICENSE)，运行时和其他依赖保留各自许可，见 [THIRD_PARTY.md](THIRD_PARTY.md)。请只分享原始发行包，不分享使用后的数据目录；问题反馈不要附凭据，见 [SECURITY.md](SECURITY.md)。

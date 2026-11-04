@@ -1,6 +1,6 @@
 import path from 'node:path';
 import {readFileSync} from 'node:fs';
-import {ROOT,DATA,load,json} from './lib/common.mjs';
+import {ROOT,LOCAL,DATA,load,json} from './lib/common.mjs';
 const [command,...argv]=process.argv.slice(2);
 const help=`Agent 交易台 · Grok / Codex 共用入口（JSON）
   node trade-console/cli.mjs inspect <CA、域名或HTTPS网址>
@@ -16,11 +16,11 @@ const help=`Agent 交易台 · Grok / Codex 共用入口（JSON）
 request.json: {"id":"稳定消息ID-account1","intent":{"account":1,"side":"mint","asset":"项目网址","quantity":1,"maxBnb":"0"}}
 买入 intent: side=buy, amount=金额, currency=BNB/USDT/QUOTE
 卖出 intent: side=sell, percent=50, currency=AUTO（默认；每次重新读取当前余额）
-run 执行另需 execute:true, authorization:当前用户原句；模拟服务始终不签名。
+run 执行另需 execute:true, authorization:当前用户原句；默认只预览，没有 execute:true 不会交易。
 地址由安装器自动分配，仅连接此安装目录的服务。只用一个服务，重复 ID 不重下。
 `;
 if(!command||['help','--help','-h'].includes(command)){console.log(help);process.exit(0);}
-const service=load(path.join(DATA,'service.json'));const installation=load(path.join(ROOT,'local/install.json'));if(!service||service.installationId!==installation?.installationId)throw Error('请先运行 python3 setup.py start');const base='http://127.0.0.1:'+service.port;const u=new URL(base);if(!['127.0.0.1','localhost'].includes(u.hostname)||u.protocol!=='http:')throw Error('只允许本机服务地址');
+const service=load(path.join(DATA,'service.json'));const installation=load(path.join(LOCAL,'install.json'));if(!service||service.installationId!==installation?.installationId)throw Error('请先运行 python3 setup.py start');const base='http://127.0.0.1:'+service.port;const u=new URL(base);if(!['127.0.0.1','localhost'].includes(u.hostname)||u.protocol!=='http:')throw Error('只允许本机服务地址');
 async function request(path,body){const b=await fetch(base+'/api/bootstrap',{signal:AbortSignal.timeout(3000)}).then(r=>r.json());if(b.installationId!==installation.installationId)throw Error('服务实例不匹配，拒绝发送命令');const r=await fetch(base+path,{method:body?'POST':'GET',headers:{'content-type':'application/json','x-console-token':b.token},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(150000)});const data=await r.json();if(!r.ok)throw Object.assign(Error(data.error?.message||data.error),{diagnostics:data.diagnostics});return data;}
 try{
  let result;

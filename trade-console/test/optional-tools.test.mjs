@@ -20,6 +20,6 @@ test('custom helper paths must be absolute and name the official tool',t=>{
 });
 test('symlink helper is not accepted',t=>{
  const options=fixture(t),target=path.join(options.home,'source.mjs'),file=path.join(options.home,'agent-id-exclusive-token-launches.mjs');
- fs.writeFileSync(target,'throw Error("never run")');fs.symlinkSync(target,file);fs.writeFileSync(options.configFile,JSON.stringify({openFourScript:file}));
+ fs.writeFileSync(target,'throw Error("never run")');try{fs.symlinkSync(target,file);}catch(e){if(e.code==='EPERM'){t.skip('Symlinks unavailable on this runner');return;}throw e;}fs.writeFileSync(options.configFile,JSON.stringify({openFourScript:file}));
  assert.throws(()=>findOpenFourHelper(options),{code:'OPTIONAL_HELPER_MISSING'});
 });

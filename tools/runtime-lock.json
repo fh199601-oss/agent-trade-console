@@ -1,0 +1,50 @@
+{
+  "nodeVersion": "24.22.2",
+  "pythonVersion": "3.13.18",
+  "platforms": {
+    "windows-x64": {
+      "node": {
+        "url": "https://nodejs.org/dist/v24.22.2/node-v24.22.2-win-x64.zip",
+        "sha256": "ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2"
+      },
+      "python": {
+        "url": "https://www.python.org/ftp/python/3.14.10/python-3.14.10-embed-amd64.zip",
+        "sha256": "90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159",
+        "embedded": true,
+        "version": "3.14.10"
+      }
+    },
+    "windows-arm64": {
+      "node": {
+        "url": "https://nodejs.org/dist/v24.22.2/node-v24.22.2-win-arm64.zip",
+        "sha256": "f47968c213105077f64c6510f007632c0ca2574802a0b5067c327c49abe1c468"
+      },
+      "python": {
+        "url": "https://www.python.org/ftp/python/3.14.10/python-3.14.10-embed-arm64.zip",
+        "sha256": "bbe116bb1248820359cbf25127ac5c7794ea161869d83686cfbc9a45203ff836",
+        "embedded": true,
+        "version": "3.14.10"
+      }
+    },
+    "macos-arm64": {
+      "node": {
+        "url": "https://nodejs.org/dist/v24.22.2/node-v24.22.2-darwin-arm64.tar.gz",
+        "sha256": "aa9549349e47dffaa42dcf95d6e06ade8c4bdafc980979883b88767670df385a"
+      },
+      "python": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-aarch64-apple-darwin-install_only_stripped.tar.gz",
+        "sha256": "8392b6ea51d94391befb2c31ebe75463f045d0b69dfcf5e1bb3234e1f5fa3405"
+      }
+    },
+    "macos-x64": {
+      "node": {
+        "url": "https://nodejs.org/dist/v24.22.2/node-v24.22.2-darwin-x64.tar.gz",
+        "sha256": "d5e336d588c45be0c37dbd52cc29895593009ca4997a77a1fd02815131ed0e52"
+      },
+      "python": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-x86_64-apple-darwin-install_only_stripped.tar.gz",
+        "sha256": "7412c19d896c99431b74a18a5643e110449a7f9590fbab179c3e5ab27b9aa9e3"
+      }
+    }
+  }
+}

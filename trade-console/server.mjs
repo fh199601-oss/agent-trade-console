@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {randomBytes,timingSafeEqual} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {ROOT,DATA,bindings,save,load,json,publicError} from './lib/common.mjs';
+import {ROOT,LOCAL,DATA,bindings,save,load,json,publicError} from './lib/common.mjs';
 import {Rpc} from './lib/network.mjs';
 import {Wallets} from './lib/wallet.mjs';
 import {Engine} from './lib/engine.mjs';
@@ -32,8 +32,9 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
  const readiness=new Map();const settings=()=>load(configFile,{buy:['0.005','0.01','0.02','0.05','0.1'],sell:['10','25','50','75','100']});
  function guard(req){
   const host=req.headers.host;if(!/^(127\.0\.0\.1|localhost):\d+$/.test(host||''))throw Error('Host 不允许');
-  if(req.headers.origin&&!['http://'+host].includes(req.headers.origin))throw Error('Origin 不允许');
-  if(['cross-site','same-site'].includes(req.headers['sec-fetch-site']))throw Error('跨站请求不允许');
+  const landing=req.method==='GET'&&new URL(req.url,'http://'+host).pathname==='/'&&req.headers['sec-fetch-mode']==='navigate'&&req.headers['sec-fetch-dest']==='document';
+  if(!landing&&req.headers.origin&&!['http://'+host].includes(req.headers.origin))throw Error('Origin 不允许');
+  if(!landing&&['cross-site','same-site'].includes(req.headers['sec-fetch-site']))throw Error('跨站请求不允许');
  }
  function auth(req){const received=req.headers['x-console-token']||'';if(typeof received!=='string'||Buffer.byteLength(received)!==Buffer.byteLength(token)||!timingSafeEqual(Buffer.from(received),Buffer.from(token)))throw Object.assign(Error('本地会话验证失败'),{code:'LOCAL_SESSION_EXPIRED',statusCode:401,details:{requestAccepted:false}});}
  async function body(req){if(!String(req.headers['content-type']).startsWith('application/json'))throw Error('需要 application/json');let b='';for await(const part of req){b+=part;if(b.length>65536)throw Error('请求过大');}return JSON.parse(b);}
@@ -41,7 +42,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
   const send=(code,v,type='application/json')=>{res.writeHead(code,{'content-type':type+'; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer','content-security-policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"});res.end(type==='application/json'?json(v):v);};
   try{
    guard(req);const u=new URL(req.url,'http://'+req.headers.host),p=u.pathname;
-   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(ROOT,'local/install.json'))?.installationId,capabilities:{openingVersion:2,recoveryVersion:1,instantReview:true},token,mode:live?'LIVE':'SIMULATION',wallets:bindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list()});
+   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,capabilities:{openingVersion:2,recoveryVersion:1,instantReview:true},token,mode:live?'LIVE':'SIMULATION',wallets:bindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list()});
    if(p.startsWith('/api/'))auth(req);
    if(req.method==='GET'&&p==='/api/order'){const o=engine.get(u.searchParams.get('id'));if(!o)throw Error('未找到原单');return send(200,o);}
    if(req.method==='POST'&&p==='/api/reconcile'){const b=await body(req),accounts=b.accounts||bindings().map(w=>w.account);if(!Array.isArray(accounts)||accounts.some(a=>!bindings().some(w=>w.account===a)))throw Error('钱包编号无效');return send(200,await Promise.all([...new Set(accounts)].map(a=>engine.reconcileAccount(a))));}
@@ -81,7 +82,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
  return {server,engine,bridge,token,warm,rpc,readRpc,opening};
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
- const install=load(path.join(ROOT,'local/install.json'));if(!install?.installationId)throw Error('请先运行 python3 setup.py');const live=process.argv.includes('--live');if(live&&install.liveEnabled!==true)throw Error('请通过 setup.py start --live 明确开启真实模式');const port=0;
+ const install=load(path.join(LOCAL,'install.json'));if(!install?.installationId)throw Error('请先运行 python3 setup.py');const live=true;if(install.liveEnabled!==true)throw Error('请重新运行安装器更新配置；用户入口仅提供真实交易模式');const port=0;
  fs.mkdirSync(DATA,{recursive:true,mode:0o700});const lock=path.join(DATA,'service.lock');
  const previous=load(lock);if(previous){let alive=true;try{process.kill(previous.pid,0);}catch{alive=false;}if(alive)throw Error('已有交易台进程使用此数据目录');fs.unlinkSync(lock);}
  const fd=fs.openSync(lock,'wx',0o600);fs.writeFileSync(fd,json({pid:process.pid}));fs.closeSync(fd);

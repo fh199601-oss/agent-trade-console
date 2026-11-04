@@ -12,13 +12,20 @@ import sys
 import time
 from urllib.request import build_opener, ProxyHandler, Request
 from uuid import uuid4
-from wallet_bridge import invoke, account_lock, bsc_address, BridgeError
+from wallet_bridge import invoke, account_lock, bsc_address, BridgeError, check_environment
+from runtime_paths import LOCAL, hidden_process_options, runtime_environment
 
 ROOT=Path(__file__).resolve().parent
-LOCAL=ROOT/'local'
 CONFIG=LOCAL/'install.json'
 SERVICE=LOCAL/'runtime/service.json'
 IGNORE={'node_modules','vendor','runtime','local','.git','.baw','.ssh','.aws','.config','.cache','Library','AppData','Windows','Program Files','__pycache__','releases','venv','.venv'}
+progress=lambda message:None
+
+def default_scan_roots():
+    roots=[Path.home()/n for n in ('Documents','Desktop','Projects')]
+    for name in ('OneDrive','OneDriveConsumer','OneDriveCommercial'):
+        if os.environ.get(name): roots.extend(Path(os.environ[name])/n for n in ('Documents','Desktop'))
+    return list(dict.fromkeys(roots))
 
 def read(path,default=None):
     if not path.is_file(): return default
@@ -26,7 +33,7 @@ def read(path,default=None):
 
 def save(path,data):
     path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
-    temp=path.with_suffix('.tmp')
+    temp=path.with_name(path.name+'.'+str(uuid4())+'.tmp')
     with temp.open('w',encoding='utf-8') as f:
         os.chmod(temp,0o600);json.dump(data,f,ensure_ascii=False,indent=2);f.flush();os.fsync(f.fileno())
     os.replace(temp,path)
@@ -79,6 +86,7 @@ def verify_entries(entries):
     for entry in entries:
         try:
             with account_lock(entry,timeout=15):
+                check_environment(entry)
                 status=invoke(entry,['wallet','status'],timeout=30)
                 if status.get('success') is not True or status.get('data',{}).get('status')!='CONNECTED':
                     issues.append({'account':entry['account'],'code':'LOGIN_REQUIRED'});continue
@@ -86,13 +94,13 @@ def verify_entries(entries):
                 if entry.get('address') and address.lower()!=entry['address'].lower():
                     issues.append({'account':entry['account'],'code':'ADDRESS_MISMATCH'});continue
                 verified.append(dict(entry,address=address))
-        except BridgeError:
-            issues.append({'account':entry['account'],'code':'READ_ONLY_CHECK_FAILED'})
+        except BridgeError as e:
+            issues.append({'account':entry['account'],'code':getattr(e,'code','READ_ONLY_CHECK_FAILED'),'message':str(e)})
     if len({e['address'].lower() for e in verified})!=len(verified): raise RuntimeError('多个编号返回同一钱包，不能当成独立钱包绑定')
     return verified,issues
 
 def discover(wallet_dir=None,scan_roots=None):
-    dirs=[Path(wallet_dir)] if wallet_dir else find_wallet_dirs(scan_roots if scan_roots is not None else [Path.home()/'Documents',Path.home()/'Desktop',Path.home()/'Projects'])
+    dirs=[Path(wallet_dir)] if wallet_dir else find_wallet_dirs(scan_roots if scan_roots is not None else default_scan_roots())
     if len(dirs)>1: return [],[{'code':'CHOOSE_WALLET_DIRECTORY','candidates':[str(p) for p in dirs]}]
     if dirs:
         entries=entries_at(dirs[0])
@@ -104,15 +112,22 @@ def discover(wallet_dir=None,scan_roots=None):
     return [],[{'code':'NO_WALLET_ENTRY','hint':'安装官方 Binance Agentic Wallet CLI，按官方技能通过 App 登录；不导入私钥。'}]
 
 def node_and_npm():
-    node=shutil.which('node');npm=shutil.which('npm')
+    bundled=ROOT/'portable/node'/('node.exe' if os.name=='nt' else 'bin/node')
+    node=str(bundled) if bundled.is_file() else shutil.which('node')
+    npm=shutil.which('npm',path=runtime_environment()['PATH'])
+    if node and (ROOT/'PORTABLE.json').is_file(): return node,npm
     if not node or not npm: raise RuntimeError('需要 Node.js 24+ 和 npm。请让 AI 从 nodejs.org 或本机包管理器安装后重试。')
-    r=subprocess.run([node,'--version'],capture_output=True,text=True,timeout=10)
+    r=subprocess.run([node,'--version'],capture_output=True,text=True,timeout=10,**hidden_process_options())
     m=re.fullmatch(r'v(\d+)\.\d+\.\d+\s*',r.stdout)
     if r.returncode or not m or int(m[1])<24: raise RuntimeError('需要 Node.js 24+；不要删除或覆盖已有钱包环境')
     return node,npm
 
 def dependencies(node,npm):
     package=ROOT/'trade-console/package-lock.json'
+    if (ROOT/'PORTABLE.json').is_file():
+        # Every bundled runtime/dependency file is included in MANIFEST.json.
+        if not (ROOT/'trade-console/node_modules/ethers/package.json').is_file():raise RuntimeError('便携包依赖不完整，请重新解压官方发行包')
+        return
     for item in read(package)['packages'].values():
         url=item.get('resolved','')
         if url and not url.startswith('https://registry.npmjs.org/'): raise RuntimeError('依赖来源不是预期的 npm 官方仓库')
@@ -124,10 +139,10 @@ def dependencies(node,npm):
     if os.name=='nt':
         from wallet_bridge import launch_args
         command=launch_args({'command':[npm]},command[1:])
-    env=dict(os.environ,NODE_USE_ENV_PROXY='1')
+    env=runtime_environment()
     with (LOCAL/'dependency-install.log').open('w') as log:
         os.chmod(LOCAL/'dependency-install.log',0o600)
-        result=subprocess.run(command,cwd=ROOT/'trade-console',env=env,stdout=log,stderr=log,timeout=240)
+        result=subprocess.run(command,cwd=ROOT/'trade-console',env=env,stdout=log,stderr=log,timeout=240,**hidden_process_options())
     if result.returncode: raise RuntimeError('依赖安装失败，查看 local/dependency-install.log；不需要提供任何密钥')
     save(marker,{'sha256':want})
 
@@ -158,17 +173,18 @@ def stop(cfg):
         time.sleep(.1)
     raise RuntimeError('服务尚未停止，不强制杀进程或中断待核对原单')
 
-def start(cfg,live=False):
+def start(cfg,live=True):
     running=current(cfg)
-    desired='LIVE' if live else 'SIMULATION'
+    if not live: raise RuntimeError('用户运行入口仅提供真实交易模式；预览接口仍不提交交易')
+    desired='LIVE'
     if running:
         if running[1]['mode']!=desired: raise RuntimeError('当前服务模式不同。先运行 python3 setup.py stop，再启动所需模式')
         return running[0],running[1]
     cfg=dict(cfg,liveEnabled=bool(live));save(CONFIG,cfg)
     runtime=LOCAL/'runtime';runtime.mkdir(exist_ok=True,mode=0o700)
-    command=[cfg['node'],str(ROOT/'trade-console/server.mjs')]+(['--live'] if live else [])
-    env=dict(os.environ,NODE_USE_ENV_PROXY='1')
-    options={'start_new_session':True} if os.name!='nt' else {'creationflags':subprocess.CREATE_NEW_PROCESS_GROUP|subprocess.DETACHED_PROCESS}
+    command=[cfg['node'],str(ROOT/'trade-console/server.mjs')]
+    env=runtime_environment()
+    options={'start_new_session':True} if os.name!='nt' else hidden_process_options()
     with (runtime/'service.log').open('a') as log:
         os.chmod(runtime/'service.log',0o600)
         child=subprocess.Popen(command,cwd=ROOT,env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=log,**options)
@@ -180,21 +196,20 @@ def start(cfg,live=False):
     raise RuntimeError('服务仍未就绪，未连接其他安装的服务')
 
 def main():
-    parser=argparse.ArgumentParser(description='默认安装、只读绑定钱包、启动模拟看板，输出 JSON 和本机网址')
+    parser=argparse.ArgumentParser(description='安装并只读接入本机钱包，启动真实交易看板；安装不下单，交易仍需本人操作')
     parser.add_argument('action',choices=['install','start','stop','status','discover','verify'],nargs='?',default='install')
     parser.add_argument('--wallet-dir',help='已有 wallet-containers 目录；只读取 accounts.json 公开地址映射')
     parser.add_argument('--scan-root',action='append',help='限定公开钱包入口目录搜索，可重复')
     parser.add_argument('--no-wallet',action='store_true',help='启动空钱包看板，不搜索和调用本机钱包')
-    parser.add_argument('--live',action='store_true',help='仅收到使用者另行明确指令后启用真实交易；默认模拟')
+    parser.add_argument('--live',action='store_true',help=argparse.SUPPRESS)
     args=parser.parse_args()
     os.umask(0o077)
     try:
-        count=verify_release()
+        progress('正在检查发行文件完整性…');count=verify_release()
         if args.action=='verify':return {'success':True,'verifiedFiles':count}
-        if args.live and args.action!='start':raise RuntimeError('--live 仅用于 start；安装过程不启用真实交易')
         if args.no_wallet and args.wallet_dir:raise RuntimeError('--no-wallet 与 --wallet-dir 不能同时使用')
         if args.action=='discover':
-            dirs=find_wallet_dirs(args.scan_root or [Path.home()/'Documents',Path.home()/'Desktop',Path.home()/'Projects'])
+            dirs=find_wallet_dirs(args.scan_root or default_scan_roots())
             return {'success':True,'directories':[str(p) for p in dirs],'credentialsRead':False}
         cfg=read(CONFIG)
         if args.action=='stop':return {'success':True,**(stop(cfg) if cfg else {'stopped':True,'alreadyStopped':True})}
@@ -207,19 +222,27 @@ def main():
             if cfg and current(cfg):
                 if args.wallet_dir or args.no_wallet or args.scan_root:raise RuntimeError('重新绑定前请先停止本安装的服务，不修改运行中的钱包配置')
                 url,state=current(cfg)
-                return {'success':True,'url':url,'mode':state['mode'],'walletCount':len(state['wallets']),'alreadyInstalled':True}
-            dependencies(node,npm)
+                if state['mode']!='LIVE':
+                    stop(cfg)
+                else:return {'success':True,'url':url,'mode':state['mode'],'walletCount':len(state['wallets']),'issues':cfg.get('issues',[]),'alreadyInstalled':True,'dataDir':str(LOCAL)}
+            progress('正在准备运行环境…');dependencies(node,npm)
+            progress('正在只读检查钱包入口；不会登录、签名或交易…')
             if cfg and cfg.get('wallets') and not (args.wallet_dir or args.no_wallet or args.scan_root):
                 wallets,issues=verify_entries(cfg.get('wallets',[]))
             else:wallets,issues=([],[]) if args.no_wallet else discover(args.wallet_dir,args.scan_root)
-            cfg={'schema':1,'installationId':cfg['installationId'] if cfg else str(uuid4()),'python':sys.executable,'node':node,'wallets':wallets,'issues':issues,'liveEnabled':False,**({'openFourScript':cfg['openFourScript']} if cfg and cfg.get('openFourScript') else {})}
+            if cfg and cfg.get('wallets') and not (args.wallet_dir or args.no_wallet or args.scan_root):
+                # A transient Docker/login failure must not erase saved bindings.
+                wallets=cfg['wallets']
+            python=str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower()=='pythonw.exe' else sys.executable
+            cfg={'schema':1,'installationId':cfg['installationId'] if cfg else str(uuid4()),'python':python,'node':node,'wallets':wallets,'issues':issues,'liveEnabled':True,**({'openFourScript':cfg['openFourScript']} if cfg and cfg.get('openFourScript') else {})}
             save(CONFIG,cfg)
         elif not cfg:raise RuntimeError('请先运行 python3 setup.py')
         # Starting after moving the unpacked folder uses the currently available runtime.
-        cfg=dict(cfg,python=sys.executable,node=node)
+        python=str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower()=='pythonw.exe' else sys.executable
+        cfg=dict(cfg,python=python,node=node)
         if not current(cfg):save(CONFIG,cfg)
-        url,state=start(cfg,args.live)
-        return {'success':True,'url':url,'mode':state['mode'],'walletCount':len(state['wallets']),'issues':cfg.get('issues',[]),'submittedTransactions':0,'next':'打开 url；没有钱包时按 START_HERE.md 接入后重新安装。'}
+        progress('正在启动本地看板…');url,state=start(cfg)
+        return {'success':True,'url':url,'mode':state['mode'],'walletCount':len(state['wallets']),'issues':cfg.get('issues',[]),'dataDir':str(LOCAL),'submittedTransactions':0,'next':'打开 url；没有钱包时按 START_HERE.md 接入后重新安装。'}
     except Exception as e:
         return {'success':False,'error':str(e),'submittedTransactions':0}
 

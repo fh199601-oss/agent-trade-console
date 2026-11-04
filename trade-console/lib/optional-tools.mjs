@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import {LOCAL} from './paths.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -8,7 +9,7 @@ const filename='agent-id-exclusive-token-launches.mjs';
 
 // Integrate an independently installed official tool; do not redistribute it.
 // No shell, credential store access, downloads, or execution during discovery.
-export function findOpenFourHelper({home=os.homedir(),configFile=path.join(root,'local/install.json')}={}){
+export function findOpenFourHelper({home=os.homedir(),configFile=path.join(LOCAL,'install.json')}={}){
  let config={};
  try{config=JSON.parse(fs.readFileSync(configFile,'utf8'));}catch(e){if(e.code!=='ENOENT')throw Error('本地可选工具配置无效');}
  const explicit=config.openFourScript;

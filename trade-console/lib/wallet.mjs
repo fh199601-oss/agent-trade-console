@@ -1,14 +1,14 @@
 import {spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import path from 'node:path';
-import {ROOT,wallet,same,load} from './common.mjs';
+import {ROOT,LOCAL,wallet,same,load} from './common.mjs';
 let seq=0;
 export class Wallets{
- constructor(){this.workers=new Map();this.queues=new Map();this.readyCache=new Map();this.readyInflight=new Map();this.warmInflight=new Map();this.foregroundEpoch=new Map();this.timings=[];}
+ constructor(){this.workers=new Map();this.queues=new Map();this.readyCache=new Map();this.readyInflight=new Map();this.warmInflight=new Map();this.foregroundEpoch=new Map();this.warmBackoff=new Map();this.timings=[];}
  worker(account){
   if(this.workers.has(account))return this.workers.get(account);
   wallet(account);
-  const process=spawn(load(path.join(ROOT,'local/install.json')).python,[path.join(ROOT,'wallet_bridge.py'),String(account)],{cwd:ROOT,stdio:['pipe','pipe','pipe']});
+  const process=spawn(load(path.join(LOCAL,'install.json')).python,[path.join(ROOT,'wallet_bridge.py'),String(account)],{cwd:ROOT,windowsHide:true,stdio:['pipe','pipe','pipe']});
   let readyResolve,readyReject;
   const state={process,pending:new Map(),ready:new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;})};this.workers.set(account,state);
   const readyTimer=setTimeout(()=>{readyReject(Object.assign(Error('钱包启动超时，未提交命令'),{dispatched:false}));process.kill('SIGTERM');},15000);
@@ -36,6 +36,7 @@ export class Wallets{
   });});this.queues.set(account,op);op.finally(()=>{if(this.queues.get(account)===op)this.queues.delete(account);}).catch(()=>{});return op;
  }
  async ready(account,{external=false,force=false}={}){
+  if(force)this.warmBackoff.delete(account);
   const expected=wallet(account).address,c=this.readyCache.get(account);
   const checkExternal=result=>{if(external&&(!result.devMode?.enabled||!(Date.parse(result.devMode.expiresAt)>Date.now())))throw Error('请在币安 App → Agentic Wallet → 设置中启用 Developer Mode');return result;};
   if(!force&&c&&c.validUntil>Date.now()&&same(expected,c.address))return checkExternal(c);
@@ -54,6 +55,7 @@ export class Wallets{
   this.readyCache.set(account,result);return result;
  }
  async warm(account){
+  if((this.warmBackoff.get(account)?.until||0)>Date.now())return null;
   if(this.queues.has(account)||this.readyInflight.has(account))return null;
   if(this.warmInflight.has(account))return this.warmInflight.get(account);
   const epoch=this.foregroundEpoch.get(account)||0,expected=wallet(account).address;
@@ -69,12 +71,13 @@ export class Wallets{
     if(status.status!=='CONNECTED')throw Object.assign(Error('钱包会话未连接'),{code:'WALLET_READINESS_INVALID'});
     return cached; // No TTL extension from a keepalive or transport timeout.
    }
-   return await this.checkReady(account,expected,call);
+   const ready=await this.checkReady(account,expected,call);this.warmBackoff.delete(account);return ready;
   }catch(e){
+   const failures=(this.warmBackoff.get(account)?.failures||0)+1;this.warmBackoff.set(account,{failures,until:Date.now()+Math.min(300000,30000*2**Math.min(failures-1,4))});
    if(e.code==='WALLET_READINESS_INVALID'){this.readyCache.delete(account);throw e;}
    // A failed optional background read is not a revoked session. Foreground
    // ready() still enforces the original expiry and complete address/settings.
-   return null;
+   throw e;
   }})();this.warmInflight.set(account,task);
   try{return await task;}finally{if(this.warmInflight.get(account)===task)this.warmInflight.delete(account);}
  }

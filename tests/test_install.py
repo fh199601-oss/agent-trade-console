@@ -62,10 +62,10 @@ class InstallerSafety(unittest.TestCase):
     def test_invalid_binding_file_rejected(self):
         d=self.wallet_dir();(d/'accounts.json').write_text('{"account1":{"unexpected":"data"}}')
         with self.assertRaisesRegex(RuntimeError,'映射'):setup.entries_at(d)
-    def test_simulation_cannot_dispatch_writes(self):
+    def test_read_only_test_bridge_cannot_dispatch_writes(self):
         with patch.object(bridge,'invoke') as invoke:
             for args in [['market-order','swap'],['contract-call','execute']]:
-                with self.assertRaisesRegex(bridge.BridgeError,'模拟模式'):bridge.dispatch(self.entry(),args,False)
+                with self.assertRaisesRegex(bridge.BridgeError,'不允许签名'):bridge.dispatch(self.entry(),args,False)
             invoke.assert_not_called()
     def test_auth_export_send_not_allowed_even_live(self):
         with patch.object(bridge,'invoke') as invoke:
@@ -102,8 +102,24 @@ class InstallerSafety(unittest.TestCase):
             self.assertIsNone(setup.current(cfg))
     def test_existing_live_service_not_silently_switched(self):
         with patch.object(setup,'current',return_value=('http://127.0.0.1:19999',{'mode':'LIVE'})),patch.object(setup,'save') as save:
-            with self.assertRaisesRegex(RuntimeError,'模式不同'):setup.start({'installationId':'test'},False)
+            with self.assertRaisesRegex(RuntimeError,'仅提供真实'):setup.start({'installationId':'test'},False)
         save.assert_not_called()
+    def test_windows_child_processes_are_hidden_and_utf8(self):
+        from runtime_paths import hidden_process_options
+        if sys.platform=='win32':
+            options=hidden_process_options()
+            self.assertTrue(options['creationflags'] & bridge.subprocess.CREATE_NO_WINDOW)
+            self.assertEqual(options['startupinfo'].wShowWindow,0)
+        result=type('R',(),{'stdout':'{"success":true,"data":{}}','stderr':'','returncode':0})()
+        with patch.object(bridge.subprocess,'run',return_value=result) as run:bridge.invoke(self.entry(),['wallet','status'])
+        self.assertEqual(run.call_args.kwargs['encoding'],'utf-8-sig')
+        if sys.platform=='win32':self.assertTrue(run.call_args.kwargs['creationflags'] & bridge.subprocess.CREATE_NO_WINDOW)
+    def test_missing_docker_never_launches_legacy_bootstrap(self):
+        d=self.wallet_dir();(d/'wallet.ps1').write_text("$docker = @('--context', 'desktop-linux'); & './start-environment.ps1'")
+        entry=dict(self.entry(),kind='numbered',command=[str(d/'account1.ps1')])
+        with patch.object(bridge.shutil,'which',return_value=None),patch.object(bridge.subprocess,'run') as run:
+            with self.assertRaises(bridge.BridgeError) as e:bridge.check_environment(entry)
+        self.assertEqual(e.exception.code,'WALLET_ENVIRONMENT_NOT_READY');run.assert_not_called()
     def test_lock_contention_does_not_dispatch(self):
         if os.name=='nt':self.skipTest('Unix flock integration')
         with bridge.account_lock(self.entry()):
