@@ -4,7 +4,7 @@ import argparse, json, subprocess, sys
 from pathlib import Path
 from uuid import uuid4
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from runtime_paths import LOCAL, hidden_process_options, runtime_environment
+from runtime_paths import LOCAL, hidden_process_options, runtime_environment, configure_stdio
 
 ROOT=Path(__file__).resolve().parent
 
@@ -62,4 +62,6 @@ def main():
     except Exception as e:
         print(json.dumps({'success':False,'error':str(e)},ensure_ascii=False));return 1
 
-if __name__=='__main__':sys.exit(main())
+if __name__=='__main__':
+    configure_stdio()
+    sys.exit(main())

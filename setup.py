@@ -16,7 +16,7 @@ from uuid import uuid4
 # only this entry's own directory, independent of cwd/PYTHONPATH/user sites.
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from wallet_bridge import invoke, account_lock, bsc_address, BridgeError, check_environment
-from runtime_paths import LOCAL, hidden_process_options, runtime_environment
+from runtime_paths import LOCAL, hidden_process_options, runtime_environment, configure_stdio
 
 ROOT=Path(__file__).resolve().parent
 CONFIG=LOCAL/'install.json'
@@ -250,6 +250,7 @@ def main():
         return {'success':False,'error':str(e),'submittedTransactions':0}
 
 if __name__=='__main__':
+    configure_stdio()
     try:
         with account_lock({'command':[str(ROOT/'setup.py')]},timeout=10):result=main()
     except BridgeError:

@@ -10,7 +10,7 @@ import sys
 import time
 from contextlib import contextmanager
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from runtime_paths import LOCAL, hidden_process_options, runtime_environment
+from runtime_paths import LOCAL, hidden_process_options, runtime_environment, configure_stdio
 
 ROOT = Path(__file__).resolve().parent
 READS = {('wallet', n) for n in ('status','address','settings','agent-id','balance','gas-price','tx-history','tx-lock')}
@@ -152,4 +152,6 @@ def main():
             result={'success':False,'error':{'code':getattr(e,'code','LOCAL_BRIDGE_ERROR'),'message':str(e) if isinstance(e,BridgeError) else '钱包桥接请求无效','commandDispatched':getattr(e,'dispatched',False)}}
         print(json.dumps({'id':req.get('id'),'result':result},ensure_ascii=False),flush=True)
 
-if __name__=='__main__': main()
+if __name__=='__main__':
+    configure_stdio()
+    main()

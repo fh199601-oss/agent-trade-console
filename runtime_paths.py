@@ -23,6 +23,13 @@ def data_directory(root=ROOT):
 
 LOCAL=data_directory()
 
+def configure_stdio():
+    # Embedded Python ignores PYTHONIOENCODING; JSONL must still be UTF-8.
+    # pythonw has no console streams, which is expected for desktop startup.
+    for name in ('stdin','stdout','stderr'):
+        stream=getattr(sys,name,None)
+        if hasattr(stream,'reconfigure'):stream.reconfigure(encoding='utf-8')
+
 def hidden_process_options():
     if sys.platform!='win32': return {}
     import subprocess
