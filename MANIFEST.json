@@ -1,8 +1,8 @@
 {
   "format": 1,
   "files": {
-    ".github/workflows/platforms.yml": "0700561e078a08e74e8ee8ef43eb55d79e553dc8465e589e7762096d88dce8a1",
-    ".gitignore": "019d12b6475c47d21d7aa050e5e57de16d676668f8cbe276204cb41de4750886",
+    ".github/workflows/platforms.yml": "131b34550f4804bad3c2af8b22334fb07ee73af3ad37a7ef3a77e51b76e57045",
+    ".gitignore": "6127e487eccf2773f1273d4d86858106ecc1705216bb814bf6b396e9504c0f83",
     "AGENTS.md": "9dea82c6e95c859cd784210fa81524314a9629b80799adbdeec0543baf6d9429",
     "LICENSE": "2803115b7a3db0beb16db203fe5dfc9e65a3d34d03911fbf020ec0373bfd04e6",
     "README.md": "43db0436561cdeb9c61560467048cc8ef6d87970197217ad95099ce4a909436e",

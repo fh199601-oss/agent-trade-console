@@ -27,3 +27,4 @@ local/
 portable/
 dist/
 PORTABLE.json
+!licenses/python-build-standalone/LICENSE.sqlite.txt
