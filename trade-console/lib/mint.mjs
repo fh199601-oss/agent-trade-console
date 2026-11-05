@@ -25,6 +25,7 @@ import {socialSalePlan} from './social-sale.mjs';
 import {sourceSalePlan} from './source-sale.mjs';
 import {protectedSalePlan} from './protected-sale.mjs';
 import {corlaPlan} from './corla.mjs';
+import {probeFreeBatch} from './free-mint-probe.mjs';
 const REGISTRY='0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F';
 const templates=[
  {name:'scarab',detect:['547c1db9','fd326592','a2309ff8'],signature:'mintWithBnb(uint256,address,uint256,address,uint256)',price:'costOf(uint256)',output:'quoteTokens(uint256)'},
@@ -68,7 +69,8 @@ async function buildMintPlan(rpc,bridge,intent,target,resolved,w,meta,experience
  const bn=await rpc.getBlockNumber(),raw=await rpc.send('eth_getBlockByNumber',['0x'+bn.toString(16),false]),block={tag:'0x'+bn.toString(16),number:bn,timestamp:Number(BigInt(raw.timestamp))};
  let ref=addressReferral(meta,route,intent);
  if(!ref&&resolved.referralHints?.detected&&intent.referral==='account1'&&[2,3].includes(intent.account))throw Error('网站存在邀请机制，但所选铸造入口没有已核验的邀请参数；可能需要接口绑定，暂不能忽略 1 号邀请直接铸造');
- const quote=q=>adaptiveQuoteWithLearning(rpc,meta,resolved,route,w,q,block,sourceLoader,{referrer:ref?.callValue,learner:chainLearner});
+ const readCache=new Map();
+ const quote=(n,freeProbe=false)=>adaptiveQuoteWithLearning(rpc,meta,resolved,freeProbe?{...route,freeProbe:true}:route,w,n,block,sourceLoader,{referrer:ref?.callValue,learner:chainLearner,readCache});
  let q;try{q=await quote(intent.quantity==='max'?1:intent.quantity);}catch(e){
   const paid=recognized.routes.filter(r=>r.lane==='paid');
   if(!['NO_QUOTA','MINT_ENDED'].includes(e.code)||intent.scope!=='all'||intent.routeId||route.lane!=='free'||paid.length!==1)throw e;
@@ -81,8 +83,13 @@ async function buildMintPlan(rpc,bridge,intent,target,resolved,w,meta,experience
  if(!q.available)throw Object.assign(Error(q.reason||'当前 Mint 不可执行'),{code:'MINT_STATE'});
  if(intent.scope==='free'&&q.freeUnits===0&&BigInt(q.total.raw)>0n)throw Object.assign(Error('当前没有可用的零费用份额；此报价需要付款，未自动切换到付费'),{code:'NO_FREE_MINT'});
  if(intent.scope==='paid'&&(q.freeUnits===null||q.freeUnits>0))throw Error('该入口无法证明只消耗付费额度；先核对免费额度或选择全部');
- if(intent.quantity==='max'){
-  if(q.limits.walletRemaining===null&&q.limits.callRemaining===null)throw Error('未读取到可靠上限，不能把未知额度当作打满；请指定份数');
+ let freeProbe=null;
+ if(intent.quantity==='max'&&q.limits.walletRemaining===null&&q.limits.callRemaining===null&&intent.scope!=='paid'&&BigInt(q.total.raw)===0n){
+  if(!q.expectedAsset||BigInt(q.expectedAsset.amount||0)<=0n)throw Object.assign(Error('免费数量试算需要先核验本次到账资产'),{code:'MINT_ASSET_UNKNOWN'});
+  const cap=Math.min(...[10,route.quantity?10:1,q.limits.txLimit,q.limits.publicRemaining,route.maxQuantity].filter(v=>v!==null&&v!==undefined));
+  const found=await probeFreeBatch({quote:n=>quote(n,true),seed:q,cap});q=found.quote;freeProbe=found.probe;
+ }else if(intent.quantity==='max'){
+  if(q.limits.walletRemaining===null&&q.limits.callRemaining===null)throw Error('未读取到可靠付费上限，请选择付费额度并填写份数');
   let lo=0,hi=q.limits.max,best=null;
   while(lo<hi){const mid=Math.ceil((lo+hi)/2),v=mid===1?q:await quote(mid);if(v.available&&BigInt(v.total.raw)<=limit){lo=mid;best=v;}else hi=mid-1;}
   if(!lo)throw Error('没有符合预算的可铸造额度');q=best?.quantity===lo?best:await quote(lo);
@@ -90,7 +97,7 @@ async function buildMintPlan(rpc,bridge,intent,target,resolved,w,meta,experience
  if(!q.available)throw Error(q.reason||'当前 Mint 不可执行');if(BigInt(q.total.raw)>limit)throw Error('报价超过本次最高 BNB 预算');
  return {kind:'contract',route:'mint:'+route.method,freshBeforeExecute:!!Object.keys(route.programs||{}).length,token:q.expectedAsset?.token||target,wallet:w.address,amountIn:q.total.raw,inputToken:BNB,outputToken:q.expectedAsset?.token||target,
   minOutput:q.expectedAsset?.amount||'0',quantity:q.quantity,identity:{...meta.identity,learnedAssets:route.chainEvidence?.assets},review:['通用识别未完成项目安全审计',...(!meta.verified?['当前仅通过链上接口识别，源码未核验']:[]),...(route.chainEvidence?['参考他人成功回执重新构造，本次费用与到账以当前钱包官方预览为准']:[])],
-  referral:await resolveReferral(rpc,bridge,resolved,meta,ref),quota:{freeInBatch:q.freeUnits,paidInBatch:q.paidUnits,limits:q.limits},fill:{continue:(intent.scope==='all'&&!intent.routeId&&route.lane==='free'&&recognized.routes.filter(r=>r.lane==='paid').length===1&&limit>0n&&intent.quantity==='max')||((q.limits.walletRemaining??q.limits.callRemaining??q.quantity)>q.quantity)&&(intent.quantity==='max')&&(BigInt(q.total.raw)<limit||q.total.raw==='0'&&!!(route.chainEvidence||route.freeEntry||route.zeroOnly))},budgetCurrency:'BNB',expectedAsset:q.expectedAsset,requireNftCredit:q.expectedAsset?.kind==='Erc721',erc1155InterfaceVerified:q.expectedAsset?.kind==='Erc1155',requireAssetCredit:!!route.chainEvidence||q.expectedAsset?.kind==='Erc1155',chainEvidence:route.chainEvidence,recognition:q.recognition,quote:q,steps:[{kind:'mint',to:q.call.to,data:q.call.data,value:q.call.value}],metaVerified:meta.verified};
+  referral:await resolveReferral(rpc,bridge,resolved,meta,ref),quota:{freeInBatch:q.freeUnits,paidInBatch:q.paidUnits,limits:q.limits,...(freeProbe?{freeProbe}:{})},fill:{continue:!!freeProbe||(intent.scope==='all'&&!intent.routeId&&route.lane==='free'&&recognized.routes.filter(r=>r.lane==='paid').length===1&&limit>0n&&intent.quantity==='max')||((q.limits.walletRemaining??q.limits.callRemaining??q.quantity)>q.quantity)&&(intent.quantity==='max')&&(BigInt(q.total.raw)<limit||q.total.raw==='0'&&!!(route.chainEvidence||route.freeEntry||route.zeroOnly)),...(freeProbe?{probe:true}: {})},budgetCurrency:'BNB',expectedAsset:q.expectedAsset,requireNftCredit:q.expectedAsset?.kind==='Erc721',erc1155InterfaceVerified:q.expectedAsset?.kind==='Erc1155',requireAssetCredit:!!freeProbe||!!route.chainEvidence||q.expectedAsset?.kind==='Erc1155',chainEvidence:route.chainEvidence,recognition:q.recognition,quote:q,steps:[{kind:'mint',to:q.call.to,data:q.call.data,value:q.call.value}],metaVerified:meta.verified};
 }
 async function templatePlan(rpc,bridge,i,meta,t,limit,w){
  if(i.referral==='account1'&&[2,3].includes(i.account))throw Error('该模板有推荐参数，邀请资格尚未核验，不能将 1 号邀请静默替换为零地址');

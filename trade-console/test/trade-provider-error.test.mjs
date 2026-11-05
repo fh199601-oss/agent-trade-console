@@ -1,0 +1,4 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {tradeError} from '../lib/sell-policy.mjs';
+test('provider risk review is never mislabeled as slippage and never relaxes a trade',()=>{const r=tradeError({code:30003001,message:'This token has been flagged as potentially risky. Please open the Binance app to review the risk warning and decide whether to proceed.'});assert.match(r.message,/App 查看/);assert.doesNotMatch(r.message,/滑点不足/);assert.ok(r.providerMessage.includes('risk warning'));});
+test('explicit slippage rejection is explained without automatic retries',()=>{assert.match(tradeError({code:30003001,message:'Slippage too low'}).message,/滑点条件未满足.*不会自动/);});
+test('shared provider code with unfamiliar reason preserves the original text',()=>{const r=tradeError({code:30003001,message:'Provider condition changed'});assert.match(r.message,/Provider condition changed/);assert.doesNotMatch(r.message,/滑点条件/);});

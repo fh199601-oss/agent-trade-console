@@ -1,5 +1,10 @@
 import {providerRefusal,repairRejectedOrder} from './provider-outcome.mjs';
-import {openingPlan} from './opening-route.mjs';
+import {sellGasArgs} from './sell-gas.mjs';
+import {rejectedAggregateSale,manualDirectSell} from './manual-sell-recovery.mjs';
+import {openingPlan,refreshOpeningSell} from './opening-route.mjs';
+import {openingRecoveryPlan} from './opening-recovery.mjs';
+import {preferProvenOpeningRoute,recentOpeningPreviewFailures} from './sell-route-history.mjs';
+import {hasPreviewRisks} from './preview-risks.mjs';
 import {erc1155Received} from './erc1155-credit.mjs';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -15,12 +20,15 @@ import {ExperienceStore} from './experience.mjs';
 import {profiled,measure,snapshot,preflightReport} from './diagnostics.mjs';
 import {rejectedSwapQuery,uniqueFailedSwap,applyFailedSwap} from './order-reconciliation.mjs';
 import {tradeError} from './sell-policy.mjs';
-import {corlaReceipt,corlaRefundReceipt,corlaInput} from './corla.mjs';
+import {corlaReceipt,corlaRefundReceipt,corlaInput,corlaClient} from './corla.mjs';
 const unresolved=new Set(['SUBMITTING','SUBMISSION_UNKNOWN','PENDING','APPROVAL_CONFIRMED','READY_TO_CONTINUE','RECEIPT_REVIEW']);
-const terminal=new Set(['CONFIRMED','FAILED','SIMULATED','BLOCKED','PARTIAL','CANCELLED','SKIPPED','REJECTED']);
+const terminal=new Set(['CONFIRMED','CONFIRMED_REVIEW','FAILED','SIMULATED','BLOCKED','PARTIAL','CANCELLED','SKIPPED','REJECTED']);
 function integer(x){if(typeof x==='number'&&!Number.isSafeInteger(x))throw Error('模拟金额精度不足，无法安全核验');if(!/^-?\d+$/.test(String(x)))throw Error('模拟金额不是精确整数');return BigInt(x);}
+const receiptReadError=e=>Object.assign(Error('原单链上查询暂不可用，继续跟踪原交易：'+e.message),{code:'ORIGINAL_READ_UNAVAILABLE'});
+async function originalRead(work){try{return await work();}catch(e){throw receiptReadError(e);}}
 export function verifyPreview(p,plan,step){
- const s=p?.simulationResult;if(!p?.requestId||s?.simulationCode!=='000000000'||s.simulationErrorDetail)throw Error('钱包模拟未明确通过');
+ const s=p?.simulationResult;
+ if(!p?.requestId||s?.simulationCode!=='000000000'||s.simulationErrorDetail)throw Object.assign(Error('钱包模拟未明确通过'),{code:p?.requestId&&s?.simulationCode?'OFFICIAL_SIMULATION_FAILED':'OFFICIAL_PREVIEW_INVALID',details:{simulationCode:s?.simulationCode,simulationErrorDetail:s?.simulationErrorDetail}});
  if(p.parsedTx?.contractAddress&&!same(p.parsedTx.contractAddress,step.to))throw Error('模拟目标合约不匹配');
  if(s.authorityChanges?.length)throw Error('模拟出现权限变更');
  for(const c of s.allowanceChanges||[]){
@@ -66,17 +74,27 @@ export class Engine{
  history(limit=50){return this.orderIndex.list(limit,orderSummary);}
  repairRefusal(o){const repaired=repairRejectedOrder(o);if(!repaired)return null;const backup=path.join(this.data,'order-repair-backups',hash(o.id)+'.json');if(!fs.existsSync(backup))save(backup,o);return this.write(repaired);}
  async reconcileAccount(account,exceptId){
-  const pending=this.orderIndex.find(o=>o.intent.account===account&&o.id!==exceptId&&unresolved.has(o.status));if(!pending)return {account,ready:true};
-  if(this.running.has(account))return {account,ready:false,order:pending};
-  const fixed=this.repairRefusal(pending)||await this.follow(pending.id);
-  return {account,ready:!unresolved.has(fixed.status),order:fixed};
+  const pending=this.list().filter(o=>o.intent.account===account&&o.id!==exceptId&&unresolved.has(o.status));if(!pending.length)return {account,ready:true};
+  if(this.running.has(account))return {account,ready:false,order:pending[0]};
+  // Reconcile originals independently. Two unresolved journals must not block
+  // each other's read-only receipt lookup. Never submit or continue here.
+  let firstResult;
+  for(const row of pending.slice(0,16)){
+   try{const result=this.repairRefusal(row)||await this.follow(row.id);if(row.id===pending[0].id)firstResult=result;}catch(e){if(e.code!=='WALLET_BUSY')throw e;break;}
+  }
+  const remaining=this.orderIndex.find(o=>o.intent.account===account&&o.id!==exceptId&&unresolved.has(o.status));
+  return {account,ready:!remaining,order:remaining||firstResult||this.get(pending[0].id)};
  }
- async exclusive(account,fn,id){if(this.running.has(account))throw Object.assign(Error('该钱包正在处理上一笔操作，请稍后核对'),{code:'WALLET_BUSY',details:{account,requestAccepted:false}});const pending=this.orderIndex.find(o=>o.intent.account===account&&o.id!==id&&unresolved.has(o.status));if(pending)throw Object.assign(Error('上一笔交易尚未确定结果，已保留原单供核对'),{code:'ORDER_UNRESOLVED',details:{account,orderId:pending.id,status:pending.status,requestAccepted:false}});this.running.add(account);try{return await fn();}finally{this.running.delete(account);}}
+ async exclusive(account,fn,id,{trackingOnly=false}={}){if(this.running.has(account))throw Object.assign(Error('该钱包正在处理上一笔操作，请稍后核对'),{code:'WALLET_BUSY',details:{account,requestAccepted:false}});const pending=!trackingOnly&&this.orderIndex.find(o=>o.intent.account===account&&o.id!==id&&unresolved.has(o.status));if(pending)throw Object.assign(Error('上一笔交易尚未确定结果，已保留原单供核对'),{code:'ORDER_UNRESOLVED',details:{account,orderId:pending.id,status:pending.status,requestAccepted:false}});this.running.add(account);try{return await fn();}finally{this.running.delete(account);}}
  async plan(intent,context={}){
   if(this.planFn)return this.planFn(intent);
   const preflight=()=>Promise.all([this.rpc.verifyChain(),measure('walletReady',()=>this.bridge.ready(intent.account,{external:intent.side==='mint'}))]).then(()=>({}),error=>({error}));
   const earlyReady=intent.side==='mint'&&(corlaInput(intent.asset)?.priority||/^corla:/.test(intent.routeId||''))?preflight():null;
-  const resolved=await measure('projectDiscovery',()=>discover(intent.asset,{rpc:this.rpc,chainFallback:intent.side==='mint',corlaRouting:intent.side==='mint'}));
+  // A claim names the previously registered mint contract. The dedicated
+  // planner still verifies its factory/implementation and fresh claim state;
+  // fetching website/title/creation terms again adds no claim authorization.
+  const directClaim=intent.side==='mint'&&intent.routeId==='corla:claim'&&/^0x[\da-f]{40}$/i.test(intent.asset);
+  const resolved=directClaim?{address:intent.asset,platform:'corla',source:'Corla 领取合约'}:await measure('projectDiscovery',()=>discover(intent.asset,{rpc:this.rpc,chainFallback:intent.side==='mint',corlaRouting:intent.side==='mint'}));
   const project={name:resolved.name||resolved.addresses?.find(r=>r.primary)?.name||null,source:resolved.source,address:resolved.address,platform:resolved.platform};
   try{
   if(!resolved.address)throw Object.assign(Error(resolved.failure?.message||resolved.reason||'尚未核验项目 Mint 入口，请提供完整合约地址'),{code:resolved.failure?.code||'MINT_NOT_VERIFIED',details:resolved});
@@ -91,11 +109,17 @@ export class Engine{
   const tradeBridge=overlap?{call:async(...args)=>{await ensureReady();return this.bridge.call(...args);},ready:async(...args)=>{await ensureReady();return this.bridge.ready(...args);}}:this.bridge;
   // Buying always targets the explicitly supplied token CA. Audit and quote
   // are independent reads; both still complete before preview/submission.
-  const [p,audit]=await Promise.all([
-   intent.side==='mint'?mintPlan(this.rpc,this.bridge,intent,resolved.address,resolved,this.experience,{officialPreview:true}):(intent.openingOnly?openingPlan(this.rpc,this.bridge,intent,{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation,aggregatePlan:i=>tradePlan(this.rpc,this.bridge,i,resolved.address,resolved.platform,this.tradePlanOptions)}):tradePlan(this.rpc,tradeBridge,intent,resolved.address,resolved.platform,this.tradePlanOptions)),
+  let [p,audit]=await Promise.all([
+   intent.side==='mint'?mintPlan(this.rpc,this.bridge,intent,resolved.address,resolved,this.experience,{officialPreview:true}):(intent.openingOnly?(context.openingRecovery?openingRecoveryPlan(this.rpc,this.bridge,intent,this.get(context.openingRecovery.sourceId),{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation}):openingPlan(this.rpc,this.bridge,intent,{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation,failedPreviews:recentOpeningPreviewFailures(this.list(),intent)})):tradePlan(this.rpc,tradeBridge,intent,resolved.address,resolved.platform,this.tradePlanOptions)),
    intent.side==='buy'?measure('tokenAudit',()=>this.auditFn(resolved.address)).catch(e=>({available:false,reason:e.message})):null,
    ensureReady()
   ]);
+  if(intent.side==='sell'&&intent.openingOnly&&!context.openingRecovery){
+   p=await preferProvenOpeningRoute(this.bridge,intent,p,this.list());
+  }
+  if(intent.side==='sell'&&!intent.openingOnly&&p.kind==='swap'&&this.orderIndex.find(o=>rejectedAggregateSale(o,intent))){
+   p=await manualDirectSell(this.rpc,this.bridge,intent,p,{scan:this.openingScan,preparation:this.openingPreparation});
+  }
   project.address=resolved.address;p.resolved=resolved;p.project=project;
   if(intent.claimSell&&p.route!=='corla:mint')throw Error('领取后联动卖出目前仅支持 Corla 认购');
   if(intent.side==='buy'){
@@ -111,9 +135,12 @@ export class Engine{
  async preview(plan,intent,index=0){
   if(plan.kind==='swap')return null;
   await this.bridge.ready(intent.account,{external:true});
-  const s=plan.steps[index],p=await this.bridge.call(intent.account,['contract-call','preview','--binanceChainId','56','--from',plan.wallet,'--to',s.to,'--value',String(s.value),'--inputData',s.data]);
+  const s=plan.steps[index];let p;
+  try{p=await this.bridge.call(intent.account,['contract-call','preview','--binanceChainId','56','--from',plan.wallet,'--to',s.to,'--value',String(s.value),'--inputData',s.data,...sellGasArgs(intent,s)]);}
+  catch(e){if(String(e.code)==='351805'&&e.responseReceived===true)e.details={...e.details,officialSimulationFailed:true};throw e;}
   const review=verifyPreview(p,plan,s);return {raw:p,review,at:Date.now()};
  }
+ async warmCorlaClaim(mint){const client=corlaClient(this.rpc),row=await client.locate(mint,{explicit:true});if(!row)throw Error('Corla 项目登记未找到');return client.verify(row);}
  async prepare(input,id=randomUUID(),context={}){
   const intent=validateIntent(input),old=this.get(id);
   if(old){if(hash(old.intent)!==hash(intent))throw Error('同一消息 ID 不能用于不同交易');return {...old,duplicateSuppressed:true};}
@@ -121,7 +148,7 @@ export class Engine{
   return profiled('prepare',()=>this.exclusive(intent.account,async()=>{
    const o={id,intent,status:'PREPARING',createdAt:Date.now(),timing:{receivedAt:Date.now()},steps:[],simulationOnly:!this.live};this.write(o);
    try{const plan=await measure('plan',()=>this.plan(intent,context));o.plan=JSON.parse(json(plan));o.project=plan.project;o.timing.planReadyAt=Date.now();const p=await measure('officialPreview',()=>this.preview(plan,intent));if(p){this.previews.set(id,p);o.preview=p.review;o.previewAt=p.at;}
-    o.status='PREPARED';o.review=[...(plan.review||[]),...(Array.isArray(p?.raw.risks)&&p.raw.risks.length?['钱包预览存在风险提示，请查看详情']:[])];o.timing.preparedAt=Date.now();o.timing.prepareMs=o.timing.preparedAt-o.createdAt;
+    o.status='PREPARED';o.review=[...(plan.review||[]),...(hasPreviewRisks(p?.raw.risks)?['钱包预览存在风险提示，请查看详情']:[])];o.timing.preparedAt=Date.now();o.timing.prepareMs=o.timing.preparedAt-o.createdAt;
    }catch(e){o.status=intent.side==='sell'&&e.code==='NO_HOLDINGS'?'SKIPPED':'BLOCKED';o.project??=e.project;o.mintContext=e.mintContext;o.error={...tradeError(e),details:e.details};o.timing.prepareMs=Date.now()-o.createdAt;}
    o.diagnostics=snapshot();o.preflight=preflightReport(o);if(intent.side==='mint'&&o.project?.platform!=='corla')o.inputExperience=this.experience.lookupInput(intent.asset);
    return this.write(o);
@@ -163,11 +190,11 @@ export class Engine{
     if(o.plan.route==='corla:mint')o.targetQuantity??=o.plan.fill.targetQuantity;
     if(!mayContinue())return cancelled();
     if(o.status==='PREPARED'&&(o.plan.freshBeforeExecute||Date.now()-o.timing.preparedAt>15000)){
-     const fresh=await this.plan(o.intent);
+     const fresh=await this.plan(o.intent,o.intent.openingOnly&&o.plan.recovery?{openingRecovery:{sourceId:o.plan.recovery.originalId}}:{});
      if(!same(fresh.token,o.plan.token)||fresh.resolved?.address!==o.plan.resolved?.address)throw Error('预览期间目标资产发生变化，停止提交');
      if(o.plan.freshBeforeExecute&&(fresh.quantity!==o.plan.quantity||BigInt(fresh.amountIn)>BigInt(o.plan.amountIn)||BigInt(fresh.minOutput)<BigInt(o.plan.minOutput)))throw Error('动态 Mint 的份数、费用或最低到账已超出本次预览，请重新核对');
      const p=await this.preview(fresh,o.intent);o.plan=JSON.parse(json(fresh));if(p){this.previews.set(id,p);o.preview=p.review;o.previewAt=p.at;}
-     o.review=[...(fresh.review||[]),...(p?.raw.risks?.length?['钱包预览包含风险提示']:[])];o.timing.preparedAt=Date.now();this.write(o);
+     o.review=[...(fresh.review||[]),...(hasPreviewRisks(p?.raw.risks)?['钱包预览包含风险提示']:[])];o.timing.preparedAt=Date.now();this.write(o);
      if(o.review.length&&!acknowledgeReview)return {...o,needsReview:true};
     }
     if(o.plan.afterMint){if(!this.onAuthorized)throw Error('自动领取服务未连接，请关闭自动领取或使用交易台服务');this.onAuthorized(o);}
@@ -181,15 +208,22 @@ export class Engine{
     while(true){
      for(let index=o.nextStep||0;index<o.plan.steps.length;index++){
       if(!mayContinue())return cancelled();
+      // Authorization can take several blocks. Refresh the automatic sale's
+      // quote and deadline AFTER approval, then obtain a new official preview.
+      // Preserve the original amount, venue, recipient and slippage percentage.
+      const fastSale=o.intent.side==='sell'&&o.plan.opening&&o.plan.steps[index].kind==='sell';
+      if(fastSale&&(o.steps.some(e=>e.step.kind==='approve'&&e.status==='CONFIRMED')||Date.now()-(o.previewAt||0)>1000)){
+       o.plan=await refreshOpeningSell(this.rpc,{...o.plan,account:o.intent.account});this.previews.delete(id);this.write(o);
+      }
       const step=o.plan.steps[index];let p=o.steps.length===0?this.previews.get(id):null;
-      if(!p||Date.now()-p.at>15000)p=await this.preview(o.plan,o.intent,index);
-      if(p.raw.risks?.length&&(rejectRisks||!acknowledgeReview))throw Error('新的钱包预览包含风险，需要查看并确认');
+      if(!p||Date.now()-p.at>(fastSale?1000:15000))p=await this.preview(o.plan,o.intent,index);
+      if(hasPreviewRisks(p.raw.risks)&&(rejectRisks||!acknowledgeReview))throw Error('新的钱包预览包含风险，需要查看并确认');
       await Promise.all([verifyIdentity(this.rpc,o.plan.identity),...(o.plan.protocolIdentities||[]).map(identity=>verifyIdentity(this.rpc,identity))]);
       if(!mayContinue())return cancelled();
       const entry={index,stage:o.stage||0,plan:o.plan,step,preview:p.review,requestId:p.raw.requestId,status:'SUBMITTING',submitStartedAt:Date.now()};
       o.steps.push(entry);o.status='SUBMITTING';this.write(o);
       let result;try{result=await this.bridge.call(o.intent.account,['contract-call','execute','--requestId',p.raw.requestId]);}
-      catch(e){entry.status=e.dispatched===false?'FAILED':'SUBMISSION_UNKNOWN';entry.error=publicError(e);o.status=entry.status;return this.write(o);}
+      catch(e){entry.status=e.dispatched===false?'FAILED':'SUBMISSION_UNKNOWN';entry.error=publicError(e);o.error=entry.error;o.status=entry.status;if(e.dispatched===false)entry.submissionOutcome={accepted:false,source:'local-wallet'};return this.write(o);}
       entry.result=result;entry.txHash=result.txHash||result.transactionHash||null;entry.orderId=result.orderId||null;entry.status='PENDING';entry.submittedAt=Date.now();o.status='PENDING';o.timing.submittedAt??=Date.now();o.timing.toSubmitMs=o.timing.submittedAt-o.createdAt;this.write(o);
       await this.observeContract(o,entry,(step.kind==='sell'||o.plan.route==='corla:claim')&&swapReceiptWaitMs===0?0:10000);
       if(entry.status!=='CONFIRMED')return this.write(o);
@@ -213,17 +247,23 @@ export class Engine{
      }catch(e){if(e.code==='NO_QUOTA'||e.code==='NO_FREE_MINT'&&o.intent.scope==='free')return this.finish(o);o.status='PARTIAL';o.error=publicError(e);return this.write(o);}
     }
    }catch(e){
+    const pendingStep=o.steps?.at(-1);
+    if(e.code==='ORIGINAL_READ_UNAVAILABLE'&&pendingStep?.status==='PENDING'&&/^0x[\da-f]{64}$/i.test(pendingStep.txHash||'')){
+     o.status='PENDING';o.followError=publicError(e);return this.write(o);
+    }
     // A receipt lookup failure is not proof that a dispatched swap failed.
     if(o.plan?.kind==='swap'&&(o.orderId||['SUBMITTING','SUBMISSION_UNKNOWN','PENDING'].includes(o.status))){if(o.status==='SUBMITTING')o.status='SUBMISSION_UNKNOWN';o.followError=publicError(e);return this.write(o);}
     // A later Corla preview can fail after earlier lots/approval settled. There
     // is no unknown transaction in that case; keep the completed portion and
     // let a new explicit operation retry without locking the wallet forever.
     const corlaPartial=o.plan?.route==='corla:mint'&&o.steps.length>0&&o.steps.every(x=>x.status==='CONFIRMED');
-    o.status=corlaPartial?'PARTIAL':o.steps.some(x=>x.submittedAt)?'RECEIPT_REVIEW':'BLOCKED';o.error=publicError(e);return this.write(o);
+    const approvalOnly=o.intent.side==='sell'&&o.steps.length>0&&o.steps.every(x=>x.status==='CONFIRMED'&&x.step.kind==='approve');
+    o.status=corlaPartial?'PARTIAL':approvalOnly?'BLOCKED':o.steps.some(x=>x.submittedAt)?'RECEIPT_REVIEW':'BLOCKED';o.error=publicError(e);return this.write(o);
    }
   },id));
  }
- finish(o){o.status='CONFIRMED';o.timing.confirmedAt=Date.now();o.timing.toConfirmedMs=o.timing.confirmedAt-o.createdAt;return this.write(o);}
+ clearResolvedErrors(o){if(o.error||o.followError){o.resolvedErrors=[...(o.resolvedErrors||[]),{at:Date.now(),error:o.error,followError:o.followError}].slice(-10);delete o.error;delete o.followError;}}
+ finish(o){this.clearResolvedErrors(o);o.status='CONFIRMED';o.timing.confirmedAt=Date.now();o.timing.toConfirmedMs=o.timing.confirmedAt-o.createdAt;return this.write(o);}
  async submitSwap(o,receiptWaitMs=10000){
   o.status='SUBMITTING';o.timing.submitStartedAt=Date.now();this.write(o);let r;
   try{r=await this.bridge.call(o.intent.account,['market-order','swap',...o.plan.args,'--gasLevel','HIGH','--mev','true']);}
@@ -248,15 +288,29 @@ export class Engine{
   const end=Date.now()+timeout;do{
    // Claim confirmation gates a subsequent sale. Fetch its immutable original
    // transaction alongside the receipt, not one network round trip later.
-   const txRead=plan.route==='corla:claim'?this.rpc.getTransaction(entry.txHash).then(tx=>({tx}),error=>({error})):null;
-   const receipt=await this.rpc.getTransactionReceipt(entry.txHash);
+   const txRead=originalRead(()=>this.rpc.getTransaction(entry.txHash)).then(tx=>({tx}),error=>({error}));
+   const receipt=await originalRead(()=>this.rpc.getTransactionReceipt(entry.txHash));
    if(receipt){entry.receipt=receipt;if(!same(receipt.from,plan.wallet)||!same(receipt.to,entry.step.to)){entry.status=o.status='RECEIPT_REVIEW';break;}
-    if(BigInt(receipt.status)!==1n){entry.status=o.status='FAILED';break;}
     const result=txRead?await txRead:{tx:await this.rpc.getTransaction(entry.txHash)};if(result.error)throw result.error;
-    const tx=result.tx;if(!tx||!same(tx.from,plan.wallet)||!same(tx.to,entry.step.to)||tx.input.toLowerCase()!==entry.step.data.toLowerCase()||BigInt(tx.value)!==BigInt(entry.step.value)){entry.status=o.status='RECEIPT_REVIEW';break;}
+    const tx=result.tx;if(!tx)throw receiptReadError(Error('节点已返回回执，但原交易暂未同步'));
+    if(!same(tx.from,plan.wallet)||!same(tx.to,entry.step.to)||tx.input.toLowerCase()!==entry.step.data.toLowerCase()||BigInt(tx.value)!==BigInt(entry.step.value)||receipt.transactionHash&&!same(receipt.transactionHash,entry.txHash)||tx.hash&&!same(tx.hash,entry.txHash)){entry.status=o.status='RECEIPT_REVIEW';break;}
+    if(BigInt(receipt.status)!==1n){this.clearResolvedErrors(o);entry.revertVerified=true;entry.status=o.status='FAILED';o.error={code:'TRANSACTION_REVERTED',message:'原交易已上链但执行回滚；可按当前持仓重新预览'};o.timing.finishedAt=Date.now();break;}
     if(entry.step.kind==='approve'){
-     const [allowance]=await read(this.rpc,entry.step.to,ERC20,'allowance',[plan.wallet,entry.step.spender]);if(allowance<BigInt(entry.step.allowance)){entry.status=o.status='RECEIPT_REVIEW';break;}
-    }else if(settlements[plan.route]){entry.settlement=settlements[plan.route]({receipt,wallet:plan.wallet,token:plan.token,side:o.intent.side,state:plan.state});if(entry.settlement.amountOut<BigInt(plan.minOutput||0)||entry.settlement.amountIn!==null&&entry.settlement.amountIn>BigInt(plan.amountIn))throw Error('实际成交超出本笔输入或最低到账约束');}
+     const [allowance]=await originalRead(()=>read(this.rpc,entry.step.to,ERC20,'allowance',[plan.wallet,entry.step.spender]));if(allowance<BigInt(entry.step.allowance)){entry.status=o.status='RECEIPT_REVIEW';break;}
+    }else if(settlements[plan.route]){
+     try{
+      entry.settlement=settlements[plan.route]({receipt,wallet:plan.wallet,token:plan.token,side:o.intent.side,state:plan.state,plan,step:entry.step});
+      if(entry.settlement.amountOut<BigInt(plan.minOutput||0)||entry.settlement.amountIn!==null&&entry.settlement.amountIn>BigInt(plan.amountIn))throw Error('实际成交超出本笔输入或最低到账约束');
+     }catch(e){
+      // Receipt success AND the exact original transaction were verified above.
+      // An accounting/decoder problem is not an unknown submission. End this
+      // operation without auto-retry or continuing another step, and release the
+      // wallet for a new explicit action using its current balance.
+      this.clearResolvedErrors(o);entry.status=o.status='CONFIRMED_REVIEW';
+      entry.settlementError=publicError(e);o.error={code:'SETTLEMENT_REVIEW',message:'原交易已成功上链，金额解析需核对；不会自动重发，可按当前余额发起新操作。'+e.message};
+      o.timing.confirmedAt=Date.now();o.timing.toConfirmedMs=o.timing.confirmedAt-o.createdAt;break;
+     }
+    }
     else if(entry.step.kind==='mint'&&plan.subscription?.protocol==='corla'){
      entry.settlement=corlaReceipt(receipt,plan);entry.received='1';
     }else if(entry.step.kind==='mint'&&plan.redemption?.protocol==='corla'){
@@ -267,7 +321,7 @@ export class Engine{
      if(asset?.kind==='Erc1155')received=erc1155Received(receipt.logs,asset.token,plan.wallet);
      const expected=asset?.amount?BigInt(asset.amount):1n;if(received<expected){entry.status=o.status='RECEIPT_REVIEW';o.error={message:'交易成功但 Mint 到账未达到预期，需复核'};break;}entry.received=String(received);
     }
-    entry.status='CONFIRMED';break;
+    delete entry.settlementError;this.clearResolvedErrors(o);entry.status='CONFIRMED';break;
    }
    if(Date.now()>=end)break;await sleep(200);
   }while(true);
@@ -284,7 +338,7 @@ export class Engine{
      }
     }}
    }
-  }catch(e){if(o.status==='SUBMISSION_UNKNOWN'&&o.error)o.followError=publicError(e);else o.error=publicError(e);}return this.write(o);},id);
+  }catch(e){if(e.code==='ORIGINAL_READ_UNAVAILABLE'||o.status==='SUBMISSION_UNKNOWN'&&o.error)o.followError=publicError(e);else o.error=publicError(e);}return this.write(o);},id,{trackingOnly:true});
  }
  async run(input,id,options={}){const o=await this.prepare(input,id);return ['PREPARED','READY_TO_CONTINUE'].includes(o.status)&&options.execute?this.execute(id,options):o;}
 }

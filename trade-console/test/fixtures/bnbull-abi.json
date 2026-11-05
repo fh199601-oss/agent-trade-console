@@ -1,0 +1,881 @@
+[
+  {
+    "name": "MAX_PAID_PER_NOID_WALLET",
+    "type": "function",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "name": "TOKENS_PER_SHARE",
+    "type": "function",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "name": "agentId",
+    "type": "function",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IAgentId4"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "name": "mintAfter",
+    "type": "function",
+    "inputs": [
+      {
+        "name": "agentTokenId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "qty",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "tokens",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "payable"
+  },
+  {
+    "name": "mintFree",
+    "type": "function",
+    "inputs": [
+      {
+        "name": "agentTokenId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "refAgentId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "id",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "name": "mintPaid",
+    "type": "function",
+    "inputs": [
+      {
+        "name": "agentTokenId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "qty",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "refAgentId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "firstId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "payable"
+  },
+  {
+    "name": "mintPaidNoId",
+    "type": "function",
+    "inputs": [
+      {
+        "name": "qty",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "refAgentId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "firstId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "payable"
+  },
+  {
+    "name": "mintPaidPlusFree",
+    "type": "function",
+    "inputs": [
+      {
+        "name": "agentTokenId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "qty",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "refAgentId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "firstId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "freeId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "payable"
+  },
+  {
+    "name": "mintRefBonus",
+    "type": "function",
+    "inputs": [
+      {
+        "name": "qty",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "firstId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "name": "paidOfWallet",
+    "type": "function",
+    "inputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "name": "pass",
+    "type": "function",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract AgentPass5"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "name": "quotePaid",
+    "type": "function",
+    "inputs": [
+      {
+        "name": "qty",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "costWei",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "costUsd",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "name": "quotePaidNoId",
+    "type": "function",
+    "inputs": [
+      {
+        "name": "qty",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "costWei",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "costUsd",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "name": "quotePost",
+    "type": "function",
+    "inputs": [
+      {
+        "name": "qty",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "noId",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "costWei",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "costUsd",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "name": "status",
+    "type": "function",
+    "inputs": [
+      {
+        "name": "who",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "st",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "open",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "launched",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "refunding",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "currentBlock",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "startTime",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "endTime",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "launchDeadline",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "freeMinted",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "freeSupply",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "paidSold",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "paidSupply",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "freeOpensAt",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "freeSlotBlocks",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxPaidPerTx",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "refBps",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "refOwedWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "totalMinted",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "paidLeftAll",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "priceUsd",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "priceWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "raisedWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "raisedUsd",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "toLaunchLine",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "refundedWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "eligible",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "agentIds",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "freeUsed",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "paidCount",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "paidLeft",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "mineEpochNo",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "mineNextBlock",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "mineEpochReward",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "mineEpochPower",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "myPower",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "myHoldPower",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "myMinedPower",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "minePendingAmt",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "mineAlloc",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "mined",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "priceWeiNoId",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "noIdLeft",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "refBonusLeft",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "postCap",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "postSold",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "postPriceUsd",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "postPriceWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "outcome",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "toRefundLine",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "refundableWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "refundBpsNow",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "sellTaxBps",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "buyTaxBps",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "earlyTaxEndBlock",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "internalType": "struct AgentCoin5.Status"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "name": "status",
+    "type": "function",
+    "inputs": [
+      {
+        "name": "who",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "agentTokenId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "st",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "open",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "launched",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "refunding",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "currentBlock",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "startTime",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "endTime",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "launchDeadline",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "freeMinted",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "freeSupply",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "paidSold",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "paidSupply",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "freeOpensAt",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "freeSlotBlocks",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxPaidPerTx",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "refBps",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "refOwedWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "totalMinted",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "paidLeftAll",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "priceUsd",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "priceWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "raisedWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "raisedUsd",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "toLaunchLine",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "refundedWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "eligible",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "agentIds",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "freeUsed",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "paidCount",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "paidLeft",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "mineEpochNo",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "mineNextBlock",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "mineEpochReward",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "mineEpochPower",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "myPower",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "myHoldPower",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "myMinedPower",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "minePendingAmt",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "mineAlloc",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "mined",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "priceWeiNoId",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "noIdLeft",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "refBonusLeft",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "postCap",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "postSold",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "postPriceUsd",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "postPriceWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "outcome",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "toRefundLine",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "refundableWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "refundBpsNow",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "sellTaxBps",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "buyTaxBps",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "earlyTaxEndBlock",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "internalType": "struct AgentCoin5.Status"
+      }
+    ],
+    "stateMutability": "view"
+  }
+]

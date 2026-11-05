@@ -10,7 +10,7 @@ export class Rpc extends ReadRpc{
  constructor(...args){super(...args);this.activeReads=0;this.waitingReads=[];this.inflightReads=new Map();}
  send(method,params){
   count('rpcLogicalReads');
-  const key=JSON.stringify([method,params]);if(this.inflightReads.has(key)){count('rpcCoalescedReads');return this.inflightReads.get(key);}
+  const key=JSON.stringify([this.endpoints?.revision,method,params]);if(this.inflightReads.has(key)){count('rpcCoalescedReads');return this.inflightReads.get(key);}
   const task=this.limitedRead(method,params);this.inflightReads.set(key,task);
   task.finally(()=>this.inflightReads.delete(key)).catch(()=>{});return task;
  }

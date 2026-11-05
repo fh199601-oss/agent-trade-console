@@ -1,4 +1,6 @@
 import {flapHost} from './corla-input.mjs';
+// Only the entire pasted value may be a CA. Never extract one from a URL.
+export function mintTradeCA(value){const s=typeof value==='string'?value.trim():'';return /^0x[\da-f]{40}$/i.test(s)&&!/^0x0{40}$/i.test(s)?s:null;}
 // Shared by the dashboard and server: preserve paths, queries and hashes while
 // accepting a bare public domain. Network access still pins a public DNS result.
 export function normalizeAssetInput(value){

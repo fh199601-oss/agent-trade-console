@@ -56,14 +56,18 @@ export async function assistMint(rpc,meta,resolved,sourceLoader,{learner=learner
 // evidence once, keep the selected target/method/referral, and re-simulate the
 // current wallet. Eligibility, reverted transactions and price/budget failures
 // must never turn into attempts to bypass a contract restriction.
-export async function adaptiveQuoteWithLearning(rpc,meta,resolved,route,w,quantity,block,sourceLoader,{referrer,learner}={}){
- try{return await adaptiveQuote(meta,route,w,quantity,block,(m,p)=>rpc.send(m,p),referrer);}
+export async function adaptiveQuoteWithLearning(rpc,meta,resolved,route,w,quantity,block,sourceLoader,{referrer,learner,readCache}={}){
+ const query=(m,p)=>{
+  if(!readCache)return rpc.send(m,p);
+  const key=JSON.stringify([m,p]);if(!readCache.has(key)){const pending=Promise.resolve().then(()=>rpc.send(m,p));readCache.set(key,pending);pending.catch(e=>{if(!e.executionError&&!/revert/i.test(e.message||''))readCache.delete(key);});}return readCache.get(key);
+ };
+ try{return await adaptiveQuote(meta,route,w,quantity,block,query,referrer);}
  catch(e){
   if(e.code!=='MINT_ASSET_UNKNOWN'||route.chainEvidence)throw e;
   const found=await assistMint(rpc,meta,resolved,sourceLoader,{recover:true,...(learner?{learner}:{})});
   const enriched=found.routes.find(r=>r.method===route.method&&r.chainEvidence);
   if(!enriched)throw Object.assign(e,{details:{...e.details,chainLearning:resolved.chainLearning}});
   Object.assign(route,enriched);meta.abi=found.abi;
-  return adaptiveQuote(meta,route,w,quantity,block,(m,p)=>rpc.send(m,p),referrer);
+  return adaptiveQuote(meta,route,w,quantity,block,query,referrer);
  }
 }

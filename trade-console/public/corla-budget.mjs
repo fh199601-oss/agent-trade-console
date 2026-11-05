@@ -1,7 +1,8 @@
+import {normalizeMintQuantity} from './mint-quantity.mjs';
 // Pure exact arithmetic shared by the dashboard and regression tests.
 function decimal(raw,places){const s=raw.toString().padStart(places+1,'0');return places?(s.slice(0,-places)+'.'+s.slice(-places)).replace(/\.?0+$/,''):s;}
 export function corlaBudget(project,accounts,scope,quantity){
- if(project?.platform!=='corla'||quantity!=='max'||!['paid','all'].includes(scope))return null;
+ if(project?.platform!=='corla'||normalizeMintQuantity(quantity)!=='max'||!['paid','all'].includes(scope))return null;
  const rows=accounts.map(a=>project.quotas?.find(q=>q.account===a));if(!rows.length||rows.some(q=>!q))throw Error('请选择钱包并刷新额度');
  let maximum=0n,total=0n,meta=null;const costs=[];
  for(const q of rows){

@@ -26,7 +26,7 @@ function fixture(){
    if(state.beacon&&tx.to.toLowerCase()===addr(9))return '0x'+impl.slice(2).padStart(64,'0');
    const abi=tx.to.toLowerCase()===factory?F:tx.to.toLowerCase()===state.params.launch.quoteToken.toLowerCase()?ERC20:M,parsed=abi.parseTransaction(tx),n=parsed.name;state.calls.push(n);
    if(n==='mint'||n==='mintQuote'||n==='claim'||n==='refund'){if(state.simulationError)throw state.simulationError;state.simulations++;assert.equal(tx.from,w.address);return '0x';}
-   const rows={mintImplementation:[impl],deploymentCount:[1n],deploymentIndexPlusOne:[state.index],deployment:[state.deploymentRecord||record],getDeployments:[[state.deploymentRecord||record]],mintForLaunchSalt:[state.mapped],expectedToken:[state.expectedToken??token],getCreationParams:[params],getMintState:[state.minted,state.status],getUserInfo:[state.used>0,state.claimable,state.refundable,false,false,state.white],walletMintCount:[state.used],getAgentStatus:[state.agentOnly,state.eligible],lockedLaunchVersion:[state.locked],refundMintVersion:[state.refundVersion],token:[state.status===3n?token:ZeroAddress],balanceOf:[state.balance],allowance:[state.allowance],quoteTokenFor:[params.launch.quoteToken],decimals:[6],symbol:['TEST6']};
+   const rows={mintImplementation:[impl],deploymentCount:[1n],deploymentIndexPlusOne:[state.index],deployment:[state.deploymentRecord||record],getDeployments:[[state.deploymentRecord||record]],mintForLaunchSalt:[state.mapped],expectedToken:[state.expectedToken??token],getCreationParams:[params],getMintState:[state.minted,state.status],getUserInfo:[state.used>0,state.claimable,state.refundable,state.didClaim??false,false,state.white],walletMintCount:[state.used],getAgentStatus:[state.agentOnly,state.eligible],lockedLaunchVersion:[state.locked],refundMintVersion:[state.refundVersion],token:[state.status===3n?token:ZeroAddress],balanceOf:[state.balance],allowance:[state.allowance],quoteTokenFor:[params.launch.quoteToken],decimals:[6],symbol:['TEST6']};
    assert.ok(rows[n],n);return abi.encodeFunctionResult(parsed.fragment,rows[n]);
   }};
  const client=new CorlaClient(rpc,{factories:[root]});return {rpc,client,state,root,row:{root,record}};
@@ -73,6 +73,18 @@ test('Corla chain reads overlap wallet preflight but official preview cannot byp
   try{await Promise.race([readStarted,new Promise((_,reject)=>setTimeout(()=>reject(Error('chain reads wait behind wallet preflight')),1000))]);assert.equal(previews,0);}finally{release();}
   const result=await work;assert.equal(result.status,guardFails?'BLOCKED':'PREPARED');assert.equal(previews,guardFails?0:1);assert.equal(state.simulations,0);
  }
+});
+test('claim fast path skips discovery/creation terms but still verifies registry, current credit and official simulation',async t=>{
+ const {rpc,client,state,root}=fixture(),shared=corlaClient(rpc);Object.assign(shared,{factories:[root],records:client.records,counts:client.counts});shared.remember(root,state.record);
+ state.status=3n;state.claimable=123n;state.used=1;
+ const data=fs.mkdtempSync(path.join(os.tmpdir(),'corla-fast-'));t.after(()=>fs.rmSync(data,{recursive:true,force:true}));let previews=0;
+ const owner=bindings()[0].address,bridge={ready:async()=>{},call:async(a,args)=>{assert.equal(args[1],'preview');previews++;return {requestId:'fixture-only',simulationResult:{simulationCode:'000000000',balanceChanges:[{owner,contractAddress:token,tokenType:'Erc20',change:String(state.claimable)}]}};}};
+ const engine=new Engine({rpc,bridge,data,live:false});await engine.warmCorlaClaim(mint);state.calls.length=0;
+ const input={account:bindings()[0].account,asset:mint,side:'mint',routeId:'corla:claim',quantity:1,maxBnb:'0',scope:'free',autoClaim:false};
+ const first=await engine.prepare(input,'first-claim');assert.equal(first.status,'PREPARED');assert.equal(first.plan.minOutput,'123');assert.equal(previews,1);assert.equal(state.calls.includes('getCreationParams'),false);assert.equal(state.simulations,0);
+ state.claimable=50n;const second=await engine.prepare(input,'second-preview');assert.equal(second.plan.minOutput,'50');assert.equal(previews,2);
+ const before=previews;state.index=0n;shared.records.clear();shared.counts.clear();shared.latest=async()=>[];
+ const unknown=await engine.prepare({...input,asset:addr(9)},'unregistered');assert.equal(unknown.status,'BLOCKED');assert.equal(previews,before);
 });
 test('refund is explicit, zero-value, and needs exact wallet credit plus its own settlement proof',async()=>{
  for(const quote of [ZeroAddress,USDT]){
@@ -206,4 +218,9 @@ test('claim original-transaction and receipt reads overlap; no sale proof withou
  const gate=new Promise(r=>release=r);engine.rpc={getTransaction:async()=>{txRead=true;await gate;return {from:w.address,to:mint,input:step.data,value:'0'};},getTransactionReceipt:async()=>{assert.equal(txRead,true);release();return {from:w.address,to:mint,status:1,logs:[{address:token,...TRANSFER.encodeEventLog(TRANSFER.getEvent('Transfer'),[mint,w.address,100n])}]};}};
  const entry={step,txHash:'fixture-hash'},order={plan:p,intent,status:'PENDING'};await engine.observeContract(order,entry,0);assert.equal(entry.received,'100');assert.equal(entry.status,'CONFIRMED');
  engine.rpc.getTransactionReceipt=async()=>({from:w.address,to:mint,status:1,logs:[]});const bad={step,txHash:'fixture-hash'};await engine.observeContract(order,bad,0);assert.equal(bad.status,'RECEIPT_REVIEW');
+});
+test('claim diagnostics distinguish unopened, refund phase, already claimed and no allocation without any simulation or send',async()=>{
+ for(const [patch,code,reason] of [[{status:1n},'CORLA_CLAIM_NOT_OPEN'],[{status:4n},'CORLA_REFUND_ONLY'],[{status:3n,didClaim:true},'CORLA_ALREADY_CLAIMED'],[{status:3n},'NO_QUOTA','no-allocation'],[{status:3n,used:1},'NO_QUOTA','empty']]){
+  const {client,state,row}=fixture();Object.assign(state,patch);await assert.rejects(client.claimState(row,w),e=>{assert.equal(e.code,code);if(reason)assert.equal(e.details.reason,reason);return true;});assert.equal(state.simulations,0);
+ }
 });

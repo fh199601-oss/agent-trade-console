@@ -3,6 +3,7 @@ import {BNB,read,same,formatUnits} from './common.mjs';
 import {runtimeShape} from './bytecode.mjs';
 import {chooseBatch,min,positive,noQuota} from './mint-policy.mjs';
 import {recognizeErc20Nft,erc20NftState,erc20NftPlan} from './erc20-nft.mjs';
+import {probeFreeBatch} from './free-mint-probe.mjs';
 const REGISTRY='0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F';
 const base={supports:'supportsInterface(bytes4) view returns(bool)',max:'MAX_SUPPLY() view returns(uint256)',minted:'totalMinted() view returns(uint256)',txCap:'MAX_PER_TX() view returns(uint256)'};
 const families=[
@@ -36,12 +37,12 @@ export async function nftMintState(rpc,intent,meta,w,profile=recognizeNftMint(me
   const [fee,price,txCap]=await Promise.all([one('fee'),one('price'),one('txCap')]);
   if(!txCap||price<=0n)throw Error('NFT 批次上限或付款报价无效');
   s.txCap=txCap;s.unboundedPaid=true;s.info.paidIsGlobalInventory=true;
-  s.notes.push('未核验到每钱包上限；剩余库存不是个人额度，请填写明确份数。');
+  s.notes.push(fee===0n&&intent.scope==='free'?'免费个人额度未知，自动从最多 10 份向下零付款模拟；库存不作为个人额度。':'未核验到每钱包上限；剩余库存不是个人额度，请填写明确份数。');
   if(fee>0n)s.notes.push('网站称为免费入口，但每份仍收 '+formatUnits(fee,18)+' BNB 手续费（Gas 另计）；只打免费不会付款。');
   s.info.websiteFreeFeeBnb=formatUnits(fee,18);s.info.paidPriceBnb=formatUnits(price,18);
   if(intent.scope==='free'){
    if(fee>0n)s.blocked='该网站的“免费铸造”每份需要 '+formatUnits(fee,18)+' BNB 手续费，不属于零费用额度；请明确选择全部并填写份数和预算，或选择付费入口。';
-   else if(intent.quantity==='max')s.blocked='此免费入口没有已核验的个人上限，请指定铸造份数';
+   else s.unknownFreeQuota=true;
    s.free=fee===0n?stock:0n;s.paid=fee>0n?stock:0n;cost=fee;method=m.free;
   }else {s.paid=stock;const useFee=intent.scope==='all'&&fee<price;cost=useFee?fee:price;method=useFee?m.free:m.mint;if(useFee)s.notes.push('本次全部范围使用收费较低的 mintFree 入口，实际仍按手续费占用预算。');}
  }else{
@@ -59,7 +60,7 @@ export async function nftMintState(rpc,intent,meta,w,profile=recognizeNftMint(me
    s.notes.push('首份免费及后续阶梯价格按本钱包已铸造数量计算；跨档使用合约总报价。');
   }
  }
- s.info={...s.info,freeRemaining:String(s.free),paidRemaining:String(s.paid),blocked:s.blocked,notes:s.notes};
+ s.info={...s.info,freeRemaining:s.unknownFreeQuota?null:String(s.free),paidRemaining:String(s.paid),blocked:s.blocked,notes:s.notes};
  s.quote=async n=>{const value=typeof cost==='function'?await cost(n):cost*n;return {cost:value,out:n,step:{kind:'mint',to:meta.address,value:String(value),data:abi.encodeFunctionData(method,[n])}};};return s;
 }
 export async function nftMintPlan(rpc,intent,meta,budget,w,resolved,profile=recognizeNftMint(meta)){
@@ -67,7 +68,12 @@ export async function nftMintPlan(rpc,intent,meta,budget,w,resolved,profile=reco
  if(!profile)return null;
  if(resolved?.referralHints?.detected&&intent.referral!=='none'&&[2,3].includes(intent.account))throw Error('网站提到邀请，但此 NFT 入口尚未核验邀请绑定方式');
  if(intent.routeId)throw Error('此 NFT 类型按免费 / 付费 / 全部选择，请清除旧入口选择');
- const s=await nftMintState(rpc,intent,meta,w,profile),q=await chooseBatch(s,intent,budget),tx={to:meta.address,from:w.address,data:q.step.data,value:q.cost};await rpc.call(tx,s.block);
+ const s=await nftMintState(rpc,intent,meta,w,profile);let q,probe=null;
+ if(intent.quantity==='max'&&intent.scope==='free'&&s.unknownFreeQuota&&!s.blocked){
+  const found=await probeFreeBatch({cap:Number(min(10n,s.free,s.txCap)),quote:async n=>{const value=await s.quote(BigInt(n));await rpc.call({to:meta.address,from:w.address,data:value.step.data,value:0n},s.block);return {...value,quantity:n,simulated:true};}});
+  q={...found.quote,n:BigInt(found.quote.quantity),lane:'free',remaining:s.free,continue:true};probe=found.probe;
+ }else q=await chooseBatch(s,intent,budget);
+ const tx={to:meta.address,from:w.address,data:q.step.data,value:q.cost};if(!probe)await rpc.call(tx,s.block);
  if(!meta.verified&&q.cost>0n){let rejected=false;try{await rpc.call({...tx,value:q.cost-1n},s.block);}catch(e){if(e.executionError||/revert/i.test(e.message))rejected=true;else throw e;}if(!rejected)throw Error('少付 1 wei 仍可执行，无法证明所需费用');}
- return {kind:'contract',route:profile.kind+':'+new Interface(profile.abi).parseTransaction({data:tx.data}).name,token:meta.address,wallet:w.address,inputToken:BNB,outputToken:meta.address,amountIn:String(q.cost),minOutput:String(q.n),quantity:Number(q.n),identity:meta.identity,expectedAsset:{token:meta.address,kind:'Erc721',amount:String(q.n)},metaVerified:meta.verified,requireNftCredit:true,review:['本次到账为 NFT，不能用 ERC20 快捷卖出；接口适配不等于项目安全审计',...(!meta.verified?['源码未匹配，必须以官方预览的 NFT 足额到账为准']:[]),...s.notes],quota:s.info,fill:{continue:q.continue,lane:q.lane,remainingBefore:String(q.remaining)},quote:{cost:String(q.cost),quantity:Number(q.n),block:s.block,currency:'BNB'},budgetCurrency:'BNB',steps:[q.step]};
+ return {kind:'contract',route:profile.kind+':'+new Interface(profile.abi).parseTransaction({data:tx.data}).name,token:meta.address,wallet:w.address,inputToken:BNB,outputToken:meta.address,amountIn:String(q.cost),minOutput:String(q.n),quantity:Number(q.n),identity:meta.identity,expectedAsset:{token:meta.address,kind:'Erc721',amount:String(q.n)},metaVerified:meta.verified,requireNftCredit:true,review:['本次到账为 NFT，不能用 ERC20 快捷卖出；接口适配不等于项目安全审计',...(!meta.verified?['源码未匹配，必须以官方预览的 NFT 足额到账为准']:[]),...s.notes],quota:{...s.info,...(probe?{freeProbe:probe}:{})},fill:{continue:q.continue,lane:q.lane,remainingBefore:probe?null:String(q.remaining),...(probe?{probe:true}:{})},quote:{cost:String(q.cost),quantity:Number(q.n),block:s.block,currency:'BNB'},budgetCurrency:'BNB',steps:[q.step]};
 }

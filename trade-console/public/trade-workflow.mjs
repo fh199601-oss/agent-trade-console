@@ -36,6 +36,6 @@ export async function executeIndependent(rows,submit,{ack=false,onResult=()=>{}}
 }
 
 export function tradeResultMessage(rows){
- const labels={CONFIRMED:'已确认成交',PENDING:'已提交，等待确认',SUBMISSION_UNKNOWN:'提交状态待核对',SUBMITTING:'正在提交',SKIPPED:'无持仓，已跳过',PREPARED:'待确认',READY_TO_CONTINUE:'待继续确认',SIMULATED:'模拟完成，未提交',BLOCKED:'检查未通过',FAILED:'交易失败，可重新点击',REJECTED:'币安未接受，可重新发起'};
+ const labels={CONFIRMED:'已确认成交',CONFIRMED_REVIEW:'已上链，金额待核验',PENDING:'已提交，等待确认',SUBMISSION_UNKNOWN:'提交状态待核对',SUBMITTING:'正在提交',SKIPPED:'无持仓，已跳过',PREPARED:'待确认',READY_TO_CONTINUE:'待继续确认',SIMULATED:'模拟完成，未提交',BLOCKED:'检查未通过',FAILED:'交易失败，可重新点击',REJECTED:'币安未接受，可重新发起'};
  return rows.map(o=>`${o.intent.account} 号：${labels[o.status]||'需核对'}${o.error?.message&&o.status!=='SKIPPED'?'（'+o.error.message+'）':''}`).join('；');
 }

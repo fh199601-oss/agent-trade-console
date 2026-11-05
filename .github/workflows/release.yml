@@ -117,8 +117,8 @@ jobs:
           import os,subprocess
           from pathlib import Path
           notes=Path('release-notes.md')
-          notes.write_text('Windows / Mac 钱包环境隔离修复：阻止主机 CLI 与容器登录目录混用，保留原解释器和原容器选择；入口变化时停止调用。升级说明见 README 和 WALLET_SAFETY.md。\n\n四个平台均已通过源码和便携包安装测试，仅使用合成钱包、零真实交易。每个发行文件已核验清单和哈希。\n',encoding='utf-8')
-          subprocess.run(['gh','release','create',os.environ['RELEASE_TAG'],'--repo',os.environ['GH_REPO'],'--target',os.environ['SOURCE_SHA'],'--draft','--title',os.environ['RELEASE_TAG']+' · 钱包环境保护','--notes-file',str(notes),*[str(p) for p in sorted(Path('packages').iterdir())]],check=True)
+          notes.write_text('新增任务中心分组、暂停/删除/恢复、修改卖出比例与认购后补建任务；改善领取/卖出失败恢复、免费额度模拟探测，并支持自定义查询 RPC。保留原钱包环境与登录保护。说明见 CHANGELOG.md、TASKS.md、WALLET_SAFETY.md。\n\n四个平台均已通过源码和便携包安装测试，仅使用合成钱包、零真实交易。每个发行文件已核验清单和哈希。\n',encoding='utf-8')
+          subprocess.run(['gh','release','create',os.environ['RELEASE_TAG'],'--repo',os.environ['GH_REPO'],'--target',os.environ['SOURCE_SHA'],'--draft','--title',os.environ['RELEASE_TAG']+' · 任务管理与交易恢复','--notes-file',str(notes),*[str(p) for p in sorted(Path('packages').iterdir())]],check=True)
       - uses: actions/upload-artifact@v4
         with:
           name: release-audit

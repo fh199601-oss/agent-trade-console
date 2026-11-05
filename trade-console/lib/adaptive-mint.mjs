@@ -209,7 +209,7 @@ async function quoteImpl(meta,route,wallet,quantity,block,rpc,referrer){
  if(route.runtime&&!asset)throw Object.assign(Error('已找到候选 Mint，但无法核实到账资产及每份数量，暂不提供下单'),{code:'MINT_ASSET_UNKNOWN'});
  const knownMax=smallest([txLimit,walletRemaining,publicRemaining,callable,route.maxQuantity?BigInt(route.maxQuantity):null]);
  // Unknown wallet/transaction limits are not an invitation to probe 500 paid mints.
- const cap=smallest([knownMax,MAX,route.runtime&&txLimit===null&&walletRemaining===null&&callable===null?1n:null]);
+ const cap=smallest([knownMax,MAX,route.freeProbe?10n:route.runtime&&txLimit===null&&walletRemaining===null&&callable===null?1n:null]);
  const stockReason=publicQuotaScope==='free'?'全局免费名额已用完；付费入口需按预算单独检查':publicQuotaScope==='paid'?'付费库存已售罄':'项目总库存已售罄';
  if(cap<q){available=false;reason=walletRemaining===0n?(route.lane==='free'?'本钱包免费额度已用完':'本钱包额度已用完'):publicRemaining===0n?stockReason:'数量超过当前剩余额度或单笔上限';}
  if(walletRemaining===0n||publicRemaining===0n)throw Object.assign(Error(reason||'当前可核验铸造额度为 0'),{code:'NO_QUOTA',details:{quotaScope:walletRemaining===0n?'wallet':publicQuotaScope,lane:route.lane||null,walletRemaining:number(walletRemaining),publicRemaining:number(publicRemaining)}});
@@ -244,11 +244,12 @@ async function quoteImpl(meta,route,wallet,quantity,block,rpc,referrer){
   return {cost:BigInt(unit.value)*(n-free),free,method:unit.method+' + 免费额度模拟'};
  };
  let total,unit;try{[total,unit]=await Promise.all([price(q),price(1n)]);}catch(e){throw Object.assign(Error(e.code==='NO_QUOTA'?e.message:'价格识别未完成：'+e.message),{code:e.code,data:e.data});}
+ if(route.freeProbe&&total.cost!==0n)throw Object.assign(Error('此数量需要付款，继续检查更少的免费份数'),{code:'FREE_PROBE_REJECTED'});
  let simulated=false,gas=null;
  if(available){try{await simulate(q,total.cost);simulated=true;
   if(total.cost>0n){let rejected=false;try{await simulate(q,total.cost,total.cost-1n);}catch(e){if(e.executionError||/revert/i.test(e.message))rejected=true;else throw e;}if(!rejected)throw Error('少付 1 wei 仍可执行，报价与付款需求尚未一致，暂不提供该金额下单');}
   gas=String(BigInt(await rpc('eth_estimateGas',[call(q,total.cost)])));
- }catch(e){const cause=mintError(e,meta.verified?meta.abi:null);if(['NO_QUOTA','MINT_ENDED','MINT_INELIGIBLE','MINT_NOT_OPEN','MINT_PAUSED'].includes(cause.code))throw cause;available=false;reason='当前调用不可执行：'+cause.message;
+ }catch(e){if(route.freeProbe&&!e.executionError&&!/revert/i.test(e.message||''))throw e;const cause=mintError(e,meta.verified?meta.abi:null);if(['NO_QUOTA','MINT_ENDED','MINT_INELIGIBLE','MINT_NOT_OPEN','MINT_PAUSED'].includes(cause.code))throw cause;available=false;reason='当前调用不可执行：'+cause.message;
   if(route.runtime&&/insufficient funds/i.test(cause.message))throw Object.assign(Error('候选 BNB 报价未通过模拟，付款币或报价参数仍待核验；不能据此判断项目需要这笔 BNB：'+cause.message),{code:'MINT_ADAPTER_INCOMPLETE'});
   if(route.runtime&&(!simulated||/少付 1 wei/.test(e.message)))throw Object.assign(Error(reason),{code:/少付 1 wei/.test(e.message)?'MINT_ADAPTER_INCOMPLETE':cause.code});}}
  let free=total.free??(total.cost===0n?q:null);

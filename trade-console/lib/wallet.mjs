@@ -77,7 +77,7 @@ export class Wallets{
    if(e.code==='WALLET_READINESS_INVALID'){this.readyCache.delete(account);throw e;}
    // A failed optional background read is not a revoked session. Foreground
    // ready() still enforces the original expiry and complete address/settings.
-   throw e;
+   return null;
   }})();this.warmInflight.set(account,task);
   try{return await task;}finally{if(this.warmInflight.get(account)===task)this.warmInflight.delete(account);}
  }

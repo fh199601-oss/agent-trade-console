@@ -1,0 +1,1236 @@
+{
+  "address": "0x6E0C18185f584781592FA972FF2B7566C5532E12",
+  "abi": [
+    {
+      "type": "constructor",
+      "inputs": [
+        {
+          "name": "token_",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "registry_",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "usdt_",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "treasury_",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "tokensPerShare_",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "totalCards_",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "freeCardCap_",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "baseQuota_",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "maxPerTx_",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "gateOn_",
+          "type": "bool",
+          "internalType": "bool"
+        },
+        {
+          "name": "initialOwner_",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "name": "ConfigIsFrozen",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "CostAboveMax",
+      "type": "error",
+      "inputs": [
+        {
+          "name": "cost",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "maxCost",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ]
+    },
+    {
+      "name": "ExceedsTxLimit",
+      "type": "error",
+      "inputs": [
+        {
+          "name": "requested",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "limit",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ]
+    },
+    {
+      "name": "InvalidConfig",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "NativeCoinRejected",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "NoAgentId",
+      "type": "error",
+      "inputs": [
+        {
+          "name": "buyer",
+          "type": "address",
+          "internalType": "address"
+        }
+      ]
+    },
+    {
+      "name": "NothingToSweep",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "NothingToWithdraw",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "OwnableInvalidOwner",
+      "type": "error",
+      "inputs": [
+        {
+          "name": "owner",
+          "type": "address",
+          "internalType": "address"
+        }
+      ]
+    },
+    {
+      "name": "OwnableUnauthorizedAccount",
+      "type": "error",
+      "inputs": [
+        {
+          "name": "account",
+          "type": "address",
+          "internalType": "address"
+        }
+      ]
+    },
+    {
+      "name": "QuotaExceeded",
+      "type": "error",
+      "inputs": [
+        {
+          "name": "requested",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "remaining",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ]
+    },
+    {
+      "name": "ReentrancyGuardReentrantCall",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "ReserveAlreadyMinted",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "SafeERC20FailedOperation",
+      "type": "error",
+      "inputs": [
+        {
+          "name": "token",
+          "type": "address",
+          "internalType": "address"
+        }
+      ]
+    },
+    {
+      "name": "SaleIsPaused",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "ZeroShares",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "ConfigFrozen",
+      "type": "event",
+      "inputs": [],
+      "anonymous": false
+    },
+    {
+      "name": "GateUpdated",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "gateOn",
+          "type": "bool",
+          "indexed": false,
+          "internalType": "bool"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "name": "InviterRecorded",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "buyer",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "inviter",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "name": "Mint",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "buyer",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "qty",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "costUsdt",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "freeSharesUsed",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "name": "OwnershipTransferred",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "previousOwner",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "newOwner",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "name": "PauseUpdated",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "paused",
+          "type": "bool",
+          "indexed": false,
+          "internalType": "bool"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "name": "ReferralCredited",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "inviter",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "invitee",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "name": "ReserveMinted",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "amount",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "name": "ReserveSwept",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "treasury",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "amount",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "name": "SharesPurchased",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "buyer",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "quotaKey",
+          "type": "bytes32",
+          "indexed": true,
+          "internalType": "bytes32"
+        },
+        {
+          "name": "shares",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "paidUsdt",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "freeShares",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "tokensMinted",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "name": "TaskQuotaGranted",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "user",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "amount",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "name": "TreasuryUpdated",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "treasury",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "name": "Withdrawn",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "treasury",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "amount",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "name": "BLOCK_SIZE",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "POOL_RESERVE",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "basePrice",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "baseQuota",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "bonusQuota",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "who",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "cardsRemaining",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "cardsSold",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "collected",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "currentBlock",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "currentPrice",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "effectiveQuota",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "who",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "freeCardCap",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "freeCardsRemaining",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "freeClaimed",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "bool",
+          "internalType": "bool"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "freeGiven",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "freeze",
+      "type": "function",
+      "inputs": [],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "name": "frozen",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "bool",
+          "internalType": "bool"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "gateOn",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "bool",
+          "internalType": "bool"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "grantTaskQuota",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "user",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "amount",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "name": "inviteCount",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "who",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "invitedBy",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "maxPerTx",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "mint",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "shares",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "maxCost",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "referrer",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "charged",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "tokensOut",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "name": "mintReserve",
+      "type": "function",
+      "inputs": [],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "name": "mintedBy",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "who",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "owner",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "paidSold",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "paidTotal",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "paused",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "bool",
+          "internalType": "bool"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "priceAtBlock",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "blockIndex",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "pure"
+    },
+    {
+      "name": "priceStep",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "quotaKeyOf",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "who",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "quotaLeft",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "who",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "quotaUsed",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "quote",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "who",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "shares",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "quoteForCaller",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "shares",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "referralCredited",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "bool",
+          "internalType": "bool"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "registry",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "contract IAgentIdRegistry"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "renounceOwnership",
+      "type": "function",
+      "inputs": [],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "name": "reserveMinted",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "bool",
+          "internalType": "bool"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "setGate",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "on",
+          "type": "bool",
+          "internalType": "bool"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "name": "setPaused",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "shouldPause",
+          "type": "bool",
+          "internalType": "bool"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "name": "setTreasury",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "newTreasury",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "name": "sweepReserve",
+      "type": "function",
+      "inputs": [],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "name": "taskQuota",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "who",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "token",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "contract IMintableToken"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "tokensPerShare",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "totalCards",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "transferOwnership",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "newOwner",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "name": "treasury",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "usdt",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "contract IERC20"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "name": "withdraw",
+      "type": "function",
+      "inputs": [],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "receive",
+      "stateMutability": "payable"
+    }
+  ],
+  "verified": true,
+  "runtimeCode": "0x6080604052600436106102f6575f3560e01c80638da5cb5b11610189578063cde58a14116100d8578063f0f4426011610092578063f57f4c2a1161006d578063f57f4c2a1461095a578063f600075114610979578063f968adbe14610998578063fc0c546a146109cb575f5ffd5b8063f0f44260146108e8578063f1f8d7da14610907578063f2fde38b1461093b575f5ffd5b8063cde58a1414610811578063d5092b5614610826578063daa5331e14610859578063e12ed13c1461086d578063e7d3fe6b14610881578063e994c15d146108b5575f5ffd5b80639d4559a811610143578063a8cdf6ea1161011e578063a8cdf6ea14610795578063b87dcd5a146107b4578063bab2c8e3146107c8578063c7876ea4146107f6575f5ffd5b80639d4559a814610710578063a2504c781461072f578063a4183dbe14610762575f5ffd5b80638da5cb5b1461064c5780638f79306e14610668578063920e30be14610687578063933f17d7146106b2578063959057a6146106dd5780639d1b464a146106fc575f5ffd5b806357b24e6b11610245578063715018a6116101ff57806383702b86116101da57806383702b86146105e957806384bcefd41461060857806388d519c41461061d578063890ac36614610638575f5ffd5b8063715018a6146105835780637938bd56146105975780637b103999146105b6575f5ffd5b806357b24e6b146104ce5780635c975abb146104ed57806361c0b6a01461050d57806361d027b31461053b57806362a5af3b1461055a57806364d710de1461056e575f5ffd5b806336140ef1116102b05780633cef28d21161028b5780633cef28d214610457578063446fb7d7146104765780634c81433f1461049657806350d52085146104af575f5ffd5b806336140ef11461041a5780633aedb2f11461042e5780633ccfd60b14610443575f5ffd5b8063054f7d9c1461031857806310b985d41461034d57806316c38b3c1461037057806326ae8f521461039157806329865fa8146103b05780632f48ab7d146103cf575f5ffd5b3661031457604051637646e89d60e01b815260040160405180910390fd5b5f5ffd5b348015610323575f5ffd5b5060025461033890600160b01b900460ff1681565b60405190151581526020015b60405180910390f35b348015610358575f5ffd5b5061036260045481565b604051908152602001610344565b34801561037b575f5ffd5b5061038f61038a366004611cef565b6109fe565b005b34801561039c575f5ffd5b506103626103ab366004611d15565b610a5e565b3480156103bb575f5ffd5b506103626103ca366004611d47565b610a89565b3480156103da575f5ffd5b506104027f00000000000000000000000055d398326f99059ff775485246999027b319795581565b6040516001600160a01b039091168152602001610344565b348015610425575f5ffd5b5061038f610b43565b348015610439575f5ffd5b5061036260055481565b34801561044e575f5ffd5b5061038f610c58565b348015610462575f5ffd5b50610362610471366004611d47565b610d89565b348015610481575f5ffd5b5060025461033890600160a01b900460ff1681565b3480156104a1575f5ffd5b506007546103389060ff1681565b3480156104ba575f5ffd5b506103626104c9366004611d47565b610dab565b3480156104d9575f5ffd5b506103626104e8366004611d47565b610df4565b3480156104f8575f5ffd5b5060025461033890600160a81b900460ff1681565b348015610518575f5ffd5b50610338610527366004611d47565b60096020525f908152604090205460ff1681565b348015610546575f5ffd5b50600254610402906001600160a01b031681565b348015610565575f5ffd5b5061038f610e01565b348015610579575f5ffd5b506103626101f481565b34801561058e575f5ffd5b5061038f610e46565b3480156105a2575f5ffd5b506103626105b1366004611d47565b610e6b565b3480156105c1575f5ffd5b506104027f00000000000000000000000060b9262456de011f7d15a54cdd8c48baaa8b022f81565b3480156105f4575f5ffd5b50610362610603366004611d47565b610e78565b348015610613575f5ffd5b5061036260065481565b348015610628575f5ffd5b5061036267016345785d8a000081565b348015610643575f5ffd5b5061038f610e8a565b348015610657575f5ffd5b505f546001600160a01b0316610402565b348015610673575f5ffd5b50610362610682366004611d60565b610f90565b348015610692575f5ffd5b506103626106a1366004611d15565b60086020525f908152604090205481565b3480156106bd575f5ffd5b506103626106cc366004611d47565b600a6020525f908152604090205481565b3480156106e8575f5ffd5b506103626106f7366004611d15565b611014565b348015610707575f5ffd5b5061036261101f565b34801561071b575f5ffd5b5061038f61072a366004611cef565b611030565b34801561073a575f5ffd5b506103627f00000000000000000000000000000000000000000000000000000000000001f481565b34801561076d575f5ffd5b506103627f000000000000000000000000000000000000000000000000000000000000000a81565b3480156107a0575f5ffd5b5061038f6107af366004611d60565b61108d565b3480156107bf575f5ffd5b506103626110fd565b3480156107d3575f5ffd5b506103386107e2366004611d47565b600d6020525f908152604090205460ff1681565b348015610801575f5ffd5b506103626710a741a46278000081565b34801561081c575f5ffd5b5061036260035481565b348015610831575f5ffd5b506103627f000000000000000000000000000000000000000000295be96e6406697200000081565b348015610864575f5ffd5b5061036261112c565b348015610878575f5ffd5b5061036261115b565b34801561088c575f5ffd5b506108a061089b366004611d88565b61116c565b60408051928352602083019190915201610344565b3480156108c0575f5ffd5b506103627f0000000000000000000000000000000000000000000000000000000000000bb881565b3480156108f3575f5ffd5b5061038f610902366004611d47565b6115eb565b348015610912575f5ffd5b50610402610921366004611d47565b600b6020525f90815260409020546001600160a01b031681565b348015610946575f5ffd5b5061038f610955366004611d47565b61166b565b348015610965575f5ffd5b506103626be22ea493b30310a77000000081565b348015610984575f5ffd5b50610362610993366004611d47565b6116a8565b3480156109a3575f5ffd5b506103627f000000000000000000000000000000000000000000000000000000000000000a81565b3480156109d6575f5ffd5b506104027f000000000000000000000000c09eea8ecc744e0adf299c849ccc9fb897a545d881565b610a066116b5565b60028054821515600160a81b0260ff60a81b199091161790556040517f77860e247ab9186dbe64e5bd0e0b93273cc4273e01818420e788f500078886f590610a5390831515815260200190565b60405180910390a150565b5f610a7167016345785d8a000083611dce565b610a83906710a741a462780000611de5565b92915050565b6002545f90600160a01b900460ff16610aab576001600160a01b038216610a83565b604051633142854560e21b81526001600160a01b0383811660048301527f00000000000000000000000060b9262456de011f7d15a54cdd8c48baaa8b022f169063c50a1514906024015f60405180830381865afa158015610b0e573d5f5f3e3d5ffd5b505050506040513d5f823e601f3d908101601f19168201604052610b359190810190611e0c565b805190602001209050919050565b610b4b6116b5565b6040516370a0823160e01b81523060048201527f000000000000000000000000c09eea8ecc744e0adf299c849ccc9fb897a545d8905f906001600160a01b038316906370a0823190602401602060405180830381865afa158015610bb1573d5f5f3e3d5ffd5b505050506040513d601f19601f82011682018060405250810190610bd59190611ed4565b9050805f03610bf757604051630d44987f60e21b815260040160405180910390fd5b600254610c11906001600160a01b038481169116836116e1565b6002546040518281526001600160a01b03909116907f192547d914104d6fbc7351b7ef43806635a94fea84e9fada1a98b3b782e0753e906020015b60405180910390a25050565b610c606116b5565b6040516370a0823160e01b81523060048201525f907f00000000000000000000000055d398326f99059ff775485246999027b31979556001600160a01b0316906370a0823190602401602060405180830381865afa158015610cc4573d5f5f3e3d5ffd5b505050506040513d601f19601f82011682018060405250810190610ce89190611ed4565b9050805f03610d0a57604051630686827b60e51b815260040160405180910390fd5b600254610d44906001600160a01b037f00000000000000000000000055d398326f99059ff775485246999027b319795581169116836116e1565b6002546040518281526001600160a01b03909116907f7084f5476618d8e60b11ef0d7d3f06914655adb8793e28ff7f018d4c76d505d59060200160405180910390a250565b5f60085f610d9684610a89565b81526020019081526020015f20549050919050565b5f5f610db683610a89565b5f81815260086020526040812054919250610dd083611745565b905080821015610de957610de48282611eeb565b610deb565b5f5b95945050505050565b5f60105f610d9684610a89565b610e096116b5565b6002805460ff60b01b1916600160b01b1790556040517ffe8292577024c8a70fcfbe74211dedb793d98ac31e1aefeb3a57b726b28bec3f905f90a1565b610e4e6116b5565b6002805460ff60b01b1916600160b01b179055610e69611792565b565b5f600e5f610d9684610a89565b5f610a83610e8583610a89565b611745565b610e926116b5565b60075460ff1615610eb65760405163183da95560e11b815260040160405180910390fd5b6007805460ff191660011790556040516340c10f1960e01b81523060048201526be22ea493b30310a77000000060248201526001600160a01b037f000000000000000000000000c09eea8ecc744e0adf299c849ccc9fb897a545d816906340c10f19906044015f604051808303815f87803b158015610f33575f5ffd5b505af1158015610f45573d5f5f3e3d5ffd5b505050507f0db419226d14d76a4ee5aa1eec2f1acc51196dfac61c97e21b9a5eec3b78cbf56be22ea493b30310a770000000604051610f8691815260200190565b60405180910390a1565b5f815f03610f9f57505f610a83565b6001600160a01b0383165f9081526009602052604081205460ff16158015610fe857507f00000000000000000000000000000000000000000000000000000000000001f4600554105b610ff2575f610ff5565b60015b60ff16905061100c6110078285611eeb565b6117a3565b949350505050565b5f610a833383610f90565b5f61102b6103ab61115b565b905090565b6110386116b5565b611040611833565b60028054821515600160a01b0260ff60a01b199091161790556040517f01d3c45a9118a93bc08b9570012cf32b19f8f3dcd27e71b7428cbbd4caade89a90610a5390831515815260200190565b6110956116b5565b80600f5f6110a285610a89565b81526020019081526020015f205f8282546110bd9190611de5565b90915550506040518181526001600160a01b038316907f6b705cdf71065593a29182ea7109219ff7e0b7696d82dbb32ed733c6d4230e9a90602001610c4c565b5f6003547f0000000000000000000000000000000000000000000000000000000000000bb861102b9190611eeb565b5f6005547f00000000000000000000000000000000000000000000000000000000000001f461102b9190611eeb565b5f6101f460045461102b9190611f12565b5f5f61117661185e565b600254600160a81b900460ff16156111a157604051631c7324b560e21b815260040160405180910390fd5b845f036111c157604051639811e0c760e01b815260040160405180910390fd5b7f000000000000000000000000000000000000000000000000000000000000000a85111561123057604051632add2a7360e11b8152600481018690527f000000000000000000000000000000000000000000000000000000000000000a60248201526044015b60405180910390fd5b5f61123a33611888565b905061124584611974565b335f9081526009602052604081205460ff1615801561128557507f00000000000000000000000000000000000000000000000000000000000001f4600554105b61128f575f611292565b60015b60ff1690505f6112a183611745565b5f84815260086020526040902054909150816112bd8a83611de5565b11156112f057886112ce8284611eeb565b60405163595d9aa560e11b815260048101929092526024820152604401611227565b7f0000000000000000000000000000000000000000000000000000000000000bb88960035461131f9190611de5565b111561135457886003547f0000000000000000000000000000000000000000000000000000000000000bb86112ce9190611eeb565b5f61135f848b611eeb565b905061136a816117a3565b9650888711156113975760405163919208d760e01b815260048101889052602481018a9052604401611227565b6113a087611af1565b8960035f8282546113b19190611de5565b925050819055508060045f8282546113c99190611de5565b90915550505f85815260086020526040812080548c92906113eb908490611de5565b9091555050600184900361142a57600160055f82825461140b9190611de5565b9091555050335f908152600960205260409020805460ff191660011790555b8660065f82825461143b9190611de5565b9091555050335f908152600a60205260408120805489929061145e908490611de5565b9091555061148e90507f000000000000000000000000000000000000000000295be96e640669720000008b611dce565b955086156114cb576114cb6001600160a01b037f00000000000000000000000055d398326f99059ff775485246999027b31979551633308a611bf5565b6040516340c10f1960e01b8152336004820152602481018790527f000000000000000000000000c09eea8ecc744e0adf299c849ccc9fb897a545d86001600160a01b0316906340c10f19906044015f604051808303815f87803b158015611530575f5ffd5b505af1158015611542573d5f5f3e3d5ffd5b5050604080518d8152602081018b9052908101879052606081018990528792503391507fc8efbb95dd976d1614bb1aa4530ddee448868d83b752fe2b8a150585a1752a739060800160405180910390a3604080518b81526020810189905290810185905233907fb4c03061fb5b7fed76389d5af8f2e0ddb09f8c70d1333abbb62582835e10accb9060600160405180910390a250505050506115e360018055565b935093915050565b6115f36116b5565b6115fb611833565b6001600160a01b038116611622576040516306b7c75960e31b815260040160405180910390fd5b600280546001600160a01b0319166001600160a01b0383169081179091556040517f7dae230f18360d76a040c81f050aa14eb9d6dc7901b20fc5d855e2a20fe814d1905f90a250565b6116736116b5565b6001600160a01b03811661169c57604051631e4fbdf760e01b81525f6004820152602401611227565b6116a581611c34565b50565b5f600f5f610d9684610a89565b5f546001600160a01b03163314610e695760405163118cdaa760e01b8152336004820152602401611227565b6040516001600160a01b0383811660248301526044820183905261174091859182169063a9059cbb906064015b604051602081830303815290604052915060e01b6020820180516001600160e01b038381831617835250505050611c83565b505050565b5f818152600f6020908152604080832054600e909252822054611788907f000000000000000000000000000000000000000000000000000000000000000a611de5565b610a839190611de5565b61179a6116b5565b610e695f611c34565b6004545f9082905b811561182c575f6117be6101f483611f12565b90505f6117cd6101f484611f25565b6117d9906101f4611eeb565b90505f8185106117e957816117eb565b845b90506117f683610a5e565b6118009082611dce565b61180a9087611de5565b95506118168185611de5565b93506118228186611eeb565b94505050506117ab565b5050919050565b600254600160b01b900460ff1615610e695760405163a8742ad560e01b815260040160405180910390fd5b60026001540361188157604051633ee5aeb560e01b815260040160405180910390fd5b6002600155565b6002545f90600160a01b900460ff166118aa576001600160a01b038216610a83565b604051633142854560e21b81526001600160a01b0383811660048301525f917f00000000000000000000000060b9262456de011f7d15a54cdd8c48baaa8b022f9091169063c50a1514906024015f60405180830381865afa158015611911573d5f5f3e3d5ffd5b505050506040513d5f823e601f3d908101601f191682016040526119389190810190611e0c565b905080515f03611966576040516306189c6d60e41b81526001600160a01b0384166004820152602401611227565b805160209091012092915050565b335f908152600b60205260409020546001600160a01b0316156119945750565b6001600160a01b03811615806119b257506001600160a01b03811633145b156119ba5750565b7f00000000000000000000000060b9262456de011f7d15a54cdd8c48baaa8b022f6001600160a01b03166119eb5750565b604051633142854560e21b81526001600160a01b0382811660048301525f917f00000000000000000000000060b9262456de011f7d15a54cdd8c48baaa8b022f9091169063c50a1514906024015f60405180830381865afa158015611a52573d5f5f3e3d5ffd5b505050506040513d5f823e601f3d908101601f19168201604052611a799190810190611e0c565b905080515f03611a87575050565b335f818152600b6020908152604080832080546001600160a01b0319166001600160a01b038816908117909155855186840120600c90935281842092909255519092917f2b8c8f0a991c9d9112d31afe0e326275d6a7d873829e2b6661147e8cde130bd791a35050565b801580611b0b5750335f908152600a602052604090205415155b80611b245750335f908152600d602052604090205460ff165b15611b2c5750565b335f908152600b60205260409020546001600160a01b031680611b4d575050565b335f908152600d60209081526040808320805460ff19166001908117909155600c835281842054808552600e909352908320805492939192909190611b93908490611de5565b90915550505f818152601060205260408120805460019290611bb6908490611de5565b909155505060405133906001600160a01b038416907f31d465ab3a321935aedfabd3e1210c480d67ae01939adb2e404362d8cb29d0cc905f90a3505050565b6040516001600160a01b038481166024830152838116604483015260648201839052611c2e9186918216906323b872dd9060840161170e565b50505050565b5f80546001600160a01b038381166001600160a01b0319831681178455604051919092169283917f8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e09190a35050565b5f5f60205f8451602086015f885af180611ca2576040513d5f823e3d81fd5b50505f513d91508115611cb9578060011415611cc6565b6001600160a01b0384163b155b15611c2e57604051635274afe760e01b81526001600160a01b0385166004820152602401611227565b5f60208284031215611cff575f5ffd5b81358015158114611d0e575f5ffd5b9392505050565b5f60208284031215611d25575f5ffd5b5035919050565b80356001600160a01b0381168114611d42575f5ffd5b919050565b5f60208284031215611d57575f5ffd5b611d0e82611d2c565b5f5f60408385031215611d71575f5ffd5b611d7a83611d2c565b946020939093013593505050565b5f5f5f60608486031215611d9a575f5ffd5b8335925060208401359150611db160408501611d2c565b90509250925092565b634e487b7160e01b5f52601160045260245ffd5b8082028115828204841417610a8357610a83611dba565b80820180821115610a8357610a83611dba565b634e487b7160e01b5f52604160045260245ffd5b5f60208284031215611e1c575f5ffd5b815167ffffffffffffffff811115611e32575f5ffd5b8201601f81018413611e42575f5ffd5b805167ffffffffffffffff811115611e5c57611e5c611df8565b604051601f8201601f19908116603f0116810167ffffffffffffffff81118282101715611e8b57611e8b611df8565b604052818152828201602001861015611ea2575f5ffd5b5f5b82811015611ec057602081850181015183830182015201611ea4565b505f91810160200191909152949350505050565b5f60208284031215611ee4575f5ffd5b5051919050565b81810381811115610a8357610a83611dba565b634e487b7160e01b5f52601260045260245ffd5b5f82611f2057611f20611efe565b500490565b5f82611f3357611f33611efe565b50069056fea264697066735822122087f969a13def50f60537cf4d26af2fe585555a8082798af07901be39c18c9b7864736f6c634300081c0033",
+  "identity": {
+    "target": "0x6E0C18185f584781592FA972FF2B7566C5532E12",
+    "code": "0x6080604052600436106102f6575f3560e01c80638da5cb5b11610189578063cde58a14116100d8578063f0f4426011610092578063f57f4c2a1161006d578063f57f4c2a1461095a578063f600075114610979578063f968adbe14610998578063fc0c546a146109cb575f5ffd5b8063f0f44260146108e8578063f1f8d7da14610907578063f2fde38b1461093b575f5ffd5b8063cde58a1414610811578063d5092b5614610826578063daa5331e14610859578063e12ed13c1461086d578063e7d3fe6b14610881578063e994c15d146108b5575f5ffd5b80639d4559a811610143578063a8cdf6ea1161011e578063a8cdf6ea14610795578063b87dcd5a146107b4578063bab2c8e3146107c8578063c7876ea4146107f6575f5ffd5b80639d4559a814610710578063a2504c781461072f578063a4183dbe14610762575f5ffd5b80638da5cb5b1461064c5780638f79306e14610668578063920e30be14610687578063933f17d7146106b2578063959057a6146106dd5780639d1b464a146106fc575f5ffd5b806357b24e6b11610245578063715018a6116101ff57806383702b86116101da57806383702b86146105e957806384bcefd41461060857806388d519c41461061d578063890ac36614610638575f5ffd5b8063715018a6146105835780637938bd56146105975780637b103999146105b6575f5ffd5b806357b24e6b146104ce5780635c975abb146104ed57806361c0b6a01461050d57806361d027b31461053b57806362a5af3b1461055a57806364d710de1461056e575f5ffd5b806336140ef1116102b05780633cef28d21161028b5780633cef28d214610457578063446fb7d7146104765780634c81433f1461049657806350d52085146104af575f5ffd5b806336140ef11461041a5780633aedb2f11461042e5780633ccfd60b14610443575f5ffd5b8063054f7d9c1461031857806310b985d41461034d57806316c38b3c1461037057806326ae8f521461039157806329865fa8146103b05780632f48ab7d146103cf575f5ffd5b3661031457604051637646e89d60e01b815260040160405180910390fd5b5f5ffd5b348015610323575f5ffd5b5060025461033890600160b01b900460ff1681565b60405190151581526020015b60405180910390f35b348015610358575f5ffd5b5061036260045481565b604051908152602001610344565b34801561037b575f5ffd5b5061038f61038a366004611cef565b6109fe565b005b34801561039c575f5ffd5b506103626103ab366004611d15565b610a5e565b3480156103bb575f5ffd5b506103626103ca366004611d47565b610a89565b3480156103da575f5ffd5b506104027f00000000000000000000000055d398326f99059ff775485246999027b319795581565b6040516001600160a01b039091168152602001610344565b348015610425575f5ffd5b5061038f610b43565b348015610439575f5ffd5b5061036260055481565b34801561044e575f5ffd5b5061038f610c58565b348015610462575f5ffd5b50610362610471366004611d47565b610d89565b348015610481575f5ffd5b5060025461033890600160a01b900460ff1681565b3480156104a1575f5ffd5b506007546103389060ff1681565b3480156104ba575f5ffd5b506103626104c9366004611d47565b610dab565b3480156104d9575f5ffd5b506103626104e8366004611d47565b610df4565b3480156104f8575f5ffd5b5060025461033890600160a81b900460ff1681565b348015610518575f5ffd5b50610338610527366004611d47565b60096020525f908152604090205460ff1681565b348015610546575f5ffd5b50600254610402906001600160a01b031681565b348015610565575f5ffd5b5061038f610e01565b348015610579575f5ffd5b506103626101f481565b34801561058e575f5ffd5b5061038f610e46565b3480156105a2575f5ffd5b506103626105b1366004611d47565b610e6b565b3480156105c1575f5ffd5b506104027f00000000000000000000000060b9262456de011f7d15a54cdd8c48baaa8b022f81565b3480156105f4575f5ffd5b50610362610603366004611d47565b610e78565b348015610613575f5ffd5b5061036260065481565b348015610628575f5ffd5b5061036267016345785d8a000081565b348015610643575f5ffd5b5061038f610e8a565b348015610657575f5ffd5b505f546001600160a01b0316610402565b348015610673575f5ffd5b50610362610682366004611d60565b610f90565b348015610692575f5ffd5b506103626106a1366004611d15565b60086020525f908152604090205481565b3480156106bd575f5ffd5b506103626106cc366004611d47565b600a6020525f908152604090205481565b3480156106e8575f5ffd5b506103626106f7366004611d15565b611014565b348015610707575f5ffd5b5061036261101f565b34801561071b575f5ffd5b5061038f61072a366004611cef565b611030565b34801561073a575f5ffd5b506103627f00000000000000000000000000000000000000000000000000000000000001f481565b34801561076d575f5ffd5b506103627f000000000000000000000000000000000000000000000000000000000000000a81565b3480156107a0575f5ffd5b5061038f6107af366004611d60565b61108d565b3480156107bf575f5ffd5b506103626110fd565b3480156107d3575f5ffd5b506103386107e2366004611d47565b600d6020525f908152604090205460ff1681565b348015610801575f5ffd5b506103626710a741a46278000081565b34801561081c575f5ffd5b5061036260035481565b348015610831575f5ffd5b506103627f000000000000000000000000000000000000000000295be96e6406697200000081565b348015610864575f5ffd5b5061036261112c565b348015610878575f5ffd5b5061036261115b565b34801561088c575f5ffd5b506108a061089b366004611d88565b61116c565b60408051928352602083019190915201610344565b3480156108c0575f5ffd5b506103627f0000000000000000000000000000000000000000000000000000000000000bb881565b3480156108f3575f5ffd5b5061038f610902366004611d47565b6115eb565b348015610912575f5ffd5b50610402610921366004611d47565b600b6020525f90815260409020546001600160a01b031681565b348015610946575f5ffd5b5061038f610955366004611d47565b61166b565b348015610965575f5ffd5b506103626be22ea493b30310a77000000081565b348015610984575f5ffd5b50610362610993366004611d47565b6116a8565b3480156109a3575f5ffd5b506103627f000000000000000000000000000000000000000000000000000000000000000a81565b3480156109d6575f5ffd5b506104027f000000000000000000000000c09eea8ecc744e0adf299c849ccc9fb897a545d881565b610a066116b5565b60028054821515600160a81b0260ff60a81b199091161790556040517f77860e247ab9186dbe64e5bd0e0b93273cc4273e01818420e788f500078886f590610a5390831515815260200190565b60405180910390a150565b5f610a7167016345785d8a000083611dce565b610a83906710a741a462780000611de5565b92915050565b6002545f90600160a01b900460ff16610aab576001600160a01b038216610a83565b604051633142854560e21b81526001600160a01b0383811660048301527f00000000000000000000000060b9262456de011f7d15a54cdd8c48baaa8b022f169063c50a1514906024015f60405180830381865afa158015610b0e573d5f5f3e3d5ffd5b505050506040513d5f823e601f3d908101601f19168201604052610b359190810190611e0c565b805190602001209050919050565b610b4b6116b5565b6040516370a0823160e01b81523060048201527f000000000000000000000000c09eea8ecc744e0adf299c849ccc9fb897a545d8905f906001600160a01b038316906370a0823190602401602060405180830381865afa158015610bb1573d5f5f3e3d5ffd5b505050506040513d601f19601f82011682018060405250810190610bd59190611ed4565b9050805f03610bf757604051630d44987f60e21b815260040160405180910390fd5b600254610c11906001600160a01b038481169116836116e1565b6002546040518281526001600160a01b03909116907f192547d914104d6fbc7351b7ef43806635a94fea84e9fada1a98b3b782e0753e906020015b60405180910390a25050565b610c606116b5565b6040516370a0823160e01b81523060048201525f907f00000000000000000000000055d398326f99059ff775485246999027b31979556001600160a01b0316906370a0823190602401602060405180830381865afa158015610cc4573d5f5f3e3d5ffd5b505050506040513d601f19601f82011682018060405250810190610ce89190611ed4565b9050805f03610d0a57604051630686827b60e51b815260040160405180910390fd5b600254610d44906001600160a01b037f00000000000000000000000055d398326f99059ff775485246999027b319795581169116836116e1565b6002546040518281526001600160a01b03909116907f7084f5476618d8e60b11ef0d7d3f06914655adb8793e28ff7f018d4c76d505d59060200160405180910390a250565b5f60085f610d9684610a89565b81526020019081526020015f20549050919050565b5f5f610db683610a89565b5f81815260086020526040812054919250610dd083611745565b905080821015610de957610de48282611eeb565b610deb565b5f5b95945050505050565b5f60105f610d9684610a89565b610e096116b5565b6002805460ff60b01b1916600160b01b1790556040517ffe8292577024c8a70fcfbe74211dedb793d98ac31e1aefeb3a57b726b28bec3f905f90a1565b610e4e6116b5565b6002805460ff60b01b1916600160b01b179055610e69611792565b565b5f600e5f610d9684610a89565b5f610a83610e8583610a89565b611745565b610e926116b5565b60075460ff1615610eb65760405163183da95560e11b815260040160405180910390fd5b6007805460ff191660011790556040516340c10f1960e01b81523060048201526be22ea493b30310a77000000060248201526001600160a01b037f000000000000000000000000c09eea8ecc744e0adf299c849ccc9fb897a545d816906340c10f19906044015f604051808303815f87803b158015610f33575f5ffd5b505af1158015610f45573d5f5f3e3d5ffd5b505050507f0db419226d14d76a4ee5aa1eec2f1acc51196dfac61c97e21b9a5eec3b78cbf56be22ea493b30310a770000000604051610f8691815260200190565b60405180910390a1565b5f815f03610f9f57505f610a83565b6001600160a01b0383165f9081526009602052604081205460ff16158015610fe857507f00000000000000000000000000000000000000000000000000000000000001f4600554105b610ff2575f610ff5565b60015b60ff16905061100c6110078285611eeb565b6117a3565b949350505050565b5f610a833383610f90565b5f61102b6103ab61115b565b905090565b6110386116b5565b611040611833565b60028054821515600160a01b0260ff60a01b199091161790556040517f01d3c45a9118a93bc08b9570012cf32b19f8f3dcd27e71b7428cbbd4caade89a90610a5390831515815260200190565b6110956116b5565b80600f5f6110a285610a89565b81526020019081526020015f205f8282546110bd9190611de5565b90915550506040518181526001600160a01b038316907f6b705cdf71065593a29182ea7109219ff7e0b7696d82dbb32ed733c6d4230e9a90602001610c4c565b5f6003547f0000000000000000000000000000000000000000000000000000000000000bb861102b9190611eeb565b5f6005547f00000000000000000000000000000000000000000000000000000000000001f461102b9190611eeb565b5f6101f460045461102b9190611f12565b5f5f61117661185e565b600254600160a81b900460ff16156111a157604051631c7324b560e21b815260040160405180910390fd5b845f036111c157604051639811e0c760e01b815260040160405180910390fd5b7f000000000000000000000000000000000000000000000000000000000000000a85111561123057604051632add2a7360e11b8152600481018690527f000000000000000000000000000000000000000000000000000000000000000a60248201526044015b60405180910390fd5b5f61123a33611888565b905061124584611974565b335f9081526009602052604081205460ff1615801561128557507f00000000000000000000000000000000000000000000000000000000000001f4600554105b61128f575f611292565b60015b60ff1690505f6112a183611745565b5f84815260086020526040902054909150816112bd8a83611de5565b11156112f057886112ce8284611eeb565b60405163595d9aa560e11b815260048101929092526024820152604401611227565b7f0000000000000000000000000000000000000000000000000000000000000bb88960035461131f9190611de5565b111561135457886003547f0000000000000000000000000000000000000000000000000000000000000bb86112ce9190611eeb565b5f61135f848b611eeb565b905061136a816117a3565b9650888711156113975760405163919208d760e01b815260048101889052602481018a9052604401611227565b6113a087611af1565b8960035f8282546113b19190611de5565b925050819055508060045f8282546113c99190611de5565b90915550505f85815260086020526040812080548c92906113eb908490611de5565b9091555050600184900361142a57600160055f82825461140b9190611de5565b9091555050335f908152600960205260409020805460ff191660011790555b8660065f82825461143b9190611de5565b9091555050335f908152600a60205260408120805489929061145e908490611de5565b9091555061148e90507f000000000000000000000000000000000000000000295be96e640669720000008b611dce565b955086156114cb576114cb6001600160a01b037f00000000000000000000000055d398326f99059ff775485246999027b31979551633308a611bf5565b6040516340c10f1960e01b8152336004820152602481018790527f000000000000000000000000c09eea8ecc744e0adf299c849ccc9fb897a545d86001600160a01b0316906340c10f19906044015f604051808303815f87803b158015611530575f5ffd5b505af1158015611542573d5f5f3e3d5ffd5b5050604080518d8152602081018b9052908101879052606081018990528792503391507fc8efbb95dd976d1614bb1aa4530ddee448868d83b752fe2b8a150585a1752a739060800160405180910390a3604080518b81526020810189905290810185905233907fb4c03061fb5b7fed76389d5af8f2e0ddb09f8c70d1333abbb62582835e10accb9060600160405180910390a250505050506115e360018055565b935093915050565b6115f36116b5565b6115fb611833565b6001600160a01b038116611622576040516306b7c75960e31b815260040160405180910390fd5b600280546001600160a01b0319166001600160a01b0383169081179091556040517f7dae230f18360d76a040c81f050aa14eb9d6dc7901b20fc5d855e2a20fe814d1905f90a250565b6116736116b5565b6001600160a01b03811661169c57604051631e4fbdf760e01b81525f6004820152602401611227565b6116a581611c34565b50565b5f600f5f610d9684610a89565b5f546001600160a01b03163314610e695760405163118cdaa760e01b8152336004820152602401611227565b6040516001600160a01b0383811660248301526044820183905261174091859182169063a9059cbb906064015b604051602081830303815290604052915060e01b6020820180516001600160e01b038381831617835250505050611c83565b505050565b5f818152600f6020908152604080832054600e909252822054611788907f000000000000000000000000000000000000000000000000000000000000000a611de5565b610a839190611de5565b61179a6116b5565b610e695f611c34565b6004545f9082905b811561182c575f6117be6101f483611f12565b90505f6117cd6101f484611f25565b6117d9906101f4611eeb565b90505f8185106117e957816117eb565b845b90506117f683610a5e565b6118009082611dce565b61180a9087611de5565b95506118168185611de5565b93506118228186611eeb565b94505050506117ab565b5050919050565b600254600160b01b900460ff1615610e695760405163a8742ad560e01b815260040160405180910390fd5b60026001540361188157604051633ee5aeb560e01b815260040160405180910390fd5b6002600155565b6002545f90600160a01b900460ff166118aa576001600160a01b038216610a83565b604051633142854560e21b81526001600160a01b0383811660048301525f917f00000000000000000000000060b9262456de011f7d15a54cdd8c48baaa8b022f9091169063c50a1514906024015f60405180830381865afa158015611911573d5f5f3e3d5ffd5b505050506040513d5f823e601f3d908101601f191682016040526119389190810190611e0c565b905080515f03611966576040516306189c6d60e41b81526001600160a01b0384166004820152602401611227565b805160209091012092915050565b335f908152600b60205260409020546001600160a01b0316156119945750565b6001600160a01b03811615806119b257506001600160a01b03811633145b156119ba5750565b7f00000000000000000000000060b9262456de011f7d15a54cdd8c48baaa8b022f6001600160a01b03166119eb5750565b604051633142854560e21b81526001600160a01b0382811660048301525f917f00000000000000000000000060b9262456de011f7d15a54cdd8c48baaa8b022f9091169063c50a1514906024015f60405180830381865afa158015611a52573d5f5f3e3d5ffd5b505050506040513d5f823e601f3d908101601f19168201604052611a799190810190611e0c565b905080515f03611a87575050565b335f818152600b6020908152604080832080546001600160a01b0319166001600160a01b038816908117909155855186840120600c90935281842092909255519092917f2b8c8f0a991c9d9112d31afe0e326275d6a7d873829e2b6661147e8cde130bd791a35050565b801580611b0b5750335f908152600a602052604090205415155b80611b245750335f908152600d602052604090205460ff165b15611b2c5750565b335f908152600b60205260409020546001600160a01b031680611b4d575050565b335f908152600d60209081526040808320805460ff19166001908117909155600c835281842054808552600e909352908320805492939192909190611b93908490611de5565b90915550505f818152601060205260408120805460019290611bb6908490611de5565b909155505060405133906001600160a01b038416907f31d465ab3a321935aedfabd3e1210c480d67ae01939adb2e404362d8cb29d0cc905f90a3505050565b6040516001600160a01b038481166024830152838116604483015260648201839052611c2e9186918216906323b872dd9060840161170e565b50505050565b5f80546001600160a01b038381166001600160a01b0319831681178455604051919092169283917f8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e09190a35050565b5f5f60205f8451602086015f885af180611ca2576040513d5f823e3d81fd5b50505f513d91508115611cb9578060011415611cc6565b6001600160a01b0384163b155b15611c2e57604051635274afe760e01b81526001600160a01b0385166004820152602401611227565b5f60208284031215611cff575f5ffd5b81358015158114611d0e575f5ffd5b9392505050565b5f60208284031215611d25575f5ffd5b5035919050565b80356001600160a01b0381168114611d42575f5ffd5b919050565b5f60208284031215611d57575f5ffd5b611d0e82611d2c565b5f5f60408385031215611d71575f5ffd5b611d7a83611d2c565b946020939093013593505050565b5f5f5f60608486031215611d9a575f5ffd5b8335925060208401359150611db160408501611d2c565b90509250925092565b634e487b7160e01b5f52601160045260245ffd5b8082028115828204841417610a8357610a83611dba565b80820180821115610a8357610a83611dba565b634e487b7160e01b5f52604160045260245ffd5b5f60208284031215611e1c575f5ffd5b815167ffffffffffffffff811115611e32575f5ffd5b8201601f81018413611e42575f5ffd5b805167ffffffffffffffff811115611e5c57611e5c611df8565b604051601f8201601f19908116603f0116810167ffffffffffffffff81118282101715611e8b57611e8b611df8565b604052818152828201602001861015611ea2575f5ffd5b5f5b82811015611ec057602081850181015183830182015201611ea4565b505f91810160200191909152949350505050565b5f60208284031215611ee4575f5ffd5b5051919050565b81810381811115610a8357610a83611dba565b634e487b7160e01b5f52601260045260245ffd5b5f82611f2057611f20611efe565b500490565b5f82611f3357611f33611efe565b50069056fea264697066735822122087f969a13def50f60537cf4d26af2fe585555a8082798af07901be39c18c9b7864736f6c634300081c0033",
+    "implementation": null,
+    "implementationCode": null,
+    "beacon": null,
+    "beaconCode": null,
+    "fingerprint": "5361ebdd20d5f5f2dca601d8bb38ffd6b923e64a12d36d9e87652e45316b775b"
+  },
+  "sources": {
+    "contracts/OrbitSale.sol": {
+      "content": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Ownable} from \"@openzeppelin/contracts/access/Ownable.sol\";\nimport {ReentrancyGuard} from \"@openzeppelin/contracts/utils/ReentrancyGuard.sol\";\nimport {IERC20} from \"@openzeppelin/contracts/token/ERC20/IERC20.sol\";\nimport {SafeERC20} from \"@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol\";\n\n/// @notice Minimal view of the Binance Agent ID registry on BNB Smart Chain\n///         (0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F). `handleOf` returns the\n///         caller's Agent ID handle, or an empty string when they hold none.\n///         Same registry the BYTE/PROXY/PATCH FairMint engine uses.\ninterface IAgentIdRegistry {\n    function handleOf(address account) external view returns (string memory);\n}\n\n/// @notice The slice of OrbitToken the sale needs.\ninterface IMintableToken {\n    function mint(address to, uint256 amount) external;\n}\n\n/// @title OrbitSale \u2014 a ladder-priced share sale paid in USDT (BEP-20), with referrals.\n/// @notice Built on the PATCH FairMint engine (itself adapted from\n///         BYTE/PROXY), with the same three PATCH properties:\n///           1. Payment is USDT via `transferFrom`, not native BNB.\n///           2. The price ladder is keyed to PAID shares sold (`paidSold`),\n///              NOT total shares sold, so the 500 free shares never lift the\n///              price: the first paid share always costs exactly 1.2 USDT.\n///           3. `withdraw` is owner-only and sweeps the whole USDT pot to\n///              the treasury.\n///\n///         ORBIT adds a referral layer on top:\n///           - `mint` takes a `referrer`. A referrer is honoured only when\n///             it is a different address that holds an Agent ID; anything\n///             else (zero address, self, no Agent ID) is silently ignored \u2014\n///             it never reverts the purchase.\n///           - The first valid referrer a buyer ever presents is recorded\n///             once in `invitedBy` and can never be changed.\n///           - On the buyer's FIRST paid mint (the first purchase whose cost\n///             is greater than zero), a recorded inviter is credited exactly\n///             once: +1 bonus quota and +1 invite count. A buyer who only\n///             ever claims the free share credits nobody.\n///           - The owner can additionally grant off-chain-attested social\n///             task quota via `grantTaskQuota`. Effective quota per\n///             identity = baseQuota (10) + referral bonus + task quota.\n///           - `paidTotal` tracks lifetime USDT paid per wallet, which backs\n///             the owner's manual 100%-refund commitment if the sale does\n///             not complete.\n///\n/// Rules of the sale:\n///   - Buyers purchase \"shares\". Each share mints `tokensPerShare` ORBIT\n///     directly to the buyer inside the same transaction.\n///   - The first share is free for every eligible buyer, while the free\n///     pool (`freeCardCap`, 500) lasts. Only one share per purchase can be\n///     free.\n///   - Paid shares are priced on a ladder over paid shares sold: every\n///     `BLOCK_SIZE` (500) paid shares the price steps up by `priceStep`\n///     from `basePrice` (1.2 \u2192 1.3 \u2192 1.4 \u2192 1.5 \u2192 1.6 USDT across the 2,500\n///     paid shares; a full sellout grosses exactly 3,500 USDT). A purchase\n///     that straddles a block boundary prices EACH share at its own\n///     block's price.\n///   - A per-identity quota caps total shares, free one included, and\n///     `maxPerTx` caps a single purchase.\n///   - With the Agent ID gate on, only Agent ID holders may buy and quota\n///     is tracked per identity (keccak256 of the handle), so moving\n///     wallets does not reset it. With the gate off, anyone may buy and\n///     quota is tracked per wallet.\n///   - `maxCost` protects the buyer if the ladder position moves between\n///     quote and execution.\n///\n/// The sale is the whole story on-chain: a hard cap of 3,000 shares, and\n/// when they are gone, minting is over \u2014 the token's 220B cap can never\n/// be exceeded and no market functions exist in this contract. What\n/// happens next is deliberately OFF-contract (the owner's public\n/// commitment, exactly like PATCH): after sellout the owner withdraws\n/// the USDT pot, sweeps the 70B reserve, and creates the PancakeSwap\n/// pool manually (2,800 USDT + the full reserve, LP burned), after which\n/// ORBIT simply trades at market price on the DEX.\n///\n/// The sale has NO transfer tax, NO deadline and NO refund function\n/// (`paidTotal` exists so the owner can honour the manual refund\n/// commitment if the sale does not complete). Proceeds accumulate in\n/// USDT here until the owner calls `withdraw`, which sweeps the entire\n/// USDT balance to the treasury.\ncontract OrbitSale is Ownable, ReentrancyGuard {\n    using SafeERC20 for IERC20;\n\n    // ------------------------------------------------------------------\n    // Errors\n    // ------------------------------------------------------------------\n    error ZeroShares();\n    error ExceedsTxLimit(uint256 requested, uint256 limit);\n    error QuotaExceeded(uint256 requested, uint256 remaining);\n    error CostAboveMax(uint256 cost, uint256 maxCost);\n    error SaleIsPaused();\n    error NoAgentId(address buyer);\n    error InvalidConfig();\n    error ConfigIsFrozen();\n    error NothingToWithdraw();\n    error ReserveAlreadyMinted();\n    error NothingToSweep();\n    error NativeCoinRejected();\n\n\n    // ------------------------------------------------------------------\n    // Events\n    // ------------------------------------------------------------------\n    event SharesPurchased(\n        address indexed buyer,\n        bytes32 indexed quotaKey,\n        uint256 shares,\n        uint256 paidUsdt,\n        uint256 freeShares,\n        uint256 tokensMinted\n    );\n    /// @notice Emitted on every mint; the site indexer builds the recent\n    ///         mints feed and the Minted ranking from this.\n    event Mint(address indexed buyer, uint256 qty, uint256 costUsdt, uint256 freeSharesUsed);\n    /// @notice Emitted exactly once per invitee, on their first paid mint;\n    ///         the site indexer builds the Invites ranking from this.\n    event ReferralCredited(address indexed inviter, address indexed invitee);\n    event InviterRecorded(address indexed buyer, address indexed inviter);\n    event TaskQuotaGranted(address indexed user, uint256 amount);\n    event Withdrawn(address indexed treasury, uint256 amount);\n    event ReserveMinted(uint256 amount);\n    event ReserveSwept(address indexed treasury, uint256 amount);\n    event TreasuryUpdated(address indexed treasury);\n    event GateUpdated(bool gateOn);\n    event PauseUpdated(bool paused);\n    event ConfigFrozen();\n\n    // ------------------------------------------------------------------\n    // Constants\n    // ------------------------------------------------------------------\n    /// @notice Paid shares per ladder block. Fixed at declaration: the\n    ///         ladder's shape is part of the sale's promise. With 2,500\n    ///         paid shares this yields exactly five blocks.\n    uint256 public constant BLOCK_SIZE = 500;\n\n    /// @notice ORBIT minted to this contract by `mintReserve` for the\n    ///         post-sellout PancakeSwap pool (70,000,000,000 ORBIT).\n    uint256 public constant POOL_RESERVE = 70_000_000_000 ether;\n\n    // ------------------------------------------------------------------\n    // Immutable wiring and sale parameters\n    // ------------------------------------------------------------------\n    IMintableToken public immutable token;\n    IAgentIdRegistry public immutable registry;\n\n    /// @notice The payment token: BSC USDT (18 decimals).\n    IERC20 public immutable usdt;\n\n    /// @notice Price of a paid share in ladder block 0, in USDT wei.\n    ///         A compile-time constant rather than a constructor parameter\n    ///         (same pattern as PROXY's hardcoded `sharesPerTier`): the\n    ///         ladder's numbers are part of the sale's promise and can\n    ///         never be reshaped, not even by the owner. Together with\n    ///         `priceStep` and `BLOCK_SIZE` this hardcodes the full\n    ///         schedule: 1.2 / 1.3 / 1.4 / 1.5 / 1.6 USDT.\n    uint256 public constant basePrice = 1.2 ether;\n\n    /// @notice Amount added to the price per ladder block, in USDT wei.\n    uint256 public constant priceStep = 0.1 ether;\n\n    /// @notice Tokens minted per share, in wei (18 decimals).\n    uint256 public immutable tokensPerShare;\n\n    /// @notice Total shares that will ever be sold (free + paid).\n    uint256 public immutable totalCards;\n\n    /// @notice How many of those shares are handed out free (one per buyer).\n    uint256 public immutable freeCardCap;\n\n    /// @notice Maximum shares per identity (or per wallet when ungated),\n    ///         before referral/task bonus quota is added.\n    uint256 public immutable baseQuota;\n\n    /// @notice Maximum shares in a single purchase.\n    uint256 public immutable maxPerTx;\n\n    // ------------------------------------------------------------------\n    // Mutable configuration\n    // ------------------------------------------------------------------\n    /// @notice Where sale proceeds go when `withdraw` is called.\n    address public treasury;\n\n    /// @notice When true, only Agent ID holders can buy and quota follows\n    ///         the identity. When false, quota follows the wallet.\n    bool public gateOn;\n\n    bool public paused;\n    bool public frozen;\n\n    // ------------------------------------------------------------------\n    // Sale progress\n    // ------------------------------------------------------------------\n    uint256 public cardsSold;\n    uint256 public paidSold;\n    uint256 public freeGiven;\n\n    /// @notice Lifetime USDT accepted by the sale (before withdrawals).\n    uint256 public collected;\n\n    /// @notice True once the pool reserve has been minted.\n    bool public reserveMinted;\n\n    /// @notice Shares taken, keyed by identity (gated) or wallet (ungated).\n    mapping(bytes32 => uint256) public quotaUsed;\n\n    /// @notice True once an address has consumed its free share.\n    mapping(address => bool) public freeClaimed;\n\n    /// @notice Lifetime USDT paid per wallet. Backs the owner's manual\n    ///         refund commitment if the sale does not complete.\n    mapping(address => uint256) public paidTotal;\n\n    // ------------------------------------------------------------------\n    // Referral and bonus quota (keyed like `quotaUsed`: per identity)\n    // ------------------------------------------------------------------\n    /// @notice The inviter recorded for a buyer: the first valid referrer\n    ///         they ever presented. Zero while none has been recorded.\n    mapping(address => address) public invitedBy;\n\n    /// @notice Quota key of the recorded inviter, captured at recording\n    ///         time so the credit lands on the inviter's identity even if\n    ///         they later buy from a different wallet.\n    mapping(address => bytes32) internal _invitedByKey;\n\n    /// @notice True once a buyer's inviter has been credited for them.\n    mapping(address => bool) public referralCredited;\n\n    /// @notice Referral bonus quota earned, per identity key.\n    mapping(bytes32 => uint256) internal _bonusQuota;\n\n    /// @notice Social-task quota granted by the owner, per identity key.\n    mapping(bytes32 => uint256) internal _taskQuota;\n\n    /// @notice Successful invites credited, per identity key.\n    mapping(bytes32 => uint256) internal _inviteCount;\n\n    // ------------------------------------------------------------------\n    // Deployment\n    // ------------------------------------------------------------------\n    constructor(\n        address token_,\n        address registry_,\n        address usdt_,\n        address treasury_,\n        uint256 tokensPerShare_,\n        uint256 totalCards_,\n        uint256 freeCardCap_,\n        uint256 baseQuota_,\n        uint256 maxPerTx_,\n        bool gateOn_,\n        address initialOwner_\n    ) Ownable(initialOwner_) {\n        if (\n            !_configValid(\n                token_, registry_, usdt_, treasury_, tokensPerShare_, totalCards_, freeCardCap_, baseQuota_, maxPerTx_, gateOn_, initialOwner_\n            )\n        ) {\n            revert InvalidConfig();\n        }\n\n        token = IMintableToken(token_);\n        registry = IAgentIdRegistry(registry_);\n        usdt = IERC20(usdt_);\n        treasury = treasury_;\n        tokensPerShare = tokensPerShare_;\n        totalCards = totalCards_;\n        freeCardCap = freeCardCap_;\n        baseQuota = baseQuota_;\n        maxPerTx = maxPerTx_;\n        gateOn = gateOn_;\n    }\n\n    /// @dev Constructor argument validation, kept in its own frame: with\n    ///      this many constructor parameters the checks would otherwise push\n    ///      the constructor past the stack limit (same pattern as PROXY).\n    function _configValid(\n        address token_,\n        address registry_,\n        address usdt_,\n        address treasury_,\n        uint256 tokensPerShare_,\n        uint256 totalCards_,\n        uint256 freeCardCap_,\n        uint256 baseQuota_,\n        uint256 maxPerTx_,\n        bool gateOn_,\n        address initialOwner_\n    ) internal pure returns (bool) {\n        return token_ != address(0) && usdt_ != address(0) && treasury_ != address(0)\n            && initialOwner_ != address(0) && (!gateOn_ || registry_ != address(0)) && tokensPerShare_ != 0\n            && totalCards_ != 0 && baseQuota_ != 0 && maxPerTx_ != 0 && maxPerTx_ <= baseQuota_\n            && freeCardCap_ <= totalCards_;\n    }\n\n    // ------------------------------------------------------------------\n    // Ladder pricing\n    // ------------------------------------------------------------------\n    /// @notice Price of one paid share in ladder block `blockIndex`, USDT wei.\n    function priceAtBlock(uint256 blockIndex) public pure returns (uint256) {\n        return basePrice + blockIndex * priceStep;\n    }\n\n    /// @notice Ladder block the NEXT paid share falls in.\n    function currentBlock() public view returns (uint256) {\n        return paidSold / BLOCK_SIZE;\n    }\n\n    /// @notice Price of the next paid share, in USDT wei.\n    function currentPrice() public view returns (uint256) {\n        return priceAtBlock(currentBlock());\n    }\n\n    /// @notice Total USDT cost of `count` paid shares starting at the\n    ///         current `paidSold`. Each share is priced at its own block:\n    ///         a run that crosses a block boundary pays the old price for\n    ///         the shares before the boundary and the new price after it.\n    function _ladderCost(uint256 count) internal view returns (uint256 total) {\n        uint256 remaining = count;\n        uint256 pos = paidSold;\n        while (remaining > 0) {\n            uint256 blockIndex = pos / BLOCK_SIZE;\n            uint256 roomInBlock = BLOCK_SIZE - (pos % BLOCK_SIZE);\n            uint256 take = remaining < roomInBlock ? remaining : roomInBlock;\n            total += take * priceAtBlock(blockIndex);\n            pos += take;\n            remaining -= take;\n        }\n    }\n\n    // ------------------------------------------------------------------\n    // Buying\n    // ------------------------------------------------------------------\n    /// @notice Buy `shares` shares, paying in USDT (approve this contract\n    ///         first). The first share is free while the free pool lasts.\n    /// @param shares   How many shares to buy in this transaction.\n    /// @param maxCost  The most USDT (wei) the buyer accepts being charged.\n    ///                 The call reverts if the actual cost is higher, which\n    ///                 guards against the ladder moving between quote and\n    ///                 execution.\n    /// @param referrer Optional inviter. Honoured only if it is a different\n    ///                 address holding an Agent ID; otherwise ignored. The\n    ///                 first valid referrer is recorded permanently, and the\n    ///                 inviter is credited (+1 bonus quota, +1 invite) on\n    ///                 this buyer's first paid purchase.\n    /// @return charged   USDT actually kept by the sale (wei).\n    /// @return tokensOut Tokens minted to the buyer (wei).\n    function mint(uint256 shares, uint256 maxCost, address referrer)\n        external\n        nonReentrant\n        returns (uint256 charged, uint256 tokensOut)\n    {\n        if (paused) revert SaleIsPaused();\n        if (shares == 0) revert ZeroShares();\n        if (shares > maxPerTx) revert ExceedsTxLimit(shares, maxPerTx);\n\n        bytes32 key = _quotaKey(msg.sender);\n\n        // Record the inviter before anything else: the first valid\n        // referrer this buyer ever presents sticks forever.\n        _recordInviter(referrer);\n\n        // At most one share per purchase is free: the buyer's first, and\n        // only while the free pool still has room.\n        uint256 freeShares = (!freeClaimed[msg.sender] && freeGiven < freeCardCap) ? 1 : 0;\n\n        // One quota check over the whole purchase, against the effective\n        // quota (base + referral bonus + task grants). Checking\n        // share-by-share would let buyers sidestep the limit with repeated\n        // small buys.\n        uint256 quota = _effectiveQuota(key);\n        uint256 used = quotaUsed[key];\n        if (used + shares > quota) revert QuotaExceeded(shares, quota - used);\n        if (cardsSold + shares > totalCards) revert QuotaExceeded(shares, totalCards - cardsSold);\n\n        uint256 paidShares = shares - freeShares;\n        charged = _ladderCost(paidShares);\n        if (charged > maxCost) revert CostAboveMax(charged, maxCost);\n\n        // Referral credit: exactly once per invitee, on their first paid\n        // purchase \u2014 the helper checks that this purchase costs something\n        // and that the buyer has never paid before (`paidTotal` is still\n        // zero at this point).\n        _creditReferralIfDue(charged);\n\n        // Effects first, external calls last.\n        cardsSold += shares;\n        paidSold += paidShares;\n        quotaUsed[key] += shares;\n        if (freeShares == 1) {\n            freeGiven += 1;\n            freeClaimed[msg.sender] = true;\n        }\n        collected += charged;\n        paidTotal[msg.sender] += charged;\n        tokensOut = shares * tokensPerShare;\n\n        // Pull the payment, then mint the tokens straight to the buyer.\n        if (charged > 0) {\n            usdt.safeTransferFrom(msg.sender, address(this), charged);\n        }\n        token.mint(msg.sender, tokensOut);\n\n        emit SharesPurchased(msg.sender, key, shares, charged, freeShares, tokensOut);\n        emit Mint(msg.sender, shares, charged, freeShares);\n    }\n\n    /// @dev Record `referrer` as the buyer's inviter if none is recorded\n    ///      yet and the referrer is valid: not zero, not the buyer, and\n    ///      holding an Agent ID. Anything invalid is ignored by design \u2014\n    ///      a bad referrer must never block a purchase.\n    function _recordInviter(address referrer) internal {\n        if (invitedBy[msg.sender] != address(0)) return;\n        if (referrer == address(0) || referrer == msg.sender) return;\n        if (address(registry) == address(0)) return;\n        string memory handle = registry.handleOf(referrer);\n        if (bytes(handle).length == 0) return;\n        invitedBy[msg.sender] = referrer;\n        _invitedByKey[msg.sender] = keccak256(bytes(handle));\n        emit InviterRecorded(msg.sender, referrer);\n    }\n\n    /// @dev Credit the caller's recorded inviter (+1 bonus quota, +1\n    ///      invite count) if this purchase is the caller's first paid one.\n    ///      MUST be called before `paidTotal` for this purchase is added:\n    ///      a still-zero `paidTotal` is what marks the purchase as the\n    ///      first. Fires at most once per buyer, ever.\n    function _creditReferralIfDue(uint256 charged) internal {\n        if (charged == 0 || paidTotal[msg.sender] != 0 || referralCredited[msg.sender]) return;\n        address inviter = invitedBy[msg.sender];\n        if (inviter == address(0)) return;\n        referralCredited[msg.sender] = true;\n        bytes32 inviterKey = _invitedByKey[msg.sender];\n        _bonusQuota[inviterKey] += 1;\n        _inviteCount[inviterKey] += 1;\n        emit ReferralCredited(inviter, msg.sender);\n    }\n\n    // ------------------------------------------------------------------\n    // Identity and quota\n    // ------------------------------------------------------------------\n    /// @dev Quota key for a buyer. Enforces the Agent ID gate as a side effect.\n    function _quotaKey(address buyer) internal view returns (bytes32) {\n        if (!gateOn) return _walletKey(buyer);\n        string memory handle = registry.handleOf(buyer);\n        if (bytes(handle).length == 0) revert NoAgentId(buyer);\n        return keccak256(bytes(handle));\n    }\n\n    function _walletKey(address buyer) internal pure returns (bytes32) {\n        return bytes32(uint256(uint160(buyer)));\n    }\n\n    /// @notice The key a wallet's quota is tracked under. With the gate on this\n    ///         is keccak256(handle); a wallet without an Agent ID maps to\n    ///         keccak256 of the empty string and cannot buy anyway.\n    function quotaKeyOf(address who) public view returns (bytes32) {\n        if (!gateOn) return _walletKey(who);\n        return keccak256(bytes(registry.handleOf(who)));\n    }\n\n    /// @dev Effective quota for an identity key: base + referral + tasks.\n    function _effectiveQuota(bytes32 key) internal view returns (uint256) {\n        return baseQuota + _bonusQuota[key] + _taskQuota[key];\n    }\n\n    /// @notice Total shares `who` may take: base quota plus earned bonus\n    ///         quota (referrals) and granted task quota.\n    function effectiveQuota(address who) external view returns (uint256) {\n        return _effectiveQuota(quotaKeyOf(who));\n    }\n\n    /// @notice Shares `who` has taken so far (free + paid).\n    function mintedBy(address who) external view returns (uint256) {\n        return quotaUsed[quotaKeyOf(who)];\n    }\n\n    /// @notice Referral bonus quota `who` has earned as an inviter.\n    function bonusQuota(address who) external view returns (uint256) {\n        return _bonusQuota[quotaKeyOf(who)];\n    }\n\n    /// @notice Social-task quota granted to `who` by the owner.\n    function taskQuota(address who) external view returns (uint256) {\n        return _taskQuota[quotaKeyOf(who)];\n    }\n\n    /// @notice Buyers `who` has successfully invited (credited invites).\n    function inviteCount(address who) external view returns (uint256) {\n        return _inviteCount[quotaKeyOf(who)];\n    }\n\n    // ------------------------------------------------------------------\n    // Quotes and views\n    // ------------------------------------------------------------------\n    /// @notice What `who` would pay for `shares` shares right now, in\n    ///         USDT wei. Mirrors the free-share rule used by `mint`.\n    function quote(address who, uint256 shares) public view returns (uint256) {\n        if (shares == 0) return 0;\n        uint256 freeShares = (!freeClaimed[who] && freeGiven < freeCardCap) ? 1 : 0;\n        return _ladderCost(shares - freeShares);\n    }\n\n    /// @notice `quote` for the caller, convenient for agents and front-ends.\n    function quoteForCaller(uint256 shares) external view returns (uint256) {\n        return quote(msg.sender, shares);\n    }\n\n    function cardsRemaining() external view returns (uint256) {\n        return totalCards - cardsSold;\n    }\n\n    function freeCardsRemaining() external view returns (uint256) {\n        return freeCardCap - freeGiven;\n    }\n\n    /// @notice Shares `who` can still take under their effective quota.\n    function quotaLeft(address who) external view returns (uint256) {\n        bytes32 key = quotaKeyOf(who);\n        uint256 used = quotaUsed[key];\n        uint256 quota = _effectiveQuota(key);\n        return used >= quota ? 0 : quota - used;\n    }\n\n    // ------------------------------------------------------------------\n    // Owner quota grants (social tasks, attested off-chain)\n    // ------------------------------------------------------------------\n    /// @notice Grant `amount` extra quota to `user` for completed social\n    ///         tasks. Attestation happens off-chain; this only records the\n    ///         result. Grants stack with referral bonus quota and never\n    ///         expire. There is deliberately no revoke: a grant is a\n    ///         public, permanent record (see TaskQuotaGranted).\n    function grantTaskQuota(address user, uint256 amount) external onlyOwner {\n        _taskQuota[quotaKeyOf(user)] += amount;\n        emit TaskQuotaGranted(user, amount);\n    }\n\n    // ------------------------------------------------------------------\n    // Proceeds\n    // ------------------------------------------------------------------\n    /// @notice Forward the sale's entire USDT balance to the treasury.\n    ///         Owner-only (a deliberate PATCH change from BYTE/PROXY, where\n    ///         anyone could trigger the sweep).\n    function withdraw() external onlyOwner {\n        uint256 balance = usdt.balanceOf(address(this));\n        if (balance == 0) revert NothingToWithdraw();\n        usdt.safeTransfer(treasury, balance);\n        emit Withdrawn(treasury, balance);\n    }\n\n    // ------------------------------------------------------------------\n    // Pool reserve\n    // ------------------------------------------------------------------\n    /// @notice Mint the one-time pool reserve (70B ORBIT) to this contract.\n    ///         Callable exactly once, by the owner, after `setMinter` has\n    ///         wired this sale as the token's minter. The reserve then sits\n    ///         here until `sweepReserve` moves it for the pool launch.\n    function mintReserve() external onlyOwner {\n        if (reserveMinted) revert ReserveAlreadyMinted();\n        reserveMinted = true;\n        token.mint(address(this), POOL_RESERVE);\n        emit ReserveMinted(POOL_RESERVE);\n    }\n\n    /// @notice Move this contract's entire ORBIT balance to the treasury.\n    ///         After sellout this is how the owner takes the 70B reserve\n    ///         out to build the PancakeSwap pool manually (off-contract,\n    ///         his public commitment \u2014 the sale itself never touches a\n    ///         pool).\n    function sweepReserve() external onlyOwner {\n        IERC20 orbit = IERC20(address(token));\n        uint256 balance = orbit.balanceOf(address(this));\n        if (balance == 0) revert NothingToSweep();\n        orbit.safeTransfer(treasury, balance);\n        emit ReserveSwept(treasury, balance);\n    }\n\n    // ------------------------------------------------------------------\n    // Owner controls\n    // ------------------------------------------------------------------\n    function setTreasury(address newTreasury) external onlyOwner {\n        _requireNotFrozen();\n        if (newTreasury == address(0)) revert InvalidConfig();\n        treasury = newTreasury;\n        emit TreasuryUpdated(newTreasury);\n    }\n\n    function setGate(bool on) external onlyOwner {\n        _requireNotFrozen();\n        gateOn = on;\n        emit GateUpdated(on);\n    }\n\n    /// @notice Pause or resume buying. Deliberately NOT blocked by `freeze`:\n    ///         the owner keeps an emergency stop even after locking config.\n    function setPaused(bool shouldPause) external onlyOwner {\n        paused = shouldPause;\n        emit PauseUpdated(shouldPause);\n    }\n\n    /// @notice Permanently lock treasury and gate. Pause still works.\n    function freeze() external onlyOwner {\n        frozen = true;\n        emit ConfigFrozen();\n    }\n\n    /// @dev Renouncing also freezes first, so an ownerless sale is immutable.\n    function renounceOwnership() public override onlyOwner {\n        frozen = true;\n        super.renounceOwnership();\n    }\n\n    function _requireNotFrozen() internal view {\n        if (frozen) revert ConfigIsFrozen();\n    }\n\n    /// @dev Bare native-coin transfers are rejected: funds only enter\n    ///      through `mint`, as USDT, where shares are accounted for.\n    receive() external payable {\n        revert NativeCoinRejected();\n    }\n}\n"
+    }
+  }
+}

@@ -16,6 +16,29 @@ function harness(t,{sell=true}={}){
  const options={engine,rpc:{},opening,data,autoSchedule:false,now:()=>now,binding:()=>({account:1,address:w}),client:{get:async()=>{probes++;return [2n,phase];}}},m=new CorlaAutomation(options);t.after(()=>{m.close();fs.rmSync(data,{recursive:true,force:true});});
  return {m,options,engine,opening,parent,orders,advance:n=>now+=n,open:()=>phase=3n,end:()=>phase=4n,calls:()=>({execs,follows,prepares,probes,handoffs}),confirm:j=>{const o=orders.get(j.claimId);o.status='CONFIRMED';o.steps=[{status:'CONFIRMED',received:'1000',txHash:'fake-claim-hash'}];return o;}};
 }
+test('claim verified failures retry twice with new IDs and fresh preview, then stop or hand off once',async t=>{
+ for(const failure of ['reverted','not-dispatched'])for(const succeeds of [true,false]){
+  const h=harness(t),j=h.m.enroll(h.parent);h.open();let submissions=0;
+  h.engine.execute=async id=>{
+   submissions++;const o=h.orders.get(id);o.status='FAILED';o.error={code:'TRANSACTION_REVERTED'};
+   const e={plan:o.plan,step:o.plan.steps[0],status:'FAILED'};
+   if(failure==='reverted')Object.assign(e,{revertVerified:true,txHash:'0x'+'1'.repeat(64),receipt:{status:'0x0'}});
+   else e.submissionOutcome={source:'local-wallet',accepted:false};
+   o.steps=[e];if(submissions===3&&succeeds){o.status='CONFIRMED';e.status='CONFIRMED';e.received='1000';}return o;
+  };
+  await h.m.tick(j.id);const first=j.claimId;assert.equal(j.status,'WATCHING');assert.equal(j.claimRecoveries,1);assert.equal(j.commitStartedAt,undefined);
+  h.advance(300);await h.m.tick(j.id);assert.notEqual(j.claimId,first);h.advance(300);await h.m.tick(j.id);
+  assert.equal(submissions,3);assert.equal(h.calls().prepares,3);assert.equal(j.failedClaims.length,2);assert.equal(j.status,succeeds?'SELLING':'REVIEW');assert.equal(h.calls().handoffs,succeeds?1:0);
+  for(let i=0;i<5;i++){h.advance(1000);await h.m.tick(j.id);}assert.equal(submissions,3);
+ }
+});
+test('claim success, uncertainty, identity mismatch or incomplete revert proof cannot trigger retries',async t=>{
+ const changes=[o=>o.status='SUBMISSION_UNKNOWN',o=>o.steps[0].receipt.status='0x1',o=>delete o.steps[0].revertVerified,o=>o.plan.identity={fingerprint:'changed'},o=>o.steps[0].step={...o.steps[0].step,to:addr(99)},o=>o.plan.outputToken=addr(99),o=>o.status='CONFIRMED_REVIEW'];
+ for(const change of changes){const h=harness(t),j=h.m.enroll(h.parent);h.open();await h.m.tick(j.id);const o=h.orders.get(j.claimId);o.status='FAILED';o.error={code:'TRANSACTION_REVERTED'};o.steps=[{plan:o.plan,step:o.plan.steps[0],status:'FAILED',revertVerified:true,receipt:{status:'0x0'},txHash:'0x'+'1'.repeat(64)}];change(o);await h.m.tick(j.id);assert.equal(j.status,'REVIEW');assert.equal(j.claimRecoveries,undefined);assert.equal(h.calls().prepares,1);assert.equal(h.calls().handoffs,0);}
+});
+test('pause during claim retry cooldown preserves original failures and requires explicit resume',async t=>{
+ const h=harness(t),j=h.m.enroll(h.parent);h.open();await h.m.tick(j.id);const o=h.orders.get(j.claimId);o.status='FAILED';o.error={code:'TRANSACTION_REVERTED'};o.steps=[{plan:o.plan,step:o.plan.steps[0],status:'FAILED',revertVerified:true,receipt:{status:'0x0'},txHash:'0x'+'1'.repeat(64)}];await h.m.tick(j.id);assert.equal(j.status,'WATCHING');h.m.pause(j.id);h.advance(1000);await h.m.tick(j.id);assert.equal(h.calls().prepares,1);h.m.resume(j.id);await h.m.tick(j.id);assert.equal(h.calls().prepares,2);assert.equal(j.failedClaims.length,1);
+});
 test('paid max budgets use exact price times remaining quota, per-wallet maximum not sum',()=>{
  const q=(account,lots)=>({account,paidRemaining:lots,unitPrice:{raw:'123456789012345678'},paymentDecimals:18,budgetCurrency:'BNB',paymentToken:ZeroAddress,currency:'BNB'});
  const p={platform:'corla',quotas:[q(1,'3'),q(2,'2')]};const b=corlaBudget(p,[1,2],'paid','max');assert.equal(b.maxBnb,'0.370370367037037034');assert.equal(b.total,'0.61728394506172839');assert.equal(b.maxUsdt,'0');assert.equal(corlaBudget(p,[1],'free','max'),null);
@@ -75,6 +98,34 @@ test('strict automated execution refuses a new official risk even with routine p
  const input={account:account.account,side:'mint',asset:mint,routeId:'corla:claim',quantity:1,maxBnb:'0',scope:'free',autoClaim:false};
  const o=await engine.prepare(input,'strict-risk');assert.equal(o.status,'PREPARED');const result=await engine.execute(o.id,{authorization:'synthetic test',acknowledgeReview:true,rejectRisks:true});assert.equal(result.status,'BLOCKED');assert.match(result.error.message,/风险/);assert.equal(dispatched,0);
 });
+test('claim local admission contention cannot exhaust attempts or strand a prepared claim; retry keeps the same ID',async t=>{
+ for(const stage of ['prepare','execute'])for(const code of ['WALLET_BUSY','ORDER_UNRESOLVED']){
+  const h=harness(t),j=h.m.enroll(h.parent),prepare=h.engine.prepare,execute=h.engine.execute,ids=[];let busy=true;
+  const guard=()=>Object.assign(Error('fixture local guard'),{code,details:{requestAccepted:false}});
+  h.engine.prepare=async(i,id)=>{ids.push(id);if(busy&&stage==='prepare')throw guard();return prepare(i,id);};
+  h.engine.execute=async(...args)=>{if(busy&&stage==='execute')throw guard();return execute(...args);};h.open();
+  for(let i=0;i<35;i++){await h.m.tick(j.id);h.advance(500);}
+  assert.equal(j.status,'WATCHING');assert.equal(j.attempts,0);assert.equal(j.busyDeferrals,35);assert.equal(j.commitStartedAt,undefined);assert.equal(h.calls().execs,0);
+  assert.equal(new Set(ids).size,1);assert.equal(j.errorHistory.length,12);assert.equal(j.lastError.code,code);
+  busy=false;await h.m.tick(j.id);assert.equal(h.calls().execs,1);assert.equal(j.attempts,1);assert.equal(j.status,'CLAIMING');
+  h.confirm(j);await h.m.tick(j.id);await h.m.tick(j.id);assert.equal(h.calls().handoffs,1);assert.equal(h.calls().execs,1);
+ }
+});
+test('receipt read or parent follow contention never creates a fresh claim or loses original evidence',async t=>{
+ const h=harness(t),j=h.m.enroll(h.parent);h.open();await h.m.tick(j.id);const original=j.claimId;
+ const follow=h.engine.follow;h.engine.follow=async()=>{throw Object.assign(Error('fixture read lock'),{code:'WALLET_BUSY',details:{requestAccepted:false}});};
+ for(let i=0;i<35;i++)await h.m.tick(j.id);
+ assert.equal(j.status,'CLAIMING');assert.equal(j.claimId,original);assert.equal(j.attempts,1);assert.equal(h.calls().execs,1);
+ h.engine.follow=follow;h.confirm(j);await h.m.tick(j.id);assert.equal(h.calls().handoffs,1);
+ const b=harness(t),k=b.m.enroll(b.parent);b.parent.status='PENDING';b.engine.follow=async()=>{throw Error('fixture temporary original lookup');};await b.m.tick(k.id);
+ assert.equal(k.status,'WAITING_MINT');assert.equal(k.lastError.message,'fixture temporary original lookup');assert.equal(b.calls().execs,0);
+});
+test('already claimed and missing allocation stop with specific reasons and never authorize a sale',async t=>{
+ for(const code of ['CORLA_ALREADY_CLAIMED','NO_QUOTA','CORLA_REFUND_ONLY']){
+  const h=harness(t),j=h.m.enroll(h.parent);h.open();h.engine.prepare=async()=>({status:'BLOCKED',steps:[],error:{code,message:'fixture state',details:{reason:'no-allocation'}}});await h.m.tick(j.id);h.advance(1000);await h.m.tick(j.id);
+  assert.equal(j.status,'REVIEW');assert.equal(j.attempts,1);assert.equal(j.lastError.code,code);assert.equal(h.calls().execs,0);assert.equal(h.calls().handoffs,0);
+ }
+});
 test('same-project enrollment during pending scan cannot race a new claim ahead of new mint',async t=>{
  const h=harness(t),j=h.m.enroll(h.parent);await h.m.tick(j.id);h.advance(300);let release;h.m.client.get=()=>new Promise(r=>release=r);const tick=h.m.tick(j.id);await new Promise(r=>setImmediate(r));
  const second={...h.parent,id:'second',status:'PENDING',steps:[]};h.orders.set(second.id,second);h.m.enroll(second);release([3n,3n]);await tick;assert.equal(j.status,'WAITING_MINT');assert.equal(h.calls().execs,0);assert.equal(j.parents.length,2);
@@ -82,11 +133,39 @@ test('same-project enrollment during pending scan cannot race a new claim ahead 
 test('cancel after claim dispatch prevents linked selling, even when receipt arrives',async t=>{
  const h=harness(t),j=h.m.enroll(h.parent);h.open();await h.m.tick(j.id);h.m.stop(j.id);h.confirm(j);await h.m.tick(j.id);assert.equal(h.calls().handoffs,0);assert.equal(j.status,'STOPPED');
 });
+test('pause during claim preview stays visible, blocks immediate resume and preserves original policy',async t=>{
+ const h=harness(t),base=h.engine.prepare,j=h.m.enroll(h.parent);h.open();let release;h.engine.prepare=async(...a)=>{await new Promise(r=>release=r);return base(...a);};const pending=h.m.tick(j.id);await new Promise(r=>setImmediate(r));h.m.pause(j.id);assert.throws(()=>h.m.resume(j.id),/正在结束/);release();await pending;assert.equal(j.status,'PAUSED');assert.equal(h.m.list().length,1);assert.equal(h.calls().execs,0);h.engine.prepare=base;h.m.resume(j.id);await h.m.tick(j.id);assert.equal(h.calls().execs,1);
+});
+test('delete during claim preview leaves a durable tombstone and cannot enroll the same authorization again',async t=>{
+ const h=harness(t),base=h.engine.prepare,j=h.m.enroll(h.parent);h.open();let release;h.engine.prepare=async(...a)=>{await new Promise(r=>release=r);return base(...a);};const pending=h.m.tick(j.id);await new Promise(r=>setImmediate(r));h.m.remove(j.id);release();await pending;assert.equal(j.status,'DELETED');assert.equal(h.calls().execs,0);assert.equal(h.m.list().length,0);
+ const restarted=new CorlaAutomation(h.options);t.after(()=>restarted.close());assert.equal(restarted.list().length,0);assert.equal(restarted.enroll(h.parent).status,'DELETED');assert.throws(()=>restarted.restore(j.id));assert.throws(()=>restarted.resume(j.id));assert.equal(h.orders.has(h.parent.id),true);
+});
+test('late claim error cannot resurrect a paused or deleted task',async t=>{
+ for(const method of ['pause','remove']){const h=harness(t),j=h.m.enroll(h.parent);h.open();let reject;h.engine.execute=()=>new Promise((_,r)=>reject=r);const pending=h.m.tick(j.id);await new Promise(r=>setImmediate(r));h.m[method](j.id);reject(Error('late RPC failure'));await pending;assert.equal(j.status,method==='pause'?'PAUSED':'DELETED');assert.equal(h.calls().handoffs,0);}
+});
+test('old stopped task is restored as paused only; claim and sale IDs are retained',async t=>{
+ const h=harness(t),j=h.m.enroll(h.parent);h.m.stop(j.id);h.m.restore(j.id);assert.equal(j.status,'PAUSED');assert.equal(j.resumeStatus,'WAITING_MINT');assert.equal(h.calls().execs,0);await h.m.tick(j.id);assert.equal(h.calls().prepares,0);h.m.resume(j.id);await h.m.tick(j.id);assert.equal(j.status,'WATCHING');
+});
+test('deleting a submitted claim retains original journal and never hands off its later credit',async t=>{
+ const h=harness(t),j=h.m.enroll(h.parent);h.open();await h.m.tick(j.id);const id=j.claimId;h.m.remove(j.id);h.confirm(j);await h.m.tick(j.id);assert.equal(h.orders.get(id).status,'CONFIRMED');assert.equal(h.calls().handoffs,0);assert.equal(h.calls().execs,1);assert.equal(h.m.list().length,0);
+});
+test('parent pause and delete cascade to linked sale, but never erase claim/subscription orders',async t=>{
+ const h=harness(t),j=h.m.enroll(h.parent);h.open();await h.m.tick(j.id);h.confirm(j);await h.m.tick(j.id);const sale=h.opening.jobs.get(j.sellJobId);let paused=0,removed=0;h.opening.pause=id=>{assert.equal(id,sale.id);sale.status='PAUSED';paused++;};h.opening.remove=id=>{assert.equal(id,sale.id);sale.status='DELETED';removed++;};h.m.pause(j.id);assert.equal(paused,1);assert.equal(j.resumeStatus,'SELLING');assert.equal(j.status,'PAUSED');h.m.remove(j.id);assert.equal(removed,1);assert.equal(h.orders.get(j.claimId).status,'CONFIRMED');assert.equal(h.orders.get('parent').status,'CONFIRMED');
+});
+test('failed parent resume persistence pauses linked child again before its scheduled tick',async t=>{
+ const h=harness(t),j=h.m.enroll(h.parent);j.status='PAUSED';j.resumeStatus='SELLING';j.sellJobId='sale';j.claimId='claim';h.orders.set('claim',{status:'CONFIRMED'});const sale={status:'PAUSED'};h.opening.jobs.set('sale',sale);h.opening.resumeAfterClaim=()=>sale.status='ARMED';h.opening.pause=()=>sale.status='PAUSED';h.m.persist=()=>{throw Error('disk full');};assert.throws(()=>h.m.resume(j.id),/disk full/);assert.equal(j.status,'PAUSED');assert.equal(sale.status,'PAUSED');assert.equal(h.calls().execs,0);
+});
 test('claim-to-sale journal gap recovers with stable handoff ID only after explicit restart resume',async t=>{
  const h=harness(t),j=h.m.enroll(h.parent);h.open();await h.m.tick(j.id);h.confirm(j);const handoff=h.opening.afterClaim.bind(h.opening);h.opening.afterClaim=()=>{throw Error('simulated handoff interruption');};
  await assert.rejects(h.m.claimResult(j,h.orders.get(j.claimId)),/interruption/);assert.equal(j.status,'SELLING');const restored=new CorlaAutomation(h.options);assert.equal(restored.jobs.get(j.id).status,'PAUSED');h.opening.afterClaim=handoff;restored.resume(j.id);await restored.tick(j.id);assert.equal(h.calls().execs,1);assert.equal(h.calls().handoffs,1);restored.close();
 });
 
+test('claim registry warmup coalesces across wallets, retries read failures and never signs',async t=>{
+ const h=harness(t),j=h.m.enroll(h.parent);let reads=0,release;
+ h.engine.warmCorlaClaim=()=>{reads++;return new Promise(r=>release=r);};h.m.warmClaim(j);h.m.warmClaim({...j,account:2});await new Promise(r=>setImmediate(r));assert.equal(reads,1);
+ h.advance(6000);h.m.warmClaim(j);assert.equal(reads,1);release();await new Promise(r=>setImmediate(r));
+ h.engine.warmCorlaClaim=async()=>{reads++;throw Error('read failure');};h.m.warmClaim(j);await new Promise(r=>setImmediate(r));h.m.warmClaim(j);await new Promise(r=>setImmediate(r));assert.equal(reads,3);assert.equal(h.calls().execs,0);assert.equal(h.calls().prepares,0);
+});
 test('slow project scan is coalesced even after 250 ms; rejected scans can retry',async t=>{
  const h=harness(t);let release,reads=0;h.m.client.get=()=>{reads++;return new Promise(r=>release=r);};
  const a=h.m.probe(mint);h.advance(900);const b=h.m.probe(mint);assert.equal(reads,1);release([1n,3n]);await Promise.all([a,b]);
@@ -128,3 +207,5 @@ test('Corla explicit resume also resumes only its existing linked sale; startup 
 test('refund-only phase five stops monitoring; refund-mint version one keeps watching',async t=>{
  for(const version of [0n,1n]){const h=harness(t);h.m.client={get:async(to,abi,name)=>name==='getMintState'?[2n,5n]:[version],locate:async()=>({root:{version:'6'}})};const j=h.m.enroll(h.parent);await h.m.tick(j.id);assert.equal(j.status,version===1n?'WATCHING':'REVIEW');assert.equal(h.calls().execs,0);}
 });
+test('bulk-compatible Corla resume rejects an overlapping active task and cancelled marker',t=>{const h=harness(t),j=h.m.enroll(h.parent);j.status='PAUSED';j.resumeStatus='WATCHING';const other=h.m.enroll({...h.parent,id:'another-subscription'});assert.throws(()=>h.m.resume(j.id),/已有/);h.m.stop(other.id);j.cancelled=true;assert.throws(()=>h.m.resume(j.id),/未停止/);j.cancelled=false;assert.equal(h.m.resume(j.id).status,'WATCHING');assert.equal(h.calls().execs,0);});
+test('Corla resume persistence failure remains paused and does not schedule actions',t=>{const h=harness(t),j=h.m.enroll(h.parent);j.status='PAUSED';j.resumeStatus='WATCHING';h.m.persist=()=>{throw Error('disk full');};let schedules=0;h.m.schedule=()=>schedules++;assert.throws(()=>h.m.resume(j.id),/disk full/);assert.equal(j.status,'PAUSED');assert.equal(j.resumeStatus,'WATCHING');assert.equal(schedules,0);assert.equal(h.calls().execs,0);});

@@ -1,3 +1,6 @@
+import {TaskEnrollment} from './lib/task-enrollment.mjs';
+import {editTasks} from './lib/task-edit.mjs';
+import {AppUpdates} from './lib/app-updates.mjs';
 import {CorlaAutomation} from './lib/corla-automation.mjs';
 import {OpeningPreparation} from './lib/opening-preparation.mjs';
 import {OpeningSell} from './lib/opening-sell.mjs';
@@ -9,6 +12,7 @@ import {randomBytes,timingSafeEqual} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {ROOT,LOCAL,DATA,bindings,save,load,json,publicError} from './lib/common.mjs';
 import {Rpc} from './lib/network.mjs';
+import {RpcEndpoints} from './lib/rpc-endpoints.mjs';
 import {Wallets} from './lib/wallet.mjs';
 import {Engine} from './lib/engine.mjs';
 import {Batches} from './lib/batch.mjs';
@@ -16,6 +20,7 @@ import {market,holdings} from './lib/market.mjs';
 import {discover} from './lib/discovery.mjs';
 import {inspectProject} from './lib/project.mjs';
 import {walletOverview} from './lib/wallet-overview.mjs';
+import {pausedTasks,resumeTasks,controlTasks} from './lib/task-center.mjs';
 const HERE=path.dirname(fileURLToPath(import.meta.url));
 export function validateSettings(s){
  if(!s||!Array.isArray(s.buy)||!Array.isArray(s.sell)||s.buy.length!==5||s.sell.length!==5)throw Error('买入和卖出均需正好 5 个按钮');
@@ -23,14 +28,20 @@ export function validateSettings(s){
  for(const x of s.sell)if(!/^\d+(\.\d{1,6})?$/.test(String(x))||Number(x)<=0||Number(x)>100)throw Error('卖出比例须在 0–100% 之间');
  return {buy:s.buy.map(String),sell:s.sell.map(String)};
 }
-export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),bridge=new Wallets(),readRpc=null,live=false,data=DATA,engine:provided,opening:providedOpening,token=randomBytes(32).toString('hex')}={}){
+export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),bridge=new Wallets(),readRpc=null,live=false,data=DATA,engine:provided,opening:providedOpening,corla:providedCorla,updates:providedUpdates,token=randomBytes(32).toString('hex')}={}){
+ const rpcSettings=rpc instanceof Rpc?(rpc.endpoints??=new RpcEndpoints({data,primary:rpc.url,fetchImpl:rpc.fetch})):null;
+ if(rpcSettings)rpc.fetch=rpcSettings.fetch;
  // Keep long project scans / periodic display reads out of the order RPC queue.
  readRpc??=rpc instanceof Rpc?new Rpc(rpc.url,{timeoutMs:rpc.timeoutMs,fetchImpl:rpc.fetch}):rpc;
  const engine=provided||new Engine({rpc,bridge,live,data});const batches=new Batches(engine);const configFile=path.join(data,'buttons.json');
  const openingRpc=rpc instanceof Rpc?new Rpc(rpc.url,{timeoutMs:2000,fetchImpl:rpc.fetch}):rpc;
- const detector=new OpeningPools(openingRpc),preparation=new OpeningPreparation(rpc instanceof Rpc?new Rpc(rpc.url,{timeoutMs:2000,fetchImpl:rpc.fetch}):rpc);engine.openingScan=(t,o)=>detector.scan(t,o);engine.openingPreparation=preparation;
+ const prepRpc=rpc instanceof Rpc?new Rpc(rpc.url,{timeoutMs:2000,fetchImpl:rpc.fetch}):rpc;
+ if(rpcSettings)for(const client of [readRpc,openingRpc,prepRpc])if(client instanceof Rpc){client.endpoints=rpcSettings;client.fetch=rpcSettings.fetch;}
+ const detector=new OpeningPools(openingRpc),preparation=new OpeningPreparation(prepRpc);engine.openingScan=(t,o)=>detector.scan(t,o);engine.openingPreparation=preparation;
  const opening=providedOpening||new OpeningSell({engine,rpc:openingRpc,bridge,detector,data,preparation});
- const corla=new CorlaAutomation({engine,rpc:openingRpc,opening,data});engine.onAuthorized=o=>corla.enroll(o);
+ const corla=providedCorla||new CorlaAutomation({engine,rpc:openingRpc,opening,data});engine.onAuthorized=o=>corla.enroll(o);
+ const enrollment=new TaskEnrollment({engine,corla,opening,rpc:readRpc});
+ const instance=randomBytes(12).toString('hex'),updates=providedUpdates||new AppUpdates();
  const readiness=new Map();const settings=()=>load(configFile,{buy:['0.005','0.01','0.02','0.05','0.1'],sell:['10','25','50','75','100']});
  function guard(req){
   const host=req.headers.host;if(!/^(127\.0\.0\.1|localhost):\d+$/.test(host||''))throw Error('Host 不允许');
@@ -47,17 +58,29 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
   const send=(code,v,type='application/json')=>{res.writeHead(code,{'content-type':type+'; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer','content-security-policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"});res.end(type==='application/json'?json(v):v);};
   try{
    guard(req);const u=new URL(req.url,'http://'+req.headers.host),p=u.pathname;
-   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,capabilities:{openingVersion:2,recoveryVersion:1,instantReview:true,corlaVersion:3,corlaAutomationVersion:2},token,mode:live?'LIVE':'SIMULATION',wallets:bindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list(),corla:corla.list()});
+   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,instance,capabilities:{sellGasVersion:1,openingVersion:2,recoveryVersion:1,instantReview:true,corlaVersion:3,corlaAutomationVersion:2,taskCenterVersion:2},token,mode:live?'LIVE':'SIMULATION',wallets:bindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list(),corla:corla.list()});
    if(p.startsWith('/api/'))auth(req);
+   if(req.method==='GET'&&p==='/api/rpc')return send(200,rpcSettings?.status()||{available:false});
+   if(req.method==='POST'&&p==='/api/rpc'){
+    const b=await body(req);if(!rpcSettings||!b||Object.keys(b).length!==1||typeof b.url!=='string')throw Error('RPC 设置无效');
+    return send(200,await rpcSettings.configure(b.url));
+   }
+   if(req.method==='GET'&&p==='/api/updates')return send(200,await updates.check());
+   if(req.method==='GET'&&p==='/api/tasks')return send(200,{instance,corla:corla.list(),opening:opening.list(),paused:pausedTasks(corla,opening)});
+   if(req.method==='GET'&&p==='/api/tasks/candidates')return send(200,await enrollment.candidates());
+   if(req.method==='POST'&&p==='/api/tasks/add')return send(200,await enrollment.add(await body(req)));
+   if(req.method==='POST'&&p==='/api/tasks/edit')return send(200,editTasks(corla,opening,await body(req)));
+   if(req.method==='POST'&&p==='/api/tasks/resume')return send(200,resumeTasks(corla,opening,await body(req)));
+   if(req.method==='POST'&&['/api/tasks/pause','/api/tasks/delete','/api/tasks/restore'].includes(p))return send(200,controlTasks(corla,opening,p.split('/').at(-1),await body(req)));
    if(req.method==='GET'&&p==='/api/order'){const o=engine.get(u.searchParams.get('id'));if(!o)throw Error('未找到原单');return send(200,o);}
    if(req.method==='POST'&&p==='/api/reconcile'){const b=await body(req),accounts=b.accounts||bindings().map(w=>w.account);if(!Array.isArray(accounts)||accounts.some(a=>!bindings().some(w=>w.account===a)))throw Error('钱包编号无效');return send(200,await Promise.all([...new Set(accounts)].map(a=>engine.reconcileAccount(a))));}
    if(req.method==='GET'&&p==='/api/corla-jobs')return send(200,corla.list());
-   if(req.method==='POST'&&p==='/api/corla-stop'){const b=await body(req);return send(200,corla.stop(b.id));}
+   if(req.method==='POST'&&p==='/api/corla-stop'){const b=await body(req);return send(200,corla.pause(b.id));}
    if(req.method==='POST'&&p==='/api/corla-resume'){const b=await body(req);if(b.confirmed!==true)throw Error('需要点击恢复任务');return send(200,corla.resume(b.id));}
    if(req.method==='GET'&&p==='/api/opening')return send(200,opening.list());
    if(req.method==='POST'&&p==='/api/opening/check')return send(200,await opening.check(await body(req)));
-   if(req.method==='POST'&&p==='/api/opening/arm'){const b=await body(req);return send(200,opening.arm(b.id,b));}
-   if(req.method==='POST'&&p==='/api/opening/stop'){const b=await body(req);return send(200,opening.stop(b.id));}
+   if(req.method==='POST'&&p==='/api/opening/arm'){const b=await body(req);return send(200,opening.arm(b.id,{confirmed:b.confirmed}));}
+   if(req.method==='POST'&&p==='/api/opening/stop'){const b=await body(req);return send(200,opening.pause(b.id));}
    if(req.method==='GET'&&p==='/api/market')return send(200,await market(readRpc,u.searchParams.get('ca')));
    if(req.method==='GET'&&p==='/api/holdings')return send(200,await holdings(readRpc,u.searchParams.get('ca')));
    if(req.method==='GET'&&p==='/api/wallets')return send(200,await walletOverview(readRpc,bridge,readiness));
@@ -76,8 +99,8 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
    if(req.method==='POST'&&p==='/api/execute'){const b=await body(req);return send(200,await engine.execute(b.id,{...b,swapReceiptWaitMs:b.fastReturn===true?0:10000}));}
    if(req.method==='POST'&&p==='/api/batch')return send(200,await batches.run(await body(req)));
    if(req.method==='POST'&&p==='/api/run'){const b=await body(req);return send(200,await engine.run(b.intent,b.id,{...b,swapReceiptWaitMs:b.fastReturn===true?0:10000}));}
-   if(req.method==='POST'&&p==='/api/follow'){const b=await body(req);return send(200,await engine.follow(b.id));}
-   if(req.method==='GET'&&['/','/app.js','/corla-input.mjs','/corla-view.mjs','/corla-budget.mjs','/review-model.mjs','/failure-kind.mjs','/trade-workflow.mjs','/asset-input.mjs','/session-client.mjs','/style.css','/favicon.svg'].includes(p)){const file=path.join(HERE,'public',p==='/'?'index.html':p.slice(1));return send(200,fs.readFileSync(file,'utf8'),/\.m?js$/.test(p)?'text/javascript':p.endsWith('.css')?'text/css':p.endsWith('.svg')?'image/svg+xml':'text/html');}
+   if(req.method==='POST'&&p==='/api/follow'){const b=await body(req),o=await engine.follow(b.id);opening.reconcileOrder?.(o);return send(200,o);}
+   if(req.method==='GET'&&['/','/app.js','/task-center.mjs','/app-updates.mjs','/rpc-settings.mjs','/mint-quantity.mjs','/corla-input.mjs','/corla-view.mjs','/corla-budget.mjs','/review-model.mjs','/failure-kind.mjs','/trade-workflow.mjs','/asset-input.mjs','/session-client.mjs','/style.css','/favicon.svg'].includes(p)){const file=path.join(HERE,'public',p==='/'?'index.html':p.slice(1));return send(200,fs.readFileSync(file,'utf8'),/\.m?js$/.test(p)?'text/javascript':p.endsWith('.css')?'text/css':p.endsWith('.svg')?'image/svg+xml':'text/html');}
    return send(404,{error:'未找到接口'});
   }catch(e){return send(e.code==='LOCAL_SESSION_EXPIRED'&&e.statusCode===401?401:400,{error:publicError(e),details:e.details,diagnostics:e.diagnostics});}
  });
@@ -94,7 +117,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
   })).finally(()=>{warming=null;});return warming;
  }
  server.on('close',()=>{corla.close();opening.close();});
- return {server,engine,bridge,token,warm,rpc,readRpc,opening,corla};
+ return {server,engine,bridge,token,warm,rpc,readRpc,opening,corla,rpcSettings,enrollment};
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  const install=load(path.join(LOCAL,'install.json'));if(!install?.installationId)throw Error('请先运行 python3 setup.py');const live=true;if(install.liveEnabled!==true)throw Error('请重新运行安装器更新配置；用户入口仅提供真实交易模式');const port=0;

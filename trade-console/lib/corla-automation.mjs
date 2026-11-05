@@ -1,21 +1,24 @@
 import path from 'node:path';
-import {hash,load,save,wallet,same,ZeroAddress} from './common.mjs';
+import {hash,load,save,wallet,same,ZeroAddress,publicError} from './common.mjs';
 import {corlaClient,CORLA_MINT} from './corla.mjs';
 import {DEXES} from './opening-dex.mjs';
+import {hasPreviewRisks} from './preview-risks.mjs';
+import {localAdmissionDeferred} from './submission-boundary.mjs';
+import {recoverableClaim} from './claim-recovery.mjs';
 
 const ACTIVE=new Set(['WAITING_MINT','WATCHING','CLAIMING','SELLING']);
 const PENDING=new Set(['PENDING','SUBMITTING','SUBMISSION_UNKNOWN','RECEIPT_REVIEW']);
 const SUCCESS=new Set(['CONFIRMED','PARTIAL']);
 export class CorlaAutomation{
  constructor({engine,rpc,opening,data,client=corlaClient(rpc),now=Date.now,autoSchedule=true,binding=wallet}){
-  Object.assign(this,{engine,rpc,opening,client,now,autoSchedule,binding});this.file=path.join(data,'corla-automation.json');this.jobs=new Map();this.busy=new Set();this.probes=new Map();this.saleWarmBusy=new Set();this.closed=false;
-  for(const j of load(this.file,[])){if(ACTIVE.has(j.status)){j.resumeStatus=j.status;j.status='PAUSED';j.message='服务重启已暂停；恢复后只跟踪原单，不重复提交。';}this.jobs.set(j.id,j);}
+  Object.assign(this,{engine,rpc,opening,client,now,autoSchedule,binding});this.file=path.join(data,'corla-automation.json');this.jobs=new Map();this.busy=new Set();this.probes=new Map();this.saleWarmBusy=new Set();this.claimWarm=new Map();this.closed=false;
+  for(const j of load(this.file,[])){if(ACTIVE.has(j.status)){j.resumeStatus=j.status;j.status='PAUSED';j.pauseReason='restart';j.message='服务重启已暂停；恢复后只跟踪原单，不重复提交。';}this.jobs.set(j.id,j);}
   if(this.jobs.size)this.persist();
  }
- persist(){save(this.file,this.list());}
- list(){return [...this.jobs.values()].sort((a,b)=>b.createdAt-a.createdAt);}
+ persist(){save(this.file,[...this.jobs.values()]);}
+ list(){return [...this.jobs.values()].filter(j=>!j.deletedAt).sort((a,b)=>b.createdAt-a.createdAt);}
  active(){return this.list().some(j=>ACTIVE.has(j.status));}
- allowed(j){return !this.closed&&ACTIVE.has(j.status)&&!j.cancelled;}
+ allowed(j){return !this.closed&&ACTIVE.has(j.status)&&!j.cancelled&&!j.deletedAt;}
  enroll(o){
   const p=o.plan,policy=p?.afterMint;if(!policy||p.route!=='corla:mint'||!this.engine.live||o.simulationOnly||!o.authorization)return;
   const id='corla-'+hash(o.id).slice(0,32);if(this.jobs.has(id))return this.jobs.get(id);
@@ -31,14 +34,53 @@ export class CorlaAutomation{
  }
  schedule(){if(this.closed||!this.autoSchedule||this.timer||!this.active())return;this.timer=setTimeout(()=>{this.timer=null;for(const j of this.list())if(this.allowed(j)&&!this.busy.has(j.id))void this.tick(j.id).catch(()=>{});this.schedule();},250);this.timer.unref?.();}
  close(){this.closed=true;clearTimeout(this.timer);this.timer=null;}
+ pause(id){
+  const j=this.jobs.get(id);if(!j||j.deletedAt)throw Error('没有该自动领取任务');
+  if(!ACTIVE.has(j.status)&&j.status!=='PAUSED')throw Error('此任务已结束或需核对，可删除任务');
+  if(j.status!=='PAUSED')j.resumeStatus=j.status;j.status='PAUSED';j.pauseReason='user';j.pausedAt=this.now();j.message='已暂停，保留原任务；点击恢复继续。已提交交易仍保留原单。';this.persist();
+  const sale=this.opening.jobs.get(j.sellJobId);if(sale&&['ARMED','FIRING','TRACKING'].includes(sale.status))this.opening.pause(sale.id);return j;
+ }
+ remove(id){
+  const j=this.jobs.get(id);if(!j)throw Error('没有该自动领取任务');
+  // Keep a tombstone for stable-ID deduplication. Neither listing nor restart
+  // may revive a removed task; transaction journals are independent.
+  j.deletedAt??=this.now();j.cancelled=true;j.status='DELETED';j.message='任务已删除；原交易记录保留';this.persist();
+  if(j.sellJobId&&this.opening.jobs.has(j.sellJobId))this.opening.remove(j.sellJobId);return j;
+ }
+ restore(id){
+  const j=this.jobs.get(id);if(!j||j.deletedAt)throw Error('任务已删除或不存在，不能恢复');if(j.status==='PAUSED')return j;
+  if(j.status!=='STOPPED'||this.busy.has(id))throw Error('仅可找回旧版已停止任务，且原操作须已结束');
+  const sale=this.opening.jobs.get(j.sellJobId);if(sale?.status==='CANCELLED')this.opening.restore(sale.id);
+  j.resumeStatus=j.sellJobId?'SELLING':j.claimId&&j.commitStartedAt?'CLAIMING':'WAITING_MINT';
+  j.status='PAUSED';j.pauseReason='user';delete j.cancelled;j.restoredAt=this.now();j.message='旧版已停止任务已找回；当前暂停，点击恢复后才继续';this.persist();return j;
+ }
  stop(id){const j=this.jobs.get(id);if(!j)throw Error('没有该自动领取任务');if(j.sellJobId&&this.opening.jobs.has(j.sellJobId))this.opening.stop(j.sellJobId);j.cancelled=true;j.status='STOPPED';j.message='已停止后续动作；已提交交易请在操作记录核对原单。';this.persist();return j;}
- resume(id){const j=this.jobs.get(id);if(!j||j.status!=='PAUSED')throw Error('仅暂停的任务可以恢复');if(!same(this.binding(j.account).address,j.wallet))throw Error('钱包绑定已变化');if(!this.engine.live)throw Error('运行模式已变化，不能恢复实盘任务');
-  if(j.resumeStatus==='SELLING'&&this.opening.jobs.has(j.sellJobId)){const claim=this.engine.get(j.claimId);if(claim?.status!=='CONFIRMED')throw Error('领取原单尚未确认，不能恢复联动卖出');this.opening.resumeAfterClaim(j.sellJobId,claim,j.policy.sell,j.authorization);}
-  j.status=j.resumeStatus||'WAITING_MINT';delete j.resumeStatus;j.message='用户已恢复监测';this.persist();this.schedule();return j;}
+ resume(id){const j=this.jobs.get(id);if(!j||j.status!=='PAUSED'||j.cancelled||this.closed)throw Error('仅暂停且未停止的任务可以恢复');if(!same(this.binding(j.account).address,j.wallet))throw Error('钱包绑定已变化');if(!this.engine.live)throw Error('运行模式已变化，不能恢复实盘任务');
+  if(this.busy.has(id))throw Error('正在结束暂停前的操作，请稍后点击恢复');
+  if(j.resumeStatus==='CLAIMING'){
+   const o=this.engine.get(j.claimId);
+   // Cancellation before the dispatch boundary is safe to prepare again;
+   // any recorded request/hash must instead follow its original ID.
+   if(o?.status==='CANCELLED'&&!o.steps?.length&&!o.orderId&&!o.txHash){j.resumeStatus='WATCHING';delete j.commitStartedAt;}
+  }
+  if(!ACTIVE.has(j.resumeStatus||'WAITING_MINT'))throw Error('原任务状态不支持恢复，请核对原单');
+  if(this.list().some(x=>x.id!==id&&this.allowed(x)&&x.account===j.account&&same(x.mint,j.mint)))throw Error('此钱包已有该项目的自动任务运行，未重复恢复');
+  let resumedSale=false;
+  if(j.resumeStatus==='SELLING'&&this.opening.jobs.has(j.sellJobId)){const claim=this.engine.get(j.claimId);if(claim?.status!=='CONFIRMED')throw Error('领取原单尚未确认，不能恢复联动卖出');const before=this.opening.jobs.get(j.sellJobId).status;this.opening.resumeAfterClaim(j.sellJobId,claim,j.policy.sell,j.authorization);resumedSale=before==='PAUSED';}
+  const previous={status:j.status,resumeStatus:j.resumeStatus,message:j.message};
+  j.status=j.resumeStatus||'WAITING_MINT';delete j.resumeStatus;j.message='用户已恢复监测';try{this.persist();}catch(e){Object.assign(j,previous);if(resumedSale)try{this.opening.pause(j.sellJobId);}catch{}throw e;}this.schedule();return j;}
  async probe(mint){const key=mint.toLowerCase(),old=this.probes.get(key);if(old&&(old.pending||this.now()-old.at<250))return old.promise;
   const entry={pending:true,at:this.now(),promise:this.client.get(mint,CORLA_MINT,'getMintState')};this.probes.set(key,entry);
   try{return await entry.promise;}catch(e){if(this.probes.get(key)===entry)this.probes.delete(key);throw e;}finally{entry.pending=false;}}
  warm(j){if(!j.policy.sell||this.now()-(j.warmedAt||0)<45000)return;j.warmedAt=this.now();const prep=this.engine.openingPreparation;if(prep)void Promise.allSettled(DEXES.map(d=>prep.venue(d)));}
+ warmClaim(j){
+  if(!this.engine.warmCorlaClaim)return;
+  const key=j.mint.toLowerCase(),old=this.claimWarm.get(key);if(old&&(old.pending||this.now()-old.at<5000))return;
+  const entry={at:this.now(),pending:true};this.claimWarm.set(key,entry);
+  // Public registry/code only, shared by every wallet of this project. No
+  // claim quantity, official requestId, approval or signature is cached here.
+  void Promise.resolve().then(()=>this.engine.warmCorlaClaim(j.mint)).catch(()=>{if(this.claimWarm.get(key)===entry)this.claimWarm.delete(key);}).finally(()=>{entry.pending=false;});
+ }
  warmSale(j,token=j.policy.expectedToken){
   if(!j.policy.sell||!this.allowed(j)||!token||same(token,ZeroAddress)||this.saleWarmBusy.has(j.id)||this.now()-(j.saleWarmedAt||0)<3000)return;
   j.saleWarmedAt=this.now();this.saleWarmBusy.add(j.id);
@@ -47,8 +89,9 @@ export class CorlaAutomation{
   void Promise.allSettled([this.engine.openingPreparation?.token(token),this.opening.detector?.scan(token,{currency:j.policy.sell.currency})]).finally(()=>{this.saleWarmBusy.delete(j.id);});
  }
  review(j,message){j.status='REVIEW';j.message=message;this.persist();}
+ rememberError(j,error){j.lastError=publicError(error);j.errorHistory=[...(j.errorHistory||[]),{at:this.now(),status:j.status,claimId:j.claimId,error:j.lastError}].slice(-12);}
  async tick(id){
-  const j=this.jobs.get(id);if(!j||!this.allowed(j)||this.busy.has(id))return j;this.busy.add(id);
+  const j=this.jobs.get(id);if(!j||!this.allowed(j)||this.busy.has(id))return j;this.busy.add(id);let startedAttempt=false;
   try{
    if(!same(this.binding(j.account).address,j.wallet))return this.review(j,'钱包绑定已变化，停止自动动作');
    if(this.engine.running.has(j.account))return j;
@@ -71,7 +114,7 @@ export class CorlaAutomation{
    }
    if(!this.allowed(j))return j;
    if(j.status==='WATCHING'){
-    this.warm(j);if(this.now()<(j.retryAt||0))return j;
+    this.warm(j);this.warmClaim(j);if(this.now()<(j.retryAt||0))return j;
     const [,phase]=await this.probe(j.mint);if(!this.allowed(j)||j.status!=='WATCHING')return j;j.lastScanAt=this.now();
     if(BigInt(phase)===4n)return this.review(j,'项目进入退款阶段；未自动退款，请使用退款入口');
     if(BigInt(phase)===5n){
@@ -83,14 +126,18 @@ export class CorlaAutomation{
     if(BigInt(phase)!==3n)return j;
     j.openedAt??=this.now();
     this.warmSale(j);
-    if(j.attempts>=30)return this.review(j,'开盘后领取预览仍未通过，请查看原单原因；没有提交失败交易');
-    const claimId=j.id+'-claim-'+(++j.attempts);j.claimId=claimId;this.persist();
+    if(j.attempts>=30)return this.review(j,'开盘后领取预览仍未通过：'+(j.lastError?.message||'请查看原单原因')+'；没有提交失败交易');
+    const claimId=j.id+'-claim-'+(++j.attempts);j.claimId=claimId;startedAttempt=true;this.persist();
     const o=await this.engine.prepare({account:j.account,side:'mint',asset:j.mint,routeId:'corla:claim',quantity:1,scope:'free',maxBnb:'0',maxUsdt:'0',autoClaim:false,referral:'none'},claimId);
     if(!this.allowed(j)||j.status!=='WATCHING')return j;
-    if(o.status==='BLOCKED'&&!o.steps?.length){j.message='等待领取预览通过：'+(o.error?.message||'未知原因');j.retryAt=this.now()+1000;this.persist();return j;}
+    if(o.status==='BLOCKED'&&!o.steps?.length){
+     this.rememberError(j,o.error||{message:'领取预览未通过'});
+     if(['CORLA_ALREADY_CLAIMED','CORLA_REFUND_ONLY'].includes(o.error?.code)||o.error?.code==='NO_QUOTA'&&o.error.details?.reason==='no-allocation')return this.review(j,o.error.message+'；没有重复领取或自动卖出');
+     j.message='等待领取预览通过：'+(o.error?.message||'未知原因');j.retryAt=this.now()+1000;this.persist();return j;
+    }
     const p=o.plan;
     if(o.status!=='PREPARED'||p?.route!=='corla:claim'||!same(p.wallet,j.wallet)||p.steps?.length!==1||!same(p.steps[0].to,j.mint)||p.steps[0].data!==CORLA_MINT.encodeFunctionData('claim')||BigInt(p.steps[0].value)!==0n||!p.requireAssetCredit||p.identity?.fingerprint!==j.identity?.fingerprint||p.protocolIdentities?.[0]?.fingerprint!==j.protocolIdentities?.[0]?.fingerprint||(!same(j.policy.expectedToken,ZeroAddress)&&!same(p.outputToken,j.policy.expectedToken)))return this.review(j,'领取目标、资产或合约身份与认购时不一致');
-    if(o.preview?.risks?.length)return this.review(j,'领取预览包含新的钱包风险提示，请手动核对');
+    if(hasPreviewRisks(o.preview?.risks))return this.review(j,'领取预览包含新的钱包风险提示，请手动核对');
     this.warmSale(j,p.outputToken);
     // This marker is durable before execute. No later path retries a send.
     j.status='CLAIMING';j.commitStartedAt=this.now();j.message='开盘已检测，提交全部领取';this.persist();
@@ -110,10 +157,24 @@ export class CorlaAutomation{
     if(sale.status==='PAUSED'){j.resumeStatus='SELLING';j.status='PAUSED';j.message='联动卖出已暂停；点击恢复将核验并继续原任务';this.persist();return j;}
     if(['COMPLETED','CANCELLED','EXPIRED'].includes(sale.status)){j.status=sale.rows.every(r=>r.status==='CONFIRMED')?'DONE':'REVIEW';j.message=j.status==='DONE'?'全部领取和联动卖出均已确认':'领取已完成；卖出结果请查看开盘卖出记录';this.persist();}
    }
-  }catch(e){j.message=e.message;if(j.commitStartedAt&&j.status!=='CLAIMING')j.status='REVIEW';this.persist();}
+  }catch(e){if(this.allowed(j)){
+   this.rememberError(j,e);
+   if(startedAttempt&&localAdmissionDeferred(e,this.engine.get(j.claimId))){
+    // Neither a busy mutex nor another pending order is a failed claim.
+    // Keep the same next attempt ID, and keep reconciling the blocking original.
+    j.attempts--;j.busyDeferrals=(j.busyDeferrals||0)+1;delete j.commitStartedAt;j.status='WATCHING';j.retryAt=this.now()+300;
+    j.message='等待钱包空闲或原单核对后继续领取；尚未提交本次领取';
+   }else{j.message=e.message;if(j.commitStartedAt&&j.status!=='CLAIMING')j.status='REVIEW';}
+   this.persist();
+  }}
   finally{this.busy.delete(id);}return j;
  }
  async claimResult(j,o){
+  if(this.allowed(j)&&(j.claimRecoveries||0)<2&&recoverableClaim(o,j)){
+   j.failedClaims=[...(j.failedClaims||[]),{id:o.id,txHash:o.steps.at(-1)?.txHash,error:o.error,at:this.now()}];
+   j.claimRecoveries=(j.claimRecoveries||0)+1;delete j.commitStartedAt;
+   j.status='WATCHING';j.retryAt=this.now()+250;j.message='领取已确认未成交，重新检查可领额度后重试（'+j.claimRecoveries+'/2）';this.persist();return j;
+  }
   if(o.status==='CONFIRMED'){
    if(!same(o.plan.wallet,j.wallet)||o.plan.route!=='corla:claim'||!o.steps?.some(e=>e.status==='CONFIRMED'&&BigInt(e.received||0)>0n))return this.review(j,'领取回执未证明本钱包到账');
    j.claimedAt=this.now();j.claimTx=o.steps.at(-1)?.txHash;

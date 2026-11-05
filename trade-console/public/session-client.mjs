@@ -17,7 +17,7 @@ export function createConsoleClient({fetchImpl=(...args)=>fetch(...args),onSessi
   })();loading.finally(()=>{loading=null;}).catch(()=>{});return loading;
  }
  async function request(path,body){
-  if(!/^(?:[a-z][a-z0-9-]*(?:\?.*)?|opening\/(?:check|arm|stop))$/.test(path)||path==='bootstrap')throw Error('本地接口路径无效');
+  if(!/^(?:[a-z][a-z0-9-]*(?:\?.*)?|opening\/(?:check|arm|stop)|tasks\/(?:resume|pause|delete|restore|edit|candidates|add))$/.test(path)||path==='bootstrap')throw Error('本地接口路径无效');
   if(!session)await refreshSession();
   const used=session.token,{response,value}=await send(path,body,used);
   if(response.ok)return value;
