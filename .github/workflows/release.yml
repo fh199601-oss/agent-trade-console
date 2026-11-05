@@ -1,0 +1,126 @@
+name: Publish tested portable packages as draft
+on:
+  workflow_dispatch:
+    inputs:
+      tested_run:
+        description: Successful main-branch Platform tests run ID
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TESTED_RUN: ${{ inputs.tested_run }}
+    steps:
+      - name: Verify the source run
+        id: source
+        shell: python
+        run: |
+          import json,os,re,subprocess
+          run=os.environ['TESTED_RUN'];repo=os.environ['GH_REPO']
+          assert re.fullmatch(r'[1-9][0-9]*',run)
+          def api(path):return json.loads(subprocess.check_output(['gh','api',f'repos/{repo}/{path}']))
+          source=api('actions/runs/'+run)
+          assert source['conclusion']=='success' and source['status']=='completed'
+          assert source['event']=='push' and source['head_branch']=='main'
+          assert source['head_repository']['full_name']==repo
+          assert source['path']=='.github/workflows/platforms.yml'
+          jobs=api(f'actions/runs/{run}/jobs?per_page=100')['jobs']
+          platforms=['windows-x64','windows-arm64','macos-x64','macos-arm64']
+          assert len(jobs)==4 and all(j['conclusion']=='success' for j in jobs)
+          for platform in platforms:
+              matches=[j for j in jobs if j['name'].endswith(', '+platform+')')]
+              assert len(matches)==1
+              assert any(s['conclusion']=='success' and 'smoke_install.py --archive' in s['name'] for s in matches[0]['steps'])
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('sha='+source['head_sha']+'\nrun='+run+'\n')
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          path: tested
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.source.outputs.run }}
+          pattern: portable-*
+          path: packages
+          merge-multiple: true
+      - name: Audit every archive and assemble source package
+        id: audit
+        shell: python
+        run: |
+          import hashlib,json,re,os,zipfile
+          from pathlib import Path,PurePosixPath
+          root=Path('tested');out=Path('packages')
+          sha=lambda data:hashlib.sha256(data).hexdigest()
+          manifest_data=(root/'MANIFEST.json').read_bytes()
+          expected=json.loads(manifest_data)['files']
+          locks=json.loads((root/'tools/runtime-lock.json').read_text())['platforms']
+          version=json.loads((root/'trade-console/package.json').read_text())['version']
+          assert re.fullmatch(r'\d+\.\d+\.\d+',version)
+          forbidden={'.git','.baw','.env','local','wallet-containers','accounts.json','wallet-entrypoints.json','install.json','service.json'}
+          secret=re.compile(rb'-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----|(?:ghp_|github_pat_)[A-Za-z0-9_]{30,}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}')
+          for name,want in expected.items():
+              p=PurePosixPath(name)
+              assert not p.is_absolute() and '..' not in p.parts and '\\' not in name
+              assert not set(p.parts)&forbidden
+              data=(root/name).read_bytes()
+              assert sha(data)==want and not secret.search(data),name
+          archives=sorted(out.glob('*.zip'));assert len(archives)==4
+          expected_names={f'agent-trade-console-v{version}-{platform}.zip' for platform in locks}
+          assert {p.name for p in archives}==expected_names
+          report=[]
+          for path in archives:
+              digest=sha(path.read_bytes())
+              assert path.with_suffix('.zip.sha256').read_text().split()[0]==digest
+              with zipfile.ZipFile(path) as z:
+                  names=z.namelist();assert len(names)==len(set(names))
+                  for name in names:
+                      p=PurePosixPath(name)
+                      assert p.parts[0]=='AgentTradeConsole' and not p.is_absolute() and '..' not in p.parts and '\\' not in name
+                      assert not set(p.parts)&forbidden,name
+                  packed=json.loads(z.read('AgentTradeConsole/MANIFEST.json'))['files']
+                  assert set(names)=={'AgentTradeConsole/'+n for n in [*packed,'MANIFEST.json']}
+                  assert set(expected)<=set(packed)
+                  for name,want in packed.items():
+                      assert sha(z.read('AgentTradeConsole/'+name))==want,name
+                      if name in expected:assert want==expected[name],name
+                      else:assert name=='PORTABLE.json' or name.startswith(('portable/','trade-console/node_modules/')),name
+                  provenance=json.loads(z.read('AgentTradeConsole/PORTABLE.json'))
+                  assert provenance['sourceManifestSha256']==sha(manifest_data)
+                  assert provenance['version']==version and provenance['runtimes']==locks[provenance['platform']]
+                  assert path.name==f'agent-trade-console-v{version}-{provenance["platform"]}.zip'
+              report.append({'file':path.name,'sha256':digest,'verifiedFiles':len(packed)})
+          source=out/f'agent-trade-console-v{version}-source.zip'
+          with zipfile.ZipFile(source,'w',zipfile.ZIP_DEFLATED,compresslevel=9) as z:
+              for name in [*expected,'MANIFEST.json']:z.write(root/name,'AgentTradeConsole/'+name)
+          digest=sha(source.read_bytes());source.with_suffix('.zip.sha256').write_text(digest+'  '+source.name+'\n')
+          report.append({'file':source.name,'sha256':digest,'verifiedFiles':len(expected)+1})
+          assert len(list(out.iterdir()))==10
+          Path('release-audit.json').write_text(json.dumps({'version':version,'archives':report,'findings':[]},indent=2))
+          print(json.dumps({'version':version,'archives':report,'findings':[]}))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('tag=v'+version+'\n')
+      - name: Upload a draft only
+        shell: python
+        env:
+          RELEASE_TAG: ${{ steps.audit.outputs.tag }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          import os,subprocess
+          from pathlib import Path
+          notes=Path('release-notes.md')
+          notes.write_text('Windows / Mac 账号池快速接入更新。详见仓库 README 和 WALLET_SETUP.md。\n\n四个平台均已通过源码和便携包安装测试，仅使用合成钱包、零真实交易。每个发行文件已核验清单和哈希。\n',encoding='utf-8')
+          subprocess.run(['gh','release','create',os.environ['RELEASE_TAG'],'--repo',os.environ['GH_REPO'],'--target',os.environ['SOURCE_SHA'],'--draft','--title',os.environ['RELEASE_TAG']+' · 账号池快速接入','--notes-file',str(notes),*[str(p) for p in sorted(Path('packages').iterdir())]],check=True)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-audit
+          path: release-audit.json
+          if-no-files-found: error
