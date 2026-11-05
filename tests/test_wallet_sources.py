@@ -94,5 +94,14 @@ class WalletSources(unittest.TestCase):
             args=bridge.launch_args({'command':[str(p),'-Profile',"name's profile"]},['wallet','status','--json'])
         import base64
         script=base64.b64decode(args[-1]).decode('utf-16le');self.assertIn(" -Profile 'name''s profile' ",script)
+    @unittest.skipIf(os.name=='nt','POSIX shell launcher')
+    def test_non_executable_bash_wrapper_keeps_its_original_interpreter(self):
+        p=self.root/'existing-pool.sh'
+        import shlex
+        p.write_text('#!/bin/bash\nselect_account=(1)\nexec '+shlex.quote(sys.executable)+' '+shlex.quote(str(self.script))+' "${select_account[0]}" "$@"\n',encoding='utf-8')
+        p.chmod(0o600)
+        entry=sources.entry_from_argument('1='+str(p))
+        self.assertEqual(bridge.launch_args(entry,['wallet','status'])[0],'/bin/bash')
+        self.assertEqual(bridge.invoke(entry,['wallet','status'],timeout=2)['data']['status'],'CONNECTED')
 
 if __name__=='__main__':unittest.main()

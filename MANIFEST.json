@@ -44,7 +44,7 @@
     "setup.py": "38716e695e265794585baba7d63e965d419f0aa027f540b3a1473b8003d22713",
     "tests/test_install.py": "21114ec4b4547a226673c3e5c37e235d78e302ddd8a7dfabbe018093b407fee5",
     "tests/test_release_scope.py": "b1a300deac3fd4006875990ddcbb240a371a6f0a31e7d930477848619598f949",
-    "tests/test_wallet_sources.py": "35d2c379b16b765e7970a22424e1886decbe1e8771411289fd2d9bc8b20ce485",
+    "tests/test_wallet_sources.py": "b034dadc63f4e77480adaad64490a954330829783acda8e3f3d2e6cce2f49b1d",
     "tools/build_portable.py": "eadf89e53012788d0b5070bf4452f81c244a6d442970a554cdd952a90b55f266",
     "tools/runtime-lock.json": "bc0298c993654d7472414c91011d25395a37bffee1572e4f7db776587a4c2dd7",
     "tools/smoke_install.py": "d9a705f566032ccb0fda1476b23443716ac8ae162de573734e1cfcb82a77feb4",
@@ -154,7 +154,7 @@
     "trade-console/test/session-client.test.mjs": "2c0ee05fd117dbb70d4974c5ccd09438567ff91746b6d361eb2e314f5dc5791e",
     "trade-console/test/share.test.mjs": "0d25da7a889bb894b891f3e8835625eb614483f06f3c523f0306a122a9f72085",
     "trade-console/test/support/test-wallets.mjs": "a05eea2d82710ceaa1e033d4d8b3ab712b5b6d6113afd8fafadaba19b63bc39b",
-    "wallet_bridge.py": "ed12cf93b4d2693c6fdba4ae81f070fc14f60b1173f6c4f8a35b4b00c4cab178",
+    "wallet_bridge.py": "ad588d1d20d3271da3c3fbc325e1e8a8f1cd2f7323cc425f65d485cac896c56c",
     "wallet_sources.py": "ddd7e2e7921352ea66c7910be4a9027605ad871eb943e3356c8c85aa23d0abe0"
   }
 }

@@ -11,6 +11,7 @@ import time
 import threading
 import signal
 import re
+import shlex
 from contextlib import contextmanager
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from runtime_paths import LOCAL, hidden_process_options, runtime_environment, configure_stdio
@@ -79,9 +80,18 @@ def launch_args(entry, args):
         # quoted, including apostrophes, $(), semicolons and script paths.
         psarg=lambda s:s if target.suffix.lower()=='.ps1' and re.fullmatch(r'-[A-Za-z][A-Za-z0-9_]*',s) else literal(s)
         script="[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); $OutputEncoding = [Console]::OutputEncoding; & "+literal(expanded[0])+' '+ ' '.join(map(psarg,expanded[1:]))+'; exit $LASTEXITCODE'
-        return [ps,'-NoLogo','-NoProfile','-NonInteractive','-WindowStyle','Hidden','-EncodedCommand',base64.b64encode(script.encode('utf-16le')).decode('ascii')]
+        hidden=['-WindowStyle','Hidden'] if os.name=='nt' else []
+        return [ps,'-NoLogo','-NoProfile','-NonInteractive',*hidden,'-EncodedCommand',base64.b64encode(script.encode('utf-16le')).decode('ascii')]
     if target.suffix.lower()=='.sh':
         if os.name=='nt':raise BridgeError('Windows 请使用原生钱包入口或显式的 WSL 入口清单，不自动切换环境')
+        if os.access(target,os.X_OK):return expanded
+        # ZIP downloads may lose executable bits. Respect the original shell
+        # instead of running Bash/Zsh account selectors as incompatible sh.
+        with target.open('r',encoding='utf-8-sig',errors='replace') as f:first=f.readline(512).strip()
+        if first.startswith('#!'):
+            interpreter=shlex.split(first[2:])
+            if interpreter and Path(interpreter[0]).is_file():return [*interpreter,*expanded]
+            raise BridgeError('原钱包脚本声明的解释器不存在，请使用原环境的完整启动命令')
         return [shutil.which('sh') or '/bin/sh',*expanded]
     if target.suffix.lower()=='.py':return [sys.executable,*expanded]
     if target.suffix.lower() in ('.js','.mjs'):
