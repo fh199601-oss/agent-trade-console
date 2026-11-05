@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from wallet_bridge import invoke, account_lock, bsc_address, BridgeError, check_environment
 from runtime_paths import LOCAL, hidden_process_options, runtime_environment, configure_stdio
-from wallet_sources import entries_at, read_entrypoints, entry_from_argument, MAP_NAME, SCRIPT, MAX_WALLETS
+from wallet_sources import entries_at, read_entrypoints, entry_from_argument, MAP_NAME, SCRIPT, MAX_WALLETS, public_path
 
 ROOT=Path(__file__).resolve().parent
 CONFIG=LOCAL/'install.json'
@@ -58,16 +58,20 @@ def verify_release():
 
 def find_wallet_dirs(roots):
     """Bounded filename scan; never descend into hidden or credential directories."""
-    found=set();visited=set();count=0;deadline=time.monotonic()+3
+    found=set();visited=set();count=0;deadline=time.monotonic()+3;ignored={x.casefold() for x in IGNORE}
     for root in roots:
         root=Path(root).expanduser()
-        if not root.is_dir() or root.is_symlink() or any(p.casefold() in {x.casefold() for x in IGNORE} for p in root.parts): continue
+        if not root.is_dir() or root.is_symlink() or root.name.casefold() in ignored: continue
+        # A specific public pool may live under AppData/Library. Those broad
+        # trees are not search roots, but their names aren't credential stores.
+        try: public_path(root.absolute())
+        except ValueError: continue
         for current,dirs,files in os.walk(root,followlinks=False):
             p=Path(current)
             if p in visited: dirs[:]=[];continue
             visited.add(p);count+=1
             depth=len(p.relative_to(root).parts)
-            dirs[:]=sorted(d for d in dirs if not d.startswith('.') and d not in IGNORE and not (p/d).is_symlink() and depth<5)
+            dirs[:]=sorted(d for d in dirs if not d.startswith('.') and d.casefold() not in ignored and not (p/d).is_symlink() and depth<5)
             if count>6000 or time.monotonic()>deadline: return ScanResults(sorted(found),truncated=True)
             if MAP_NAME in files or any(SCRIPT.fullmatch(f) for f in files):
                 found.add(p.resolve())

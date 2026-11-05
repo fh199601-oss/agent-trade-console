@@ -30,6 +30,16 @@ class WalletSources(unittest.TestCase):
         self.assertEqual(sources.entries_at(p)[0]['account'],17)
         (p/'accounts.json').write_text(json.dumps({'account17':None}))
         self.assertEqual(sources.entries_at(p),[])
+    def test_specific_public_pool_under_appdata_or_library_is_searchable(self):
+        for name in ['AppData','Library']:
+            parent=self.root/name;pool=parent/'PublicPool';pool.mkdir(parents=True)
+            (pool/'account7.py').write_text('')
+            self.assertEqual(setup.find_wallet_dirs([pool]),[pool])
+            self.assertEqual(setup.find_wallet_dirs([parent]),[])
+        private=self.root/'.baw'/'nested';private.mkdir(parents=True)
+        (private/'account7.py').write_text('')
+        with patch.object(setup.os,'walk',side_effect=AssertionError('credential directory scanned')):
+            self.assertEqual(setup.find_wallet_dirs([private]),[])
     def test_public_map_optional_address_and_argument_insertion(self):
         row=self.row();row['command']=[str(self.script),'1','{args}','--readonly-output']
         entry=sources.read_entrypoints(self.manifest([row]))[0]
