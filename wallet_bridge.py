@@ -14,7 +14,8 @@ import re
 import shlex
 from contextlib import contextmanager
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from runtime_paths import LOCAL, hidden_process_options, runtime_environment, configure_stdio
+from runtime_paths import LOCAL, hidden_process_options, wallet_environment, configure_stdio
+from wallet_safety import verify_environment_binding, original_runtime, WalletSafetyError
 
 ROOT = Path(__file__).resolve().parent
 READS = {('wallet', n) for n in ('status','address','settings','agent-id','balance','gas-price','tx-history','tx-lock')}
@@ -32,31 +33,32 @@ class BridgeError(Exception):
 def check_environment(entry):
     """Recognized legacy Docker wrappers only; never start/repair Docker here."""
     if entry.get('kind')!='numbered': return
-    target=Path(entry['command'][0]);context=None
+    target=Path(entry['command'][0]);context=None;docker_needed=False
     source=target.parent/('wallet.ps1' if target.suffix.lower()=='.ps1' else 'wallet_mac.py')
     if source.is_file() and not source.is_symlink() and source.stat().st_size<300_000:
         text=source.read_text(encoding='utf-8-sig',errors='replace')
-        if "'desktop-linux'" in text and 'docker' in text.lower():context='desktop-linux'
-        elif sys.platform=='darwin' and 'BAW_DOCKER_CONTEXT' in text and 'colima' in text:context='colima'
-    if not context:return
-    with _environment_guard: lock=_environment_locks.setdefault(context,threading.Lock())
+        if "'desktop-linux'" in text and 'docker' in text.lower():context='desktop-linux';docker_needed=True
+        elif 'BAW_DOCKER_CONTEXT' in text and 'docker' in text.lower():context=wallet_environment().get('BAW_DOCKER_CONTEXT');docker_needed=True
+    if not docker_needed:return
+    env=wallet_environment();key=(context,hashlib.sha256(json.dumps([env.get(x) for x in ['PATH','DOCKER_HOST','DOCKER_CONTEXT']]).encode()).hexdigest())
+    with _environment_guard: lock=_environment_locks.setdefault(key,threading.Lock())
     with lock:
-        cached=_environment_cache.get(context)
+        cached=_environment_cache.get(key)
         if cached and cached[0]>time.monotonic():
             if cached[1]:return
             e=BridgeError('现有编号钱包环境未就绪，请启动原环境后重查；未修改 Docker。');e.code='WALLET_ENVIRONMENT_NOT_READY';raise e
         ready=_docker_ready(context)
-        _environment_cache[context]=(time.monotonic()+(30 if ready else 5),ready)
+        _environment_cache[key]=(time.monotonic()+(30 if ready else 5),ready)
     if not ready:
-        e=BridgeError('现有编号钱包需要 Docker（'+context+'），引擎未就绪；请先启动原钱包环境，再重试接入。看板不会反复启动或修改 Docker。')
+        e=BridgeError('现有编号钱包需要 Docker，引擎未就绪；请先启动原钱包环境，再重试接入。看板不会切换 context、反复启动或修改 Docker。')
         e.code='WALLET_ENVIRONMENT_NOT_READY';raise e
 
 def _docker_ready(context):
-    docker=shutil.which('docker',path=runtime_environment()['PATH'])
+    env=wallet_environment();docker=shutil.which('docker',path=env['PATH'])
     ready=False
     if docker:
         try:
-            r=subprocess.run([docker,'--context',context,'info','--format','{{.ServerVersion}}'],capture_output=True,timeout=4,**hidden_process_options())
+            r=subprocess.run([docker,*(['--context',context] if context else []),'info','--format','{{.ServerVersion}}'],env=env,capture_output=True,timeout=4,**hidden_process_options())
             ready=r.returncode==0
         except (OSError,subprocess.TimeoutExpired):pass
     return ready
@@ -72,7 +74,8 @@ def launch_args(entry, args):
     expanded=[part for item in command for part in (list(args) if item=='{args}' else [item])] if '{args}' in command else [*command,*args]
     # No shell interpolation. PowerShell single-quoted strings escape embedded quotes.
     if target.suffix.lower() in ('.ps1','.cmd','.bat'):
-        ps=shutil.which('pwsh') or shutil.which('powershell')
+        names=['powershell','pwsh'] if os.name=='nt' else ['pwsh','powershell']
+        ps=next((p for n in names if (p:=shutil.which(n,path=wallet_environment()['PATH']))),None)
         if not ps: raise BridgeError('此钱包入口需要 PowerShell')
         literal=lambda s: "'"+s.replace("'","''")+"'"
         # A quoted '-Account' becomes a positional value for .ps1 scripts.
@@ -93,11 +96,8 @@ def launch_args(entry, args):
             if interpreter and Path(interpreter[0]).is_file():return [*interpreter,*expanded]
             raise BridgeError('原钱包脚本声明的解释器不存在，请使用原环境的完整启动命令')
         return [shutil.which('sh') or '/bin/sh',*expanded]
-    if target.suffix.lower()=='.py':return [sys.executable,*expanded]
-    if target.suffix.lower() in ('.js','.mjs'):
-        node=shutil.which('node',path=runtime_environment()['PATH'])
-        if not node:raise BridgeError('缺少 Node 运行环境，请使用完整便携包')
-        return [node,*expanded]
+    if target.suffix.lower() in ('.py','.js','.mjs'):
+        return [entry.get('execution',{}).get('runtime') or original_runtime(target),*expanded]
     return expanded
 
 @contextmanager
@@ -133,10 +133,12 @@ def account_lock(entry, timeout=90):
             else: fcntl.flock(f,fcntl.LOCK_UN)
 
 def invoke(entry,args,timeout=100):
+    try:verify_environment_binding(entry)
+    except WalletSafetyError as error:
+        e=BridgeError(str(error));e.code=error.code;raise e
     args=list(args)
     if '--json' not in args: args.append('--json')
-    env=runtime_environment()
-    if sys.platform=='darwin' and entry.get('kind')=='numbered': env['BAW_DOCKER_CONTEXT']='colima'
+    env=wallet_environment()
     try:
         r=run_command(launch_args(entry,args),cwd=entry['cwd'],env=env,timeout=timeout)
     except subprocess.TimeoutExpired:

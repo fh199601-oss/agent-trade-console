@@ -82,7 +82,7 @@ def run_smoke(archive=None):
                 command=[str(entry),'-Profile','slot-a']
             else:
                 entry.write_text('import sys,runpy\nassert sys.argv[1:3]==["--profile","slot-a"]\nsys.argv=[sys.argv[0],*sys.argv[3:]]\nrunpy.run_path('+repr(str(fixture))+',run_name="__main__")\n',encoding='utf-8')
-                command=[str(entry),'--profile','slot-a']
+                command=[sys.executable,str(entry),'--profile','slot-a']
             mapping=pool/'wallet-entrypoints.json';mapping.write_text(json.dumps({'schema':1,'wallets':[{'account':7,'address':address,'command':command,'cwd':str(pool)}]}),encoding='utf-8')
             before=len(calls.read_text().splitlines());description=cmd('discover','--wallet-map',str(mapping));assert description['walletCommands']==0
             assert len(calls.read_text().splitlines())==before

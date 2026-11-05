@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import setup, wallet_bridge as bridge, wallet_sources as sources
+from wallet_safety import bind_environment
 
 class WalletSources(unittest.TestCase):
     def setUp(self):
@@ -12,7 +13,7 @@ class WalletSources(unittest.TestCase):
         self.script=self.root/'原有入口.py'
         self.script.write_text('import json,sys,time\na=sys.argv[1:]\nn=int(a[0]);a=a[1:]\nassert "--json" in a\nassert a[:2] in [["wallet","status"],["wallet","address"]]\nif n==99:time.sleep(20)\nd={"status":"CONNECTED"} if a[1]=="status" else {"addresses":[{"binanceChainId":"56","address":"0x"+format(n,"040x")}]}\nprint(json.dumps({"success":True,"data":d}))\n',encoding='utf-8')
     def tearDown(self):self.home.stop();self.temp.cleanup()
-    def row(self,n=1):return {'account':n,'command':[str(self.script),str(n)],'cwd':str(self.root)}
+    def row(self,n=1):return {'account':n,'command':[sys.executable,str(self.script),str(n)],'cwd':str(self.root)}
     def manifest(self,rows=None):
         p=self.root/sources.MAP_NAME;p.write_text(json.dumps({'schema':1,'wallets':rows or [self.row()]}),encoding='utf-8');return p
     def test_custom_pool_and_many_accounts_do_not_require_publisher_layout(self):
@@ -24,7 +25,7 @@ class WalletSources(unittest.TestCase):
     def test_explicit_map_never_searches_disk_or_falls_back(self):
         with patch.object(setup,'find_wallet_dirs') as scan,patch.object(setup,'verify_entries',return_value=([],[])) as verify:
             setup.discover(wallet_map=self.manifest())
-        scan.assert_not_called();self.assertEqual(verify.call_args.args[0][0]['command'],[str(self.script),'1'])
+        scan.assert_not_called();self.assertEqual(verify.call_args.args[0][0]['command'],[sys.executable,str(self.script),'1'])
     def test_any_directory_numbered_scripts_and_empty_mapping(self):
         p=self.root/'my-pool';p.mkdir();(p/'account17.py').write_text('')
         self.assertEqual(sources.entries_at(p)[0]['account'],17)
@@ -41,7 +42,7 @@ class WalletSources(unittest.TestCase):
         with patch.object(setup.os,'walk',side_effect=AssertionError('credential directory scanned')):
             self.assertEqual(setup.find_wallet_dirs([private]),[])
     def test_public_map_optional_address_and_argument_insertion(self):
-        row=self.row();row['command']=[str(self.script),'1','{args}','--readonly-output']
+        row=self.row();row['command']=[sys.executable,str(self.script),'1','{args}','--readonly-output']
         entry=sources.read_entrypoints(self.manifest([row]))[0]
         command=bridge.launch_args(entry,['wallet','status','--json'])
         self.assertEqual(command,[sys.executable,str(self.script),'1','wallet','status','--json','--readonly-output'])
@@ -76,7 +77,7 @@ class WalletSources(unittest.TestCase):
             bridge.dispatch(e,['contract-call','execute'],True,read_only_timeout_ms=500,background=True)
             self.assertEqual(invoke.call_args.kwargs['timeout'],100)
     def test_existing_install_reuses_saved_entries_without_query(self):
-        e=dict(self.row(),address='0x'+format(1,'040x'));cfg={'installationId':'fake','wallets':[e],'issues':[]}
+        e=bind_environment(dict(self.row(),address='0x'+format(1,'040x')));cfg={'installationId':'fake','wallets':[e],'issues':[]}
         with patch.object(sys,'argv',['setup.py']),patch.object(setup,'LOCAL',self.root),patch.object(setup,'verify_release',return_value=1),patch.object(setup,'read',return_value=cfg),patch.object(setup,'current',return_value=None),patch.object(setup,'node_and_npm',return_value=('node','npm')),patch.object(setup,'dependencies'),patch.object(setup,'save'),patch.object(setup,'verify_entries') as verify,patch.object(setup,'start',return_value=('http://127.0.0.1:1',{'mode':'LIVE','wallets':[e]})):
             result=setup.main()
         self.assertTrue(result['success'],result);self.assertTrue(result['walletCheck']['savedBindingsReused']);verify.assert_not_called()
@@ -100,7 +101,7 @@ class WalletSources(unittest.TestCase):
         import shlex
         p.write_text('#!/bin/bash\nselect_account=(1)\nexec '+shlex.quote(sys.executable)+' '+shlex.quote(str(self.script))+' "${select_account[0]}" "$@"\n',encoding='utf-8')
         p.chmod(0o600)
-        entry=sources.entry_from_argument('1='+str(p))
+        entry=bind_environment(sources.entry_from_argument('1='+str(p)))
         self.assertEqual(bridge.launch_args(entry,['wallet','status'])[0],'/bin/bash')
         self.assertEqual(bridge.invoke(entry,['wallet','status'],timeout=2)['data']['status'],'CONNECTED')
 

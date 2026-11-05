@@ -19,6 +19,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
 from wallet_bridge import invoke, account_lock, bsc_address, BridgeError, check_environment
 from runtime_paths import LOCAL, hidden_process_options, runtime_environment, configure_stdio
 from wallet_sources import entries_at, read_entrypoints, entry_from_argument, MAP_NAME, SCRIPT, MAX_WALLETS, public_path
+from wallet_safety import bind_environment, WalletSafetyError
 
 ROOT=Path(__file__).resolve().parent
 CONFIG=LOCAL/'install.json'
@@ -90,15 +91,17 @@ def verify_entries(entries,timeout=30,workers=4):
     def check(entry):
         try:
             with account_lock(entry,timeout=min(3,remaining())):
-                remaining();check_environment(entry)
+                remaining();entry=bind_environment(entry);check_environment(entry)
                 status=invoke(entry,['wallet','status'],timeout=min(12,remaining()))
-                if status.get('success') is not True or not isinstance(status.get('data'),dict) or status['data'].get('status')!='CONNECTED':
-                    return None,{'account':entry['account'],'code':'LOGIN_REQUIRED'}
+                if status.get('success') is not True or not isinstance(status.get('data'),dict):
+                    return None,{'account':entry['account'],'code':'WALLET_STATUS_FAILED','message':'原入口未返回可核验状态；先检查运行环境，不切换 CLI、自动重登或重置会话'}
+                if status['data'].get('status')!='CONNECTED':
+                    return None,{'account':entry['account'],'code':'WALLET_DISCONNECTED','message':'原入口返回未连接；请先核对原账号池是否同样离线，不因安装失败自动注销或重新登录'}
                 address=bsc_address(invoke(entry,['wallet','address'],timeout=min(12,remaining())))
                 if entry.get('address') and address.lower()!=entry['address'].lower():
                     return None,{'account':entry['account'],'code':'ADDRESS_MISMATCH'}
                 return dict(entry,address=address),None
-        except BridgeError as e:
+        except (BridgeError,WalletSafetyError) as e:
             return None,{'account':entry['account'],'code':getattr(e,'code','READ_ONLY_CHECK_FAILED'),'message':str(e)}
         except (ValueError,TypeError,KeyError,OSError):
             return None,{'account':entry['account'],'code':'INVALID_ENTRY_RESPONSE','message':'入口未返回兼容的公开钱包状态；检查适配器，不要解析登录文件'}
@@ -121,10 +124,7 @@ def discover(wallet_dir=None,scan_roots=None,*,wallet_map=None,wallet_entries=No
         entries=entries_at(dirs[0])
         if not entries:return [],[{'code':'WALLET_ADAPTER_REQUIRED','hint':'目录没有标准编号入口；让安装 AI 将已有启动命令写入 wallet-entrypoints.json，再用 --wallet-map 直接接入。不要解析钱包存储。'}]
         return verify_entries(entries,timeout,workers)
-    baw=shutil.which('baw')
-    if baw:
-        return verify_entries([{'account':1,'kind':'official-cli','command':[str(Path(baw).absolute())],'cwd':str(ROOT)}],timeout,workers)
-    return [],[{'code':'NO_WALLET_ENTRY','hint':'安装官方 Binance Agentic Wallet CLI，按官方技能通过 App 登录；不导入私钥。'}]
+    return [],[{'code':'NO_WALLET_ENTRY','hint':'请提供原钱包公开启动入口或接入清单；不会尝试主机默认 CLI、其他版本或读取登录目录。'}]
 
 def node_and_npm():
     bundled=ROOT/'portable/node'/('node.exe' if os.name=='nt' else 'bin/node')
@@ -252,14 +252,16 @@ def main():
             progress('正在准备运行环境…');dependencies(node,npm)
             progress('正在只读检查钱包入口；不会登录、签名或交易…')
             started=time.monotonic()
+            environment_upgrade=bool(cfg and any(not w.get('execution') for w in cfg.get('wallets',[])))
             if cfg and cfg.get('wallets') and not explicit:
-                wallets,issues=verify_entries(cfg['wallets'],args.wallet_timeout,args.wallet_workers) if args.recheck_wallets else (cfg['wallets'],cfg.get('issues',[]))
+                wallets,issues=verify_entries(cfg['wallets'],args.wallet_timeout,args.wallet_workers) if args.recheck_wallets or environment_upgrade else (cfg['wallets'],cfg.get('issues',[]))
             else:wallets,issues=([],[]) if args.no_wallet else discover(args.wallet_dir,args.scan_root,wallet_map=args.wallet_map,wallet_entries=args.wallet_entry,timeout=args.wallet_timeout,workers=args.wallet_workers)
             if cfg and cfg.get('wallets') and not explicit:
                 # A transient Docker/login failure must not erase saved bindings.
-                wallets=cfg['wallets']
+                verified={w['account']:w for w in wallets}
+                wallets=[verified.get(w['account'],w) for w in cfg['wallets']]
             python=str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower()=='pythonw.exe' else sys.executable
-            check_info={'elapsedMs':round((time.monotonic()-started)*1000),'budgetSeconds':args.wallet_timeout,'workers':args.wallet_workers,'savedBindingsReused':bool(cfg and cfg.get('wallets') and not explicit and not args.recheck_wallets)}
+            check_info={'elapsedMs':round((time.monotonic()-started)*1000),'budgetSeconds':args.wallet_timeout,'workers':args.wallet_workers,'environmentUpgrade':environment_upgrade,'savedBindingsReused':bool(cfg and cfg.get('wallets') and not explicit and not args.recheck_wallets and not environment_upgrade)}
             cfg={'schema':1,'installationId':cfg['installationId'] if cfg else str(uuid4()),'python':python,'node':node,'wallets':wallets,'issues':issues,'walletCheck':check_info,'liveEnabled':True,**({'openFourScript':cfg['openFourScript']} if cfg and cfg.get('openFourScript') else {})}
             save(CONFIG,cfg)
         elif not cfg:raise RuntimeError('请先运行 python3 setup.py')

@@ -40,8 +40,20 @@ def hidden_process_options():
 
 def runtime_environment():
     env=dict(os.environ,NODE_USE_ENV_PROXY='1',PYTHONIOENCODING='utf-8')
+    # Keep the pre-install PATH across server -> bridge descendants. Bundled
+    # runtimes belong to the dashboard, never to an existing wallet launcher.
+    env.setdefault('ATC_WALLET_PATH',os.environ.get('PATH',''))
     node=ROOT/'portable/node'
     python=ROOT/'portable/python'
     additions=[node,node/'bin',python,python/'bin',Path(sys.executable).parent]
     env['PATH']=os.pathsep.join(str(p) for p in additions if p.is_dir())+os.pathsep+env.get('PATH','')
+    return env
+
+def wallet_environment():
+    env=dict(os.environ)
+    env['PATH']=env.pop('ATC_WALLET_PATH',env.get('PATH',''))
+    # Also exclude bundled paths when an older installation did not preserve
+    # its original PATH. Do not silently substitute another wallet runtime.
+    portable=(ROOT/'portable').resolve()
+    env['PATH']=os.pathsep.join(p for p in env['PATH'].split(os.pathsep) if p and not Path(p).resolve().is_relative_to(portable))
     return env

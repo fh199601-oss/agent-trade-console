@@ -20,7 +20,7 @@
 ## 发给 AI 的安装提示词
 
 ```text
-请安装 https://github.com/fh199601-oss/agent-trade-console 最新 Release 中适合我 Windows/Mac 和芯片的便携包，先读 AGENTS.md、START_HERE.md、WALLET_SETUP.md。使用包内运行环境，找到我已有的钱包/账号池启动入口后，直接用 --wallet-dir、--wallet-entry 接入；启动方式不同则由你按文档生成公开 wallet-entrypoints.json，用 --wallet-map 接入，保留原账号选择和账号锁，不要让我手工整理配置。已有绑定直接复用，不反复全盘搜索、重装或重启 Docker；失败按具体账号和 issues 定点处理。启动看板、验证页面及只读连接，把包含端口的完整网址和接入结果发给我。安装测试不得买卖、Mint、授权、签名或启动自动交易，不得读取、复制、导出或索要私钥、助记词和登录凭据；确需 App 登录或多个账号池无法确定范围时才让我操作。
+请安装 https://github.com/fh199601-oss/agent-trade-console 最新 Release 中适合我 Windows/Mac 和芯片的便携包，先读 AGENTS.md、START_HERE.md、WALLET_SETUP.md 和 WALLET_SAFETY.md。找到已有钱包/账号池的公开启动入口，先确认原主机、容器或 WSL 环境，再用 --wallet-dir、--wallet-entry 或按文档生成的 --wallet-map 接入，保留原 CLI、解释器、账号选择和锁。包内运行环境只运行看板，绝不能用主机或其他版本 CLI 打开容器登录目录，不安装升级钱包 CLI，不复制会话、不重建容器。已有绑定直接复用，失败按 issues 定点处理，不反复搜索或重装；原环境无法确认时先开空看板并说明原因。启动后验证页面和只读连接，把含端口的完整网址及接入结果发给我。安装测试不得买卖、Mint、授权、签名或启动自动交易，不得读取、复制、导出或索要私钥、助记词、登录凭据；确认确需 App 登录或多套账号池范围不明确时才让我操作。
 ```
 
 ## 功能

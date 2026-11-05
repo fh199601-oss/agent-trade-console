@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import re
+from wallet_safety import inspect_launcher
 
 MAX_WALLETS = 200
 MAP_NAME = 'wallet-entrypoints.json'
@@ -11,7 +12,7 @@ SUFFIXES = {'.ps1', '.cmd', '.bat', '.exe', '.py', '.js', '.mjs', '.sh', ''}
 SCRIPT = re.compile(r'account([1-9][0-9]{0,2})\.(sh|ps1|cmd|bat|py|mjs|js|exe)$', re.I)
 ADDRESS = re.compile(r'0x[0-9a-fA-F]{40}$')
 
-def public_path(value, base=None):
+def public_path(value, base=None, *, preserve_link=False):
     p = Path(value).expanduser()
     if not p.is_absolute():
         if base is None: raise ValueError('钱包路径须为完整路径')
@@ -19,7 +20,9 @@ def public_path(value, base=None):
     for item in [p, p.resolve()]:
         if any(x.casefold() in SECRET_DIRS or x.casefold().startswith('.env') for x in item.parts):
             raise ValueError('请选择钱包的公开启动入口，不读取凭据目录')
-    return p.resolve()
+    # Resolving a virtualenv's python symlink changes its environment. Check
+    # the real destination for secrecy, but retain the user's executable path.
+    return Path(os.path.abspath(p)) if preserve_link else p.resolve()
 
 def read_public_json(p):
     if p.is_symlink() or not p.is_file() or p.stat().st_size > 256_000:
@@ -37,7 +40,7 @@ def normalize_entry(row, base):
     if command.count('{args}') > 1: raise ValueError('{args} 最多出现一次')
     if any(re.search(r'(?i)^(--?)(private[-_]?key|mnemonic|seed|password|secret|access[-_]?token|api[-_]?key)(=|$)|^0x[0-9a-f]{64}$|^eyJ[\w-]+\.', x) for x in command):
         raise ValueError('启动参数不得包含私钥、登录令牌或密码；应复用原有入口')
-    target = public_path(command[0], base)
+    target = public_path(command[0], base, preserve_link=True)
     interpreter=bool(re.fullmatch(r'python(?:\d+(?:\.\d+)*)?',target.name,re.I))
     if not target.is_file() or target.suffix.lower() not in SUFFIXES and not interpreter:
         raise ValueError('钱包启动入口不存在或类型不支持')
@@ -56,10 +59,11 @@ def normalize_entry(row, base):
         if not isinstance(row['lockGroup'], str) or not re.fullmatch(r'[\w.:-]{1,100}', row['lockGroup']):
             raise ValueError('lockGroup 只能是公开的锁分组名称')
         result['lockGroup'] = row['lockGroup']
+    inspect_launcher(result)
     return result
 
 def read_entrypoints(filename):
-    p = public_path(filename)
+    p = public_path(filename,preserve_link=True)
     if p.name != MAP_NAME: raise ValueError('请让安装 AI 生成 wallet-entrypoints.json 公开接入清单，不选择钱包数据库')
     data = read_public_json(p)
     if not isinstance(data, dict) or set(data) != {'schema', 'wallets'} or data['schema'] != 1 or not isinstance(data['wallets'], list) or not 1 <= len(data['wallets']) <= MAX_WALLETS:
@@ -72,7 +76,7 @@ def read_entrypoints(filename):
 def entry_from_argument(value):
     n, sep, filename = value.partition('=')
     if not sep or not n.isdecimal(): raise ValueError('--wallet-entry 格式为 编号=完整启动脚本路径')
-    p = public_path(filename)
+    p = public_path(filename,preserve_link=True)
     return normalize_entry({'account':int(n), 'command':[str(p)], 'cwd':str(p.parent)}, p.parent)
 
 def entries_at(directory):

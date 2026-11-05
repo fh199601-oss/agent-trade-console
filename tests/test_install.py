@@ -10,6 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import setup
 import wallet_bridge as bridge
+from wallet_safety import bind_environment
 
 A='0x0000000000000000000000000000000000001001'
 B='0x0000000000000000000000000000000000001002'
@@ -21,7 +22,7 @@ class InstallerSafety(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name).resolve()
         self.home=patch.object(bridge.Path,'home',return_value=self.root);self.home.start()
     def tearDown(self):self.home.stop();self.temp.cleanup()
-    def entry(self):return {'account':1,'address':A,'command':[sys.executable],'cwd':str(self.root),'kind':'official-cli'}
+    def entry(self):return bind_environment({'account':1,'address':A,'command':[sys.executable],'cwd':str(self.root),'kind':'official-cli'})
     def wallet_dir(self,name='project'):
         d=self.root/name/'wallet-containers';d.mkdir(parents=True)
         (d/'accounts.json').write_text(json.dumps({'account1':A}))
@@ -46,7 +47,7 @@ class InstallerSafety(unittest.TestCase):
         self.wallet_dir()
         with patch.object(setup,'invoke',return_value=ok({'status':'UNCONNECTED'})) as call,patch.object(setup.shutil,'which') as which:
             wallets,issues=setup.discover(scan_roots=[self.root])
-        self.assertEqual(wallets,[]);self.assertEqual(issues[0]['code'],'LOGIN_REQUIRED');which.assert_not_called();self.assertEqual(call.call_count,1)
+        self.assertEqual(wallets,[]);self.assertEqual(issues[0]['code'],'WALLET_DISCONNECTED');which.assert_not_called();self.assertEqual(call.call_count,1)
     def test_binding_checks_current_address(self):
         with patch.object(setup,'invoke',side_effect=[ok({'status':'CONNECTED'}),addr(B)]):
             wallets,issues=setup.verify_entries([self.entry()])

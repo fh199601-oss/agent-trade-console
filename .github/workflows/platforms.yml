@@ -39,7 +39,7 @@ jobs:
         working-directory: trade-console
       - run: python tools/smoke_install.py
       - run: python tools/build_portable.py --platform ${{ matrix.platform }}
-      - run: python tools/smoke_install.py --archive dist/agent-trade-console-v1.3.0-${{ matrix.platform }}.zip
+      - run: python tools/smoke_install.py --archive dist/agent-trade-console-v1.3.1-${{ matrix.platform }}.zip
       - uses: actions/upload-artifact@v4
         with:
           name: portable-${{ matrix.platform }}
