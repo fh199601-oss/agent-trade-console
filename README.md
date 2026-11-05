@@ -20,7 +20,7 @@
 ## 发给 AI 的安装提示词
 
 ```text
-请安装 https://github.com/fh199601-oss/agent-trade-console 最新 Release 中适合我系统和芯片的便携包，先读 README.md、START_HERE.md、AGENTS.md，完整解压并核验文件。优先使用包内运行环境，不要让我手动装 Python/Node，也不要修改现有钱包或 Docker。只通过我已有的官方 CLI 或编号钱包入口核验并接入钱包，多套入口先让我选择；需要登录时由我在币安 App 确认。启动真实交易看板，验证网页、钱包连接和余额读取，并把包含端口的完整看板网址发给我。安装与验证不得买卖、Mint、授权或签名，不得读取、导出或索要私钥、助记词、登录凭据。遇到失败请报告具体原因，不反复拉起黑窗口。
+请安装 https://github.com/fh199601-oss/agent-trade-console 最新 Release 中适合我 Windows/Mac 和芯片的便携包，先读 AGENTS.md、START_HERE.md、WALLET_SETUP.md。使用包内运行环境，找到我已有的钱包/账号池启动入口后，直接用 --wallet-dir、--wallet-entry 接入；启动方式不同则由你按文档生成公开 wallet-entrypoints.json，用 --wallet-map 接入，保留原账号选择和账号锁，不要让我手工整理配置。已有绑定直接复用，不反复全盘搜索、重装或重启 Docker；失败按具体账号和 issues 定点处理。启动看板、验证页面及只读连接，把包含端口的完整网址和接入结果发给我。安装测试不得买卖、Mint、授权、签名或启动自动交易，不得读取、复制、导出或索要私钥、助记词和登录凭据；确需 App 登录或多个账号池无法确定范围时才让我操作。
 ```
 
 ## 功能
@@ -38,10 +38,11 @@
 
 源码用户需 Python 3.10+、Node.js 24+ 与 npm，执行 `python3 setup.py`（Windows：`py -3 setup.py`）。便携版使用 `portable/python/python.exe setup.py`（Windows）或 `./portable/python/bin/python3 setup.py`（Mac）。
 
-安装结果为 JSON：`url`、`mode`、`walletCount`、`issues`、`dataDir`。`walletCount` 是保存的绑定数；实际连接以看板 / `issues` / 官方 CLI 为准。只有唯一入口会自动绑定；多套入口需选择。使用方式详见 [START_HERE.md](START_HERE.md)。
+安装结果为 JSON：`url`、`mode`、`walletCount`、`issues`、`walletCheck`、`dataDir`。`walletCount` 是保存的绑定数；实际连接以看板 / `issues` / 官方 CLI 为准。已知路径直接绑定，未知路径最多一次限时发现；多套入口需明确范围。不同账号池、任意脚本名与 1–200 号接入见 [钱包快速接入](WALLET_SETUP.md)。默认 4 个独立钱包并行，总核验预算 30 秒，故障账号单独报告；不是整个下载或登录流程的耗时保证。
 
 ```bash
 python3 setup.py --wallet-dir "已有钱包工作区"
+python3 setup.py --wallet-map "公开清单的完整路径/wallet-entrypoints.json"
 python3 setup.py status
 python3 setup.py stop
 python3 setup.py start

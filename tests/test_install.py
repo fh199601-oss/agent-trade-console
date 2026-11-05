@@ -61,7 +61,7 @@ class InstallerSafety(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'同一钱包'):setup.verify_entries([self.entry(),dict(self.entry(),account=2)])
     def test_invalid_binding_file_rejected(self):
         d=self.wallet_dir();(d/'accounts.json').write_text('{"account1":{"unexpected":"data"}}')
-        with self.assertRaisesRegex(RuntimeError,'映射'):setup.entries_at(d)
+        with self.assertRaisesRegex(ValueError,'映射'):setup.entries_at(d)
     def test_read_only_test_bridge_cannot_dispatch_writes(self):
         with patch.object(bridge,'invoke') as invoke:
             for args in [['market-order','swap'],['contract-call','execute']]:
@@ -82,7 +82,7 @@ class InstallerSafety(unittest.TestCase):
         self.assertEqual(result['data']['orderId'],'test-only');self.assertEqual(invoke.call_args_list[-1].args[0],self.entry())
     def test_wrapper_always_uses_json_and_drops_raw_errors(self):
         result=type('R',(),{'stdout':'sensitive provider response','stderr':'sensitive provider stderr','returncode':1})()
-        with patch.object(bridge.subprocess,'run',return_value=result) as run:
+        with patch.object(bridge,'run_command',return_value=result) as run:
             with self.assertRaises(bridge.BridgeError) as error:bridge.invoke(self.entry(),['wallet','status'])
         self.assertNotIn('sensitive',str(error.exception));self.assertIn('--json',run.call_args.args[0])
     def test_wrong_chain_or_ambiguous_address_rejected(self):
@@ -111,9 +111,8 @@ class InstallerSafety(unittest.TestCase):
             self.assertTrue(options['creationflags'] & bridge.subprocess.CREATE_NO_WINDOW)
             self.assertEqual(options['startupinfo'].wShowWindow,0)
         result=type('R',(),{'stdout':'{"success":true,"data":{}}','stderr':'','returncode':0})()
-        with patch.object(bridge.subprocess,'run',return_value=result) as run:bridge.invoke(self.entry(),['wallet','status'])
-        self.assertEqual(run.call_args.kwargs['encoding'],'utf-8-sig')
-        if sys.platform=='win32':self.assertTrue(run.call_args.kwargs['creationflags'] & bridge.subprocess.CREATE_NO_WINDOW)
+        with patch.object(bridge,'run_command',return_value=result) as run:bridge.invoke(self.entry(),['wallet','status'])
+        self.assertEqual(run.call_args.kwargs['timeout'],100)
     def test_missing_docker_never_launches_legacy_bootstrap(self):
         d=self.wallet_dir();(d/'wallet.ps1').write_text("$docker = @('--context', 'desktop-linux'); & './start-environment.ps1'")
         entry=dict(self.entry(),kind='numbered',command=[str(d/'account1.ps1')])

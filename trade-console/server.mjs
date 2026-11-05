@@ -81,11 +81,18 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
    return send(404,{error:'未找到接口'});
   }catch(e){return send(e.code==='LOCAL_SESSION_EXPIRED'&&e.statusCode===401?401:400,{error:publicError(e),details:e.details,diagnostics:e.diagnostics});}
  });
- async function warm(){await Promise.all(bindings().map(async w=>{
-  if(engine.running.has(w.account)||bridge.queues?.has(w.account)||!bridge.warm)return;
-  try{const result=await bridge.warm(w.account);if(result)readiness.set(w.account,result);}
-  catch(e){readiness.set(w.account,{...w,status:'ERROR',error:e.message});}
- }));}
+ let warming=null;
+ function warm(){
+  if(warming)return warming;
+  const pending=bindings();let index=0;
+  warming=Promise.all(Array.from({length:Math.min(4,pending.length)},async()=>{
+   while(index<pending.length){const w=pending[index++];
+    if(engine.running.has(w.account)||bridge.queues?.has(w.account)||!bridge.warm)continue;
+    try{const result=await bridge.warm(w.account);if(result)readiness.set(w.account,result);}
+    catch(e){readiness.set(w.account,{...w,status:'ERROR',error:e.message});}
+   }
+  })).finally(()=>{warming=null;});return warming;
+ }
  server.on('close',()=>{corla.close();opening.close();});
  return {server,engine,bridge,token,warm,rpc,readRpc,opening,corla};
 }

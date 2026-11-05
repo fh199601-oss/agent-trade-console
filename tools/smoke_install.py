@@ -74,7 +74,25 @@ def run_smoke(archive=None):
             commands=[json.loads(x) for x in calls.read_text(encoding='utf-8').splitlines()]
             assert all(' '.join(c[:2]) in {'wallet status','wallet address','wallet settings'} and '--json' in c for c in commands)
             cmd('stop');assert not cmd('status')['running']
-            print(json.dumps({'success':True,'platform':sys.platform,'portable':bool(archive),'checks':['install','LIVE without writes','paths with spaces and Chinese','repeat install','desktop entry','assets','numbered wrapper','read-only readiness','no automatic jobs','stop'],'fakeWalletCommands':len(commands),'realWalletCommands':0,'submittedTransactions':0}))
+            # An unrelated account-pool layout, arbitrary launcher name and
+            # original profile parameter; no publisher-specific account1 path.
+            pool=temp/'独立账号池';pool.mkdir();entry=pool/('manage.ps1' if os.name=='nt' else 'manage.py')
+            if os.name=='nt':
+                entry.write_text("param([string]$Profile, [Parameter(ValueFromRemainingArguments=$true)][string[]]$WalletArgs)\nif ($Profile -ne 'slot-a') { exit 2 }\n& "+quote(python)+' '+quote(str(fixture))+" @WalletArgs\nexit $LASTEXITCODE\n",encoding='utf-8-sig')
+                command=[str(entry),'-Profile','slot-a']
+            else:
+                entry.write_text('import sys,runpy\nassert sys.argv[1:3]==["--profile","slot-a"]\nsys.argv=[sys.argv[0],*sys.argv[3:]]\nrunpy.run_path('+repr(str(fixture))+',run_name="__main__")\n',encoding='utf-8')
+                command=[str(entry),'--profile','slot-a']
+            mapping=pool/'wallet-entrypoints.json';mapping.write_text(json.dumps({'schema':1,'wallets':[{'account':7,'address':address,'command':command,'cwd':str(pool)}]}),encoding='utf-8')
+            before=len(calls.read_text().splitlines());description=cmd('discover','--wallet-map',str(mapping));assert description['walletCommands']==0
+            assert len(calls.read_text().splitlines())==before
+            third=cmd('--wallet-map',str(mapping));assert third['walletCount']==1 and not third['issues'],third
+            boot=request(third['url']+'/api/bootstrap');assert boot['wallets'][0]['account']==7
+            ready=request(third['url']+'/api/ready',{},boot['token']);assert ready[0]['status']=='CONNECTED',ready
+            assert request(third['url']+'/api/orders',token=boot['token'])==[]
+            cmd('stop');reused=cmd();assert reused['walletCheck']['savedBindingsReused'],reused
+            cmd('stop');assert not cmd('status')['running']
+            print(json.dumps({'success':True,'platform':sys.platform,'portable':bool(archive),'checks':['install','LIVE without writes','paths with spaces and Chinese','repeat install','desktop entry','assets','numbered wrapper','read-only readiness','no automatic jobs','custom pool profile','account above five','entrypoint manifest','reuse saved bindings','stop'],'fakeWalletCommands':len(calls.read_text().splitlines()),'realWalletCommands':0,'submittedTransactions':0}))
         finally:
             try:cmd('stop')
             except Exception:pass

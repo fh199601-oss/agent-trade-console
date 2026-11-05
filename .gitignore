@@ -8,6 +8,7 @@ local/
 .baw/
 **/wallet-containers/
 **/accounts.json
+**/wallet-entrypoints.json
 **/runtime/
 *.log
 *.sqlite*

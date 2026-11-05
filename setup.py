@@ -12,17 +12,23 @@ import sys
 import time
 from urllib.request import build_opener, ProxyHandler, Request
 from uuid import uuid4
+from concurrent.futures import ThreadPoolExecutor, as_completed
 # Embedded Windows Python intentionally omits the script directory. Resolve
 # only this entry's own directory, independent of cwd/PYTHONPATH/user sites.
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from wallet_bridge import invoke, account_lock, bsc_address, BridgeError, check_environment
 from runtime_paths import LOCAL, hidden_process_options, runtime_environment, configure_stdio
+from wallet_sources import entries_at, read_entrypoints, entry_from_argument, MAP_NAME, SCRIPT, MAX_WALLETS
 
 ROOT=Path(__file__).resolve().parent
 CONFIG=LOCAL/'install.json'
 SERVICE=LOCAL/'runtime/service.json'
 IGNORE={'node_modules','vendor','runtime','local','.git','.baw','.ssh','.aws','.config','.cache','Library','AppData','Windows','Program Files','__pycache__','releases','venv','.venv'}
 progress=lambda message:None
+
+class ScanResults(list):
+    def __init__(self,values=(),truncated=False):
+        super().__init__(values);self.truncated=truncated
 
 def default_scan_roots():
     roots=[Path.home()/n for n in ('Documents','Desktop','Projects')]
@@ -52,66 +58,68 @@ def verify_release():
 
 def find_wallet_dirs(roots):
     """Bounded filename scan; never descend into hidden or credential directories."""
-    found=set();visited=set();count=0
+    found=set();visited=set();count=0;deadline=time.monotonic()+3
     for root in roots:
         root=Path(root).expanduser()
-        if not root.is_dir() or root.is_symlink(): continue
+        if not root.is_dir() or root.is_symlink() or any(p.casefold() in {x.casefold() for x in IGNORE} for p in root.parts): continue
         for current,dirs,files in os.walk(root,followlinks=False):
             p=Path(current)
             if p in visited: dirs[:]=[];continue
             visited.add(p);count+=1
             depth=len(p.relative_to(root).parts)
             dirs[:]=sorted(d for d in dirs if not d.startswith('.') and d not in IGNORE and not (p/d).is_symlink() and depth<5)
-            if count>6000: return sorted(found)
-            if p.name=='wallet-containers' and 'accounts.json' in files:
-                if any(re.fullmatch(r'account[1-5]\.(sh|ps1)',f) for f in files): found.add(p.resolve())
+            if count>6000 or time.monotonic()>deadline: return ScanResults(sorted(found),truncated=True)
+            if MAP_NAME in files or any(SCRIPT.fullmatch(f) for f in files):
+                found.add(p.resolve())
                 dirs[:]=[]
-    return sorted(found)
+    return ScanResults(sorted(found))
 
-def entries_at(directory):
-    directory=Path(directory).expanduser().resolve()
-    if (directory/'wallet-containers').is_dir(): directory=directory/'wallet-containers'
-    mapping=read(directory/'accounts.json',{})
-    if not isinstance(mapping,dict): raise RuntimeError('accounts.json 不是公开地址映射')
-    entries=[]
-    for n in range(1,6):
-        expected=mapping.get('account'+str(n))
-        if not expected: continue
-        if not isinstance(expected,str) or not re.fullmatch(r'0x[0-9a-fA-F]{40}',expected):
-            raise RuntimeError('公开地址映射格式不符；不解析其他钱包数据文件')
-        script=directory/('account'+str(n)+('.ps1' if os.name=='nt' else '.sh'))
-        if not script.is_file() or script.is_symlink(): raise RuntimeError('缺少本系统对应的编号钱包入口')
-        entries.append({'account':n,'address':expected,'kind':'numbered','command':[str(script)],'cwd':str(directory.parent)})
-    return entries
-
-def verify_entries(entries):
-    verified=[];issues=[]
-    for entry in entries:
+def verify_entries(entries,timeout=30,workers=4):
+    if not 1<=workers<=8 or not 1<=timeout<=120: raise ValueError('验证并发为 1–8，总限时为 1–120 秒')
+    if len(entries)>MAX_WALLETS or len({e['account'] for e in entries})!=len(entries):raise ValueError('钱包编号重复或数量超过 200')
+    verified=[];issues=[];deadline=time.monotonic()+timeout;done=0
+    def remaining():
+        seconds=deadline-time.monotonic()
+        if seconds<=0:
+            e=BridgeError('本次钱包验证时间已用完；请单独重查此账号，不反复重装');e.code='WALLET_CHECK_BUDGET';raise e
+        return seconds
+    def check(entry):
         try:
-            with account_lock(entry,timeout=15):
-                check_environment(entry)
-                status=invoke(entry,['wallet','status'],timeout=30)
-                if status.get('success') is not True or status.get('data',{}).get('status')!='CONNECTED':
-                    issues.append({'account':entry['account'],'code':'LOGIN_REQUIRED'});continue
-                address=bsc_address(invoke(entry,['wallet','address'],timeout=30))
+            with account_lock(entry,timeout=min(3,remaining())):
+                remaining();check_environment(entry)
+                status=invoke(entry,['wallet','status'],timeout=min(12,remaining()))
+                if status.get('success') is not True or not isinstance(status.get('data'),dict) or status['data'].get('status')!='CONNECTED':
+                    return None,{'account':entry['account'],'code':'LOGIN_REQUIRED'}
+                address=bsc_address(invoke(entry,['wallet','address'],timeout=min(12,remaining())))
                 if entry.get('address') and address.lower()!=entry['address'].lower():
-                    issues.append({'account':entry['account'],'code':'ADDRESS_MISMATCH'});continue
-                verified.append(dict(entry,address=address))
+                    return None,{'account':entry['account'],'code':'ADDRESS_MISMATCH'}
+                return dict(entry,address=address),None
         except BridgeError as e:
-            issues.append({'account':entry['account'],'code':getattr(e,'code','READ_ONLY_CHECK_FAILED'),'message':str(e)})
+            return None,{'account':entry['account'],'code':getattr(e,'code','READ_ONLY_CHECK_FAILED'),'message':str(e)}
+        except (ValueError,TypeError,KeyError,OSError):
+            return None,{'account':entry['account'],'code':'INVALID_ENTRY_RESPONSE','message':'入口未返回兼容的公开钱包状态；检查适配器，不要解析登录文件'}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for future in as_completed([pool.submit(check,entry) for entry in entries]):
+            entry,issue=future.result();done+=1
+            if entry:verified.append(entry)
+            if issue:issues.append(issue)
+            progress(f'只读核验钱包 {done}/{len(entries)} · 已接入 {len(verified)} · 待处理 {len(issues)}')
     if len({e['address'].lower() for e in verified})!=len(verified): raise RuntimeError('多个编号返回同一钱包，不能当成独立钱包绑定')
-    return verified,issues
+    return sorted(verified,key=lambda e:e['account']),sorted(issues,key=lambda e:e['account'])
 
-def discover(wallet_dir=None,scan_roots=None):
+def discover(wallet_dir=None,scan_roots=None,*,wallet_map=None,wallet_entries=None,timeout=30,workers=4):
+    if wallet_map:return verify_entries(read_entrypoints(wallet_map),timeout,workers)
+    if wallet_entries:return verify_entries([entry_from_argument(x) for x in wallet_entries],timeout,workers)
     dirs=[Path(wallet_dir)] if wallet_dir else find_wallet_dirs(scan_roots if scan_roots is not None else default_scan_roots())
+    if getattr(dirs,'truncated',False):return [],[{'code':'WALLET_SEARCH_LIMIT','candidates':[str(p) for p in dirs],'hint':'目录搜索已达到时间或数量预算；直接使用已有入口路径/公开清单，不继续扩大搜索或改用默认钱包。'}]
     if len(dirs)>1: return [],[{'code':'CHOOSE_WALLET_DIRECTORY','candidates':[str(p) for p in dirs]}]
     if dirs:
         entries=entries_at(dirs[0])
-        if not entries:return [],[{'code':'NO_PUBLIC_BINDINGS'}]
-        return verify_entries(entries)
+        if not entries:return [],[{'code':'WALLET_ADAPTER_REQUIRED','hint':'目录没有标准编号入口；让安装 AI 将已有启动命令写入 wallet-entrypoints.json，再用 --wallet-map 直接接入。不要解析钱包存储。'}]
+        return verify_entries(entries,timeout,workers)
     baw=shutil.which('baw')
     if baw:
-        return verify_entries([{'account':1,'kind':'official-cli','command':[str(Path(baw).absolute())],'cwd':str(ROOT)}])
+        return verify_entries([{'account':1,'kind':'official-cli','command':[str(Path(baw).absolute())],'cwd':str(ROOT)}],timeout,workers)
     return [],[{'code':'NO_WALLET_ENTRY','hint':'安装官方 Binance Agentic Wallet CLI，按官方技能通过 App 登录；不导入私钥。'}]
 
 def node_and_npm():
@@ -201,7 +209,12 @@ def start(cfg,live=True):
 def main():
     parser=argparse.ArgumentParser(description='安装并只读接入本机钱包，启动真实交易看板；安装不下单，交易仍需本人操作')
     parser.add_argument('action',choices=['install','start','stop','status','discover','verify'],nargs='?',default='install')
-    parser.add_argument('--wallet-dir',help='已有 wallet-containers 目录；只读取 accounts.json 公开地址映射')
+    parser.add_argument('--wallet-dir',help='已有账号池目录或工作区；识别公开清单与编号脚本，跳过全盘搜索')
+    parser.add_argument('--wallet-map',help='AI 生成的 wallet-entrypoints.json 公开启动清单，跳过搜索')
+    parser.add_argument('--wallet-entry',action='append',help='编号=完整启动脚本路径，可重复；跳过搜索')
+    parser.add_argument('--recheck-wallets',action='store_true',help='重查已保存的入口；正常启动不重复安装核验')
+    parser.add_argument('--wallet-timeout',type=float,default=30,help='全部钱包核验的总时间预算，默认 30 秒')
+    parser.add_argument('--wallet-workers',type=int,default=4,help='独立钱包只读验证并发，默认 4，范围 1–8')
     parser.add_argument('--scan-root',action='append',help='限定公开钱包入口目录搜索，可重复')
     parser.add_argument('--no-wallet',action='store_true',help='启动空钱包看板，不搜索和调用本机钱包')
     parser.add_argument('--live',action='store_true',help=argparse.SUPPRESS)
@@ -210,10 +223,14 @@ def main():
     try:
         progress('正在检查发行文件完整性…');count=verify_release()
         if args.action=='verify':return {'success':True,'verifiedFiles':count}
-        if args.no_wallet and args.wallet_dir:raise RuntimeError('--no-wallet 与 --wallet-dir 不能同时使用')
+        if sum(bool(x) for x in [args.no_wallet,args.wallet_dir,args.wallet_map,args.wallet_entry])>1:raise RuntimeError('请选择一种钱包接入方式，不要混用参数')
+        explicit=bool(args.wallet_dir or args.wallet_map or args.wallet_entry or args.no_wallet or args.scan_root)
         if args.action=='discover':
+            if args.wallet_map or args.wallet_entry or args.wallet_dir:
+                rows=read_entrypoints(args.wallet_map) if args.wallet_map else [entry_from_argument(x) for x in args.wallet_entry] if args.wallet_entry else entries_at(args.wallet_dir)
+                return {'success':True,'entries':[{'account':r['account'],'entrypoint':r['command'][0]} for r in rows],'credentialsRead':False,'walletCommands':0,'next':'使用相同路径参数执行 install，只读核验后自动打开看板。'}
             dirs=find_wallet_dirs(args.scan_root or default_scan_roots())
-            return {'success':True,'directories':[str(p) for p in dirs],'credentialsRead':False}
+            return {'success':True,'directories':[str(p) for p in dirs],'scanComplete':not getattr(dirs,'truncated',False),'credentialsRead':False}
         cfg=read(CONFIG)
         if args.action=='stop':return {'success':True,**(stop(cfg) if cfg else {'stopped':True,'alreadyStopped':True})}
         if args.action=='status':
@@ -223,21 +240,23 @@ def main():
         LOCAL.mkdir(parents=True,exist_ok=True,mode=0o700)
         if args.action=='install':
             if cfg and current(cfg):
-                if args.wallet_dir or args.no_wallet or args.scan_root:raise RuntimeError('重新绑定前请先停止本安装的服务，不修改运行中的钱包配置')
+                if explicit or args.recheck_wallets:raise RuntimeError('重新绑定前请先停止本安装的服务，不修改运行中的钱包配置')
                 url,state=current(cfg)
                 if state['mode']!='LIVE':
                     stop(cfg)
                 else:return {'success':True,'url':url,'mode':state['mode'],'walletCount':len(state['wallets']),'issues':cfg.get('issues',[]),'alreadyInstalled':True,'dataDir':str(LOCAL)}
             progress('正在准备运行环境…');dependencies(node,npm)
             progress('正在只读检查钱包入口；不会登录、签名或交易…')
-            if cfg and cfg.get('wallets') and not (args.wallet_dir or args.no_wallet or args.scan_root):
-                wallets,issues=verify_entries(cfg.get('wallets',[]))
-            else:wallets,issues=([],[]) if args.no_wallet else discover(args.wallet_dir,args.scan_root)
-            if cfg and cfg.get('wallets') and not (args.wallet_dir or args.no_wallet or args.scan_root):
+            started=time.monotonic()
+            if cfg and cfg.get('wallets') and not explicit:
+                wallets,issues=verify_entries(cfg['wallets'],args.wallet_timeout,args.wallet_workers) if args.recheck_wallets else (cfg['wallets'],cfg.get('issues',[]))
+            else:wallets,issues=([],[]) if args.no_wallet else discover(args.wallet_dir,args.scan_root,wallet_map=args.wallet_map,wallet_entries=args.wallet_entry,timeout=args.wallet_timeout,workers=args.wallet_workers)
+            if cfg and cfg.get('wallets') and not explicit:
                 # A transient Docker/login failure must not erase saved bindings.
                 wallets=cfg['wallets']
             python=str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower()=='pythonw.exe' else sys.executable
-            cfg={'schema':1,'installationId':cfg['installationId'] if cfg else str(uuid4()),'python':python,'node':node,'wallets':wallets,'issues':issues,'liveEnabled':True,**({'openFourScript':cfg['openFourScript']} if cfg and cfg.get('openFourScript') else {})}
+            check_info={'elapsedMs':round((time.monotonic()-started)*1000),'budgetSeconds':args.wallet_timeout,'workers':args.wallet_workers,'savedBindingsReused':bool(cfg and cfg.get('wallets') and not explicit and not args.recheck_wallets)}
+            cfg={'schema':1,'installationId':cfg['installationId'] if cfg else str(uuid4()),'python':python,'node':node,'wallets':wallets,'issues':issues,'walletCheck':check_info,'liveEnabled':True,**({'openFourScript':cfg['openFourScript']} if cfg and cfg.get('openFourScript') else {})}
             save(CONFIG,cfg)
         elif not cfg:raise RuntimeError('请先运行 python3 setup.py')
         # Starting after moving the unpacked folder uses the currently available runtime.
@@ -245,7 +264,7 @@ def main():
         cfg=dict(cfg,python=python,node=node)
         if not current(cfg):save(CONFIG,cfg)
         progress('正在启动本地看板…');url,state=start(cfg)
-        return {'success':True,'url':url,'mode':state['mode'],'walletCount':len(state['wallets']),'issues':cfg.get('issues',[]),'dataDir':str(LOCAL),'submittedTransactions':0,'next':'打开 url；没有钱包时按 START_HERE.md 接入后重新安装。'}
+        return {'success':True,'url':url,'mode':state['mode'],'walletCount':len(state['wallets']),'issues':cfg.get('issues',[]),'walletCheck':cfg.get('walletCheck',{}),'dataDir':str(LOCAL),'submittedTransactions':0,'next':'打开 url；有未接入账号时按 issues 定点处理，不要反复全盘搜索或重装。'}
     except Exception as e:
         return {'success':False,'error':str(e),'submittedTransactions':0}
 

@@ -6,7 +6,7 @@ const WATCHING=new Set(['WAITING','PREPARING']);
 export function openingConfig(input){
  if(!input||Object.keys(input).some(k=>!['asset','accounts','percent','slippageBps','currency'].includes(k)))throw Error('开盘卖出参数无效');
  const asset=address(input.asset);if(/^0x0{40}$/i.test(asset))throw Error('代币地址不能为零');
- if(!Array.isArray(input.accounts)||!input.accounts.length||input.accounts.length>5||new Set(input.accounts).size!==input.accounts.length)throw Error('请选择不重复的已绑定钱包');
+ if(!Array.isArray(input.accounts)||!input.accounts.length||input.accounts.length>200||new Set(input.accounts).size!==input.accounts.length)throw Error('请选择不重复的已绑定钱包（最多 200 个）');
  const accounts=[...input.accounts].sort((a,b)=>a-b);accounts.forEach(wallet);
  const percent=String(input.percent??'50'),slippageBps=input.slippageBps??5000,currency=input.currency??'AUTO';
  if(!['AUTO','BNB','WBNB','USDT'].includes(currency))throw Error('开盘卖出到账支持自动、BNB、WBNB、USDT');

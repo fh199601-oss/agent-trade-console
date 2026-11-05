@@ -4,9 +4,10 @@
 
 - 安装授权仅允许安装依赖、只读绑定本机现有钱包入口、启动真实交易看板（不自动下单）并返回网址。不能把安装请求解释成真实买入、卖出、授权、签名或开盘任务授权。
 - 用户的钱包入口优先；编号钱包始终走同编号入口及其原有账号锁。禁止绕过入口读取 .baw、Docker 数据卷、浏览器钱包数据、密码库、私钥、助记词、登录令牌或 .env。
-- 自动发现只扫描文件名；唯一 wallet-containers 通过其公开 accounts.json 与 CLI 的实时 BSC 地址交叉核验。多套入口请让用户选目录，不猜账户；这里只需目录路径，不需要任何凭据。
+- 有已知路径时直接传 --wallet-dir / --wallet-entry，禁止仍然全盘搜索。账号池使用不同程序/参数时，按 WALLET_SETUP.md 生成 wallet-entrypoints.json 并传 --wallet-map；清单只含公开入口、账号选择参数和可选公开地址。多套无明确范围的入口才让用户选择。
 - 未连接时使用 Binance 官方技能的 App 登录流程。不得自行退出已有会话、复制会话、重建容器/实例、迁移钱包或要求私钥。不能声称 AI 能跳过用户的 App 确认。
-- 安装程序只支持 Binance Agentic Wallet CLI 及其 account1–account5 的 .sh/.ps1 封装。其他钱包存储格式不要自行解析；报告不支持并接入经过用户确认的官方入口。
+- 支持 1–200 号及任意名称的 Shell/PowerShell/CMD/Python/Node/可执行文件入口，底层须兼容 Binance Agentic Wallet 命令和 JSON。不同账号池由安装 AI 通过原有接口做薄适配，保留其锁和身份选择，不解析钱包存储，不伪造连接/交易结果。详细协议见 WALLET_SETUP.md。
+- 最多一次限时目录发现；核验默认总预算 30 秒、并发 4。按 issues 定点处理失败账号，禁止循环全量重装或重启 Docker。已安装直接 start；只有用户要求重新核验才 --recheck-wallets。
 - 优先下载对应系统/CPU 的便携 Release，使用包内 Python 执行 setup.py；不要求用户单独安装 Python/Node。源码安装才需要 Node >=24、Python >=3.10。以 JSON 的 url、mode、walletCount、issues、dataDir 为准。不要更改现有钱包环境。
 - 启动后 GET 页面并验证 bootstrap 的 installationId 与 dataDir/install.json 一致，不输出 token、完整 settings 或会话响应。返回可点击本机网址，明确实际已连接数量。
 - 用户入口只提供 LIVE，安装和启动不授权测试交易；预览仍只读。所有测试只用假钱包和模拟，不发真实交易，不启动真实开盘任务。
