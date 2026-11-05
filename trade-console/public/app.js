@@ -1,9 +1,12 @@
-import {needsRoute,statusLabel,projectLabel,reviewSummary,totalTimeLabel} from './review-model.mjs';
-import {executeIndependent,runInstantTrades,isReady,tradeResultMessage,followSubmittedOrder} from './trade-workflow.mjs';
+import {corlaBudget} from './corla-budget.mjs';
+import {needsRoute,statusLabel,projectLabel,reviewSummary,totalTimeLabel,compactReviewGroups} from './review-model.mjs';
+import {corlaProgress,corlaSummary} from './corla-view.mjs';
+import {executeIndependent,runInstantTrades,isReady,independentOrder,tradeResultMessage,followSubmittedOrder} from './trade-workflow.mjs';
 import {normalizeAssetInput} from './asset-input.mjs';
 import {createConsoleClient} from './session-client.mjs';
 const $=id=>document.getElementById(id);
 let boot,ca=null,settings,selected=new Set(),busy=false,reviewOrders=[],refreshing=false,holdingsRows=[],nativeRows=[],walletRequest=null,project=null,generation=0,tradeRevision=0,tradeManual=false,tradeKind=null;
+let budgetManual=false;
 let noticeTarget='appNotice',noticeTimer;
 const note=(s,error=false)=>{const box=$(noticeTarget)||$('appNotice');box.textContent=s;box.hidden=!s;box.classList.toggle('error',error);box.style.color=error?'var(--red)':'var(--muted)';if(box.id==='appNotice'){clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>box.hidden=true,error?12000:6000);}};
 const clipboardReads=new Map();
@@ -61,6 +64,7 @@ function loadTradePreferences(){try{const p=JSON.parse(localStorage.getItem(pref
 for(const id of ['quick','sellSlippageMode','sellSlippage','slippage','openingPercent','openingSlippage'])$(id).addEventListener('change',()=>updateTradePreferences(true));
 function buildButtons(){for(const [side,id]of [['buy','buyButtons'],['sell','sellButtons']]){$(id).replaceChildren();settings[side].forEach(value=>{const b=el('button',side==='buy'?value:value+'%');b.append(el('small',side==='buy'?$('currency').selectedOptions[0].textContent:'当前持仓'));b.addEventListener('click',()=>act(side,value));$(id).append(b);});}}
 function renderWalletSelection(){
+ applyAutoBudget();
  const count=boot.wallets.filter(w=>selected.has(w.account)).length;
  $('walletCount').textContent=`${count}/${boot.wallets.length} 已选`;
  $('selectAllWallets').disabled=count===boot.wallets.length;
@@ -75,9 +79,9 @@ function renderWallets(){
   check.type='checkbox';check.checked=selected.has(w.account);check.setAttribute('aria-label',w.account+' 号钱包');check.addEventListener('change',()=>{if(check.checked)selected.add(w.account);else selected.delete(w.account);renderWalletSelection();});label.append(check,document.createTextNode(w.account));
   const connected=n?.status==='CONNECTED',failed=n?.status==='ERROR'||n?.status==='UNCONNECTED';
   const errors=[n?.connectionError,n?.balanceError?'BNB 读取失败：'+n.balanceError:null,row?.error?'代币持仓读取失败：'+row.error:null].filter(Boolean);
-  const quota=project?.quotas?.find(q=>q.account===w.account),issue=quota?.error||quota?.blocked;
+  const quota=project?.quotas?.find(q=>q.account===w.account),redeem=corlaRedemption(),refund=$('mintRoute').value==='corla:refund',issue=redeem&&quota?(BigInt((refund?quota.refundable:quota.claimable)||0)>0n?null:refund?'当前没有可退款费用':'当前没有可领取代币'):quota?.error||quota?.blocked;
   const details=[w.account+' 号 · '+(connected?'已连接':failed?'连接异常':'待检查'),...errors];
-  if(quota)details.push(issue?'Mint：'+issue:`Mint 免费 ${quota.freeRequiresVoucher?'待凭证':quota.freeRequiresProof&&Number(quota.freeRemaining)>0?quota.freeRemaining+'（待官网凭证）':quota.freeRemaining??'未知'} · 付费 ${quota.paidRemaining??'未知'}${quota.paidIsGlobalInventory?'（全局）':''}`);
+  if(quota)details.push(issue?'Mint：'+issue:redeem?(refund?'本钱包有认购费用可退回':'本钱包有已认购代币可领取'):`Mint 免费 ${quota.freeRequiresVoucher?'待凭证':quota.freeRequiresProof&&Number(quota.freeRemaining)>0?quota.freeRemaining+'（待官网凭证）':quota.freeRemaining??'未知'} · 付费 ${quota.paidRemaining??'未知'}${quota.paidIsGlobalInventory?'（全局）':''}`);
   if(n?.checkedAt)details.push('检查于 '+new Date(n.checkedAt).toLocaleTimeString());
   const state=el('button',undefined,'wallet-status '+(failed||errors.length||issue?'error':connected?'connected':''));state.type='button';state.title=details.join('；');state.setAttribute('aria-label','查看 '+w.account+' 号钱包状态');state.addEventListener('click',()=>{noticeTarget='appNotice';note(details.join('；'),!!(failed||errors.length||issue));});top.append(label,state);box.append(top);
   const addressLabel=w.address.slice(0,5)+'…'+w.address.slice(-4),addr=el('button',addressLabel,'wallet-address');addr.type='button';addr.title='点击复制完整地址：'+w.address;addr.setAttribute('aria-label','复制 '+w.account+' 号钱包地址 '+w.address);
@@ -95,9 +99,11 @@ async function refreshWallets(checkConnection=false){
  try{return await walletRequest;}finally{walletRequest=null;}
 }
 function renderProject(){
+ $('chainTools').hidden=project?.platform==='corla';
+ const other=project?.platform==='corla'?project.quotas?.find(q=>q.budgetCurrency==='QUOTE'):null;$('quoteBudgetWrap').hidden=!other;$('quoteBudgetLabel').textContent=other?'每钱包 '+other.currency+' 预算':'其他付款币预算';$('quoteBudgetToken').textContent=other?.paymentToken||'';
  renderMintRoutes();
  renderChainLearning(project?.chainLearning);
- $('inviteBox').hidden=!project;
+ $('inviteBox').hidden=!project||project.platform==='corla';
  const r=project?.referral;
  if(project){
   const status=r?.status||(r?.url?'ready':r?.detected?'needs-adapter':'not-detected'),ready=status==='ready'&&!!r?.url;
@@ -110,12 +116,14 @@ function renderProject(){
  }
  const prices=[...new Set((project?.quotas||[]).filter(q=>!q.error&&!q.blocked).map(q=>q.unitPriceUsdt!=null?q.unitPriceUsdt+' USDT':q.unitPriceBnb!=null?q.unitPriceBnb+' BNB':q.unitPrice?.formatted!=null?q.unitPrice.formatted+' '+q.unitPrice.symbol:null).filter(Boolean))];
  const rules=[...(prices.length===1?['当前 1 份报价：'+prices[0]+'（Gas 另计）。']:[]),['Erc721','Erc1155'].includes(project?.assetKind)?'本次 Mint 到账为 NFT：可预览、铸造和查看数量，ERC20 快捷买卖不适用于该 NFT。':'项目 Mint 合约与交易代币可能不同，持仓和行情使用已识别的到账资产。',...new Set((project?.quotas||[]).flatMap(q=>q.notes||[]))];
- $('projectRules').textContent=rules.join(' ');renderWallets();
+ $('projectRules').textContent=rules.filter(Boolean).join(' ');renderWallets();
 }
-function fillRouteSelect(select,routes){select.replaceChildren();const empty=el('option','请选择铸造方式');empty.value='';select.append(empty);for(const r of routes){const option=el('option',(r.title||'铸造入口')+' · '+r.method);option.value=r.id;select.append(option);}}
+function fillRouteSelect(select,routes){select.replaceChildren();const empty=el('option',project?.platform==='corla'?'认购份额（默认）':'请选择铸造方式');empty.value='';select.append(empty);for(const r of routes){const option=el('option',r.label||(r.title||'铸造入口')+' · '+r.method);option.value=r.id;select.append(option);}}
 function automaticMintLanes(routes){return routes?.length===2&&routes.some(r=>r.lane==='free')&&routes.some(r=>r.lane==='paid');}
-function renderMintRoutes(){const routes=project?.mintRoutes||[];$('mintRouteWrap').hidden=routes.length<2;fillRouteSelect($('mintRoute'),routes);if(automaticMintLanes(routes))$('mintRoute').options[0].textContent='按免费 / 付费范围自动选择（推荐）';}
-$('mintRoute').addEventListener('change',renderWallets);
+function renderMintRoutes(){const routes=project?.mintRoutes||[],previous=$('mintRoute').value;$('mintRouteWrap').hidden=routes.length<2;fillRouteSelect($('mintRoute'),routes);if(routes.some(r=>r.id===previous))$('mintRoute').value=previous;if(automaticMintLanes(routes))$('mintRoute').options[0].textContent='按免费 / 付费范围自动选择（推荐）';renderCorlaAction();}
+function corlaRedemption(){return project?.platform==='corla'&&['corla:claim','corla:refund'].includes($('mintRoute').value);}
+function renderCorlaAction(){const redeem=corlaRedemption();$('corlaFollowOptions').hidden=project?.platform!=='corla'||redeem;renderClaimLink();applyAutoBudget();for(const id of ['scope','quantity','maxBnb','maxUsdt'])$(id).closest('label').hidden=redeem;const other=project?.platform==='corla'&&project.quotas?.some(q=>q.budgetCurrency==='QUOTE');$('quoteBudgetWrap').hidden=redeem||!other;$('mint').textContent=redeem?($('mintRoute').value==='corla:refund'?'预览退款 ↗':'预览领取 ↗'):'预览 Mint ↗';document.querySelector('.mint-help').textContent=redeem?'只处理本钱包已有份额，无新增认购费用；Gas 另计。':'免费额度预算填 0 · max 为可核验额度 · Gas 另计';}
+$('mintRoute').addEventListener('change',()=>{renderCorlaAction();renderWallets();});
 $('copyInvite').addEventListener('click',async()=>{noticeTarget='mintNotice';const url=project?.referral?.url;if(!url)return;try{await navigator.clipboard.writeText(url);if(project?.referral?.url===url){$('copyInvite').textContent='已复制 ✓';note('1 号邀请链接已复制。');}}catch{note('自动复制失败，请选中邀请链接手动复制：'+url,true);}});
 function clearTrade(){ca=null;tradeKind=null;holdingsRows=[];tradeRevision++;$('tokenCA').textContent='等待加载';$('tokenName').textContent='等待加载';for(const id of ['mcap','price','holders','liquidity'])$(id).textContent='—';$('holdingBlock').textContent='代币持仓待加载';$('change').textContent='24h —';$('volume').textContent='24h 成交 —';$('holdersSource').textContent='暂无数据';$('updated').textContent='行情尚未加载';}
 function checkedTradeCA(){const raw=$('tradeCA').value.trim();if(!/^0x[0-9a-f]{40}$/i.test(raw)||/^0x0{40}$/i.test(raw))throw Error('请在快捷交易卡片填写完整的 42 字符代币 CA');return raw;}
@@ -124,7 +132,7 @@ async function loadTrade(){noticeTarget='tradeNotice';try{const address=checkedT
 $('tradeCA').addEventListener('input',()=>{noticeTarget='tradeNotice';tradeManual=true;clearTrade();renderWallets();note('交易 CA 已改变；可加载持仓。买卖按钮按下方确认设置执行。');});
 $('tradeCA').addEventListener('keydown',e=>{if(e.key==='Enter')loadTrade();});$('loadTradeCA').addEventListener('click',loadTrade);
 function clearProject(){
- project=null;generation++;renderMintRoutes();if(!tradeManual){clearTrade();$('tradeCA').value='';}
+ project=null;generation++;budgetManual=false;$('maxBnb').value='0';$('maxUsdt').value='0';$('claimSell').checked=false;$('chainTools').hidden=false;$('maxQuote').value='0';$('quoteBudgetWrap').hidden=true;$('quoteBudgetToken').textContent='';renderMintRoutes();if(!tradeManual){clearTrade();$('tradeCA').value='';}
  $('candidates').replaceChildren();$('addressRoles').replaceChildren();$('discovery').textContent='';
  $('chainEvidence').replaceChildren();
  $('inviteBox').hidden=true;$('copyInvite').disabled=true;$('inviteLink').removeAttribute('href');$('projectRules').textContent='';renderWallets();
@@ -158,42 +166,75 @@ function renderAddressRoles(d){
  }
  $('addressRoles').append(box);
 }
-$('scope').addEventListener('change',()=>{if($('scope').value==='free'){$('maxBnb').value='0';$('maxUsdt').value='0';}});
+$('scope').addEventListener('change',()=>{budgetManual=false;applyAutoBudget();if($('scope').value==='free'){$('maxBnb').value='0';$('maxUsdt').value='0';$('maxQuote').value='0';}});
+function applyAutoBudget(){
+ if(budgetManual){$('budgetHint').textContent='使用手动预算上限；不会自动增加。';return;}
+ $('budgetHint').textContent='';if(corlaRedemption())return;
+ try{const b=corlaBudget(project,[...selected],$('scope').value,$('quantity').value);if(!b)return;
+  for(const id of ['maxBnb','maxUsdt','maxQuote'])$(id).value=b[id];
+  $('budgetHint').textContent='已自动填入费用预算：'+b.costs.map(c=>c.account+' 号 '+c.lots+' 份 / '+c.cost+' '+b.symbol+(c.limited?'（单次上限 500 份）':'')).join('；')+'。合计最多 '+b.total+' '+b.symbol+'，Gas 另计；余额不足或全局额度被抢占时无法打满。';
+ }catch(e){for(const id of ['maxBnb','maxUsdt','maxQuote'])$(id).value='0';$('budgetHint').textContent='预算未自动填入：'+e.message;}
+}
+for(const id of ['maxBnb','maxUsdt','maxQuote'])$(id).addEventListener('input',()=>{budgetManual=true;applyAutoBudget();});
+$('quantity').addEventListener('input',()=>{budgetManual=false;applyAutoBudget();});
+function renderClaimLink(){
+ const enabled=project?.platform==='corla'&&!corlaRedemption()&&$('autoClaim').checked;
+ $('claimSell').disabled=!enabled;if(!enabled)$('claimSell').checked=false;
+ const linked=enabled&&$('claimSell').checked;
+ $('claimSellHint').textContent=linked?'领取 100% 后卖出当前总持仓 '+$('openingPercent').value+'%，滑点 '+$('openingSlippage').value+'%；比例在右侧开盘自动卖出中设置。随本次认购确认启动。':'确认本次认购后启动；关闭网页继续监测，服务重启暂停。领取 Gas 另计。';
+ $('startOpening').disabled=linked;$('startOpening').textContent=linked?'随认购确认启动':'检查并启动 ↗';
+}
+$('autoClaim').addEventListener('change',renderClaimLink);
+$('claimSell').addEventListener('change',()=>{if($('claimSell').checked){$('openingEnabled').checked=true;$('openingControls').hidden=false;}renderClaimLink();});
+for(const id of ['openingPercent','openingSlippage'])$(id).addEventListener('input',renderClaimLink);
 async function refreshAsset(force=false){if(!ca||refreshing===tradeRevision||!force&&document.hidden)return;const revision=tradeRevision,active=ca;refreshing=revision;try{
  const results=await Promise.allSettled([api('market?ca='+active),api('holdings?ca='+active)]);if(revision!==tradeRevision||active!==ca)return;
  const [m,h]=results;if(m.status==='fulfilled'){const x=m.value;$('tokenName').textContent=x.name||x.symbol||(!tradeManual?project?.name:null)||'未命名代币';$('mcap').textContent=compactUsd(x.marketCap);$('mcap').title=usd(x.marketCap);$('price').textContent=usd(x.price);$('holders').textContent=num(x.holders);$('liquidity').textContent=compactUsd(x.liquidity);$('liquidity').title=usd(x.liquidity);$('volume').textContent='24h 成交 '+compactUsd(x.volume24h);$('change').textContent='24h '+(x.priceChange24h==null?'—':num(x.priceChange24h)+'%');$('holdersSource').textContent=x.sources.holders?'来源 '+x.sources.holders:'来源暂未提供';$('updated').textContent=(x.sources.market||'行情未知')+' · '+new Date(x.at).toLocaleTimeString();}
  if(h.status==='fulfilled'){tradeKind=h.value.assetType;holdingsRows=h.value.wallets;renderWallets();$('holdingBlock').textContent='持仓 #'+h.value.block;for(const id of ['notice','tradeNotice','mintNotice'])if($(id).textContent.startsWith('持仓读取失败：')){$(id).textContent='持仓已恢复更新';$(id).classList.remove('error');$(id).style.color='var(--gold)';}}else {note('持仓读取失败：'+h.reason.message,true);if(force)throw h.reason;}
  }finally{if(refreshing===revision)refreshing=false;}}
-async function inspect({learn=false}={}){noticeTarget='mintNotice';let asset;try{asset=normalizeAssetInput($('asset').value);}catch(e){clearProject();return note(e.message,true);}$('asset').value=asset;clearProject();const revision=generation;$('inspect').disabled=true;$('learnChain').disabled=true;note(learn?'正在回查近期成功 Mint 交易并核验入口、资产和代码…':'正在识别地址用途；常规识别不足时自动回查链上 Mint…');try{
+async function inspect({learn=false}={}){noticeTarget='mintNotice';let asset;try{asset=normalizeAssetInput($('asset').value);}catch(e){clearProject();return note(e.message,true);}$('asset').value=asset;clearProject();const revision=generation;$('inspect').disabled=true;$('learnChain').disabled=true;$('chainTools').hidden=!!corlaProgress(asset);note(corlaProgress(asset)||(learn?'正在回查近期成功 Mint 交易并核验入口、资产和代码…':'正在识别地址用途；常规识别不足时自动回查链上 Mint…'));try{
  const d=await api('project?asset='+encodeURIComponent(asset)+(learn?'&learn=1':''));if(revision!==generation||$('asset').value.trim()!==asset)return;
- renderAddressRoles(d);if(!d.address){project=d;renderProject();for(const c of d.candidates||[]){const b=el('button',(c.roleLabels||[c.field||'待核验']).join(' / ')+' · '+c.address,'secondary candidate');b.addEventListener('click',()=>{$('asset').value=c.address;inspect();});$('candidates').append(b);}
+ renderAddressRoles(d);if(!d.address){project=d;renderProject();for(const c of d.candidates||[]){const b=el('button',(c.roleLabels||[c.field||'待核验']).join(' / ')+' · '+c.address,'secondary candidate');b.addEventListener('click',()=>{$('asset').value=c.source?.startsWith('https://flap.sh/apps/corla/')?c.source:c.address;inspect();});$('candidates').append(b);}
   if(!tradeManual)$('tokenName').textContent=d.name||'待核验项目';
   $('discovery').textContent=(d.name||'当前项目')+' · '+(d.access?.kind==='site-session-targets'?'合约地址需要官网登录后提供':d.candidates?.length?'请选择下方候选入口':'尚未找到可核验合约地址')+' · 来源：'+d.source;note(d.reason||'尚未核验到项目合约地址。',true);return;}
- project=d;if(!tradeManual){if(d.token)activateTrade(d.token,d.assetKind,d.name);else {clearTrade();$('tradeCA').value='';}}const primary=d.addresses?.find(r=>r.primary);$('discovery').textContent='已识别当前项目：'+(primary?.roleLabels?.filter((_,n)=>(primary.verifiedRoles||[]).includes(primary.roles[n])).join(' + ')||'项目合约')+' · '+d.address+' · 来源：'+d.source;
- if(!tradeManual)$('tokenName').textContent=d.token?(d.name||primary?.name||'项目资产'):'尚未核验交易代币 CA';renderProject();note(automaticMintLanes(d.mintRoutes)?'已识别免费及付费入口，将按本次范围自动选择；全部额度会逐批重查，先免费后付费。':d.mintRoutes?.length>1?'已识别项目，请在 Mint 区域选择铸造方式；也可点击预览 Mint 查看选项。':'地址用途已识别。当前 '+(boot.mode==='SIMULATION'?'模拟模式：只检查和预览，不提交。':'真实模式：请核对每笔预览。'));await refreshAsset();
+ project=d;if(!tradeManual){if(d.token&&(d.platform!=='corla'||d.quotas?.some(q=>q.status===3)))activateTrade(d.token,d.assetKind,d.name);else {clearTrade();$('tradeCA').value='';}}const primary=d.addresses?.find(r=>r.primary);$('discovery').textContent='已识别当前项目：'+(primary?.roleLabels?.filter((_,n)=>(primary.verifiedRoles||[]).includes(primary.roles[n])).join(' + ')||'项目合约')+' · '+d.address+' · 来源：'+d.source;
+ if(!tradeManual)$('tokenName').textContent=d.token?(d.name||primary?.name||'项目资产'):'尚未核验交易代币 CA';renderProject();note(corlaSummary(d)||(automaticMintLanes(d.mintRoutes)?'已识别免费及付费入口，将按本次范围自动选择；全部额度会逐批重查，先免费后付费。':d.mintRoutes?.length>1?'已识别项目，请在 Mint 区域选择铸造方式；也可点击预览 Mint 查看选项。':'地址用途已识别。当前 '+(boot.mode==='SIMULATION'?'模拟模式：只检查和预览，不提交。':'真实模式：请核对每笔预览。')));if(d.platform!=='corla'||d.quotas?.some(q=>q.status===3))await refreshAsset();
  }catch(e){if(revision===generation)note(e.message,true);}finally{$('inspect').disabled=false;$('learnChain').disabled=false;}}
 $('learnChain').addEventListener('click',()=>inspect({learn:true}));
 function setBusy(value){busy=value;for(const b of document.querySelectorAll('.buy-row button,.sell-row button,#mint'))b.disabled=value;}
 async function act(side,value){noticeTarget=side==='mint'?'mintNotice':'tradeNotice';if(busy)return note('本次操作正在准备，请等待当前预览。');if(!selected.size)return note('请选择至少一个钱包',true);let asset;try{asset=side==='mint'?normalizeAssetInput($('asset').value):checkedTradeCA();}catch(e){note(e.message,true);if(side!=='mint')$('tradeCA').focus();return;}if(side==='mint')$('asset').value=asset;else if(ca?.toLowerCase()!==asset.toLowerCase()){activateTrade(asset);}
  if(side!=='mint'&&['Erc721','ERC721','Erc1155','ERC1155'].includes(tradeKind))return note('这是 NFT，不能按 ERC20 池子比例卖出；需要 NFT 市场订单适配。',true);
+ // Use the displayed fee cap. prepare() rechecks live quota and balance; a
+ // second full project lookup delayed every wallet and could raise that cap.
+ if(side==='mint'&&!budgetManual)applyAutoBudget();
  const slip=$(side==='sell'?'sellSlippage':'slippage').value;if(!/^\d+(?:\.\d{1,2})?$/.test(slip)||Number(slip)>50)return note('滑点范围 0–50%，最多两位小数',true);const s=Math.round(Number(slip)*100);
- const base={side,asset,currency:side==='sell'?$('receive').value:$('currency').value,slippageBps:s};if(side==='buy')base.amount=value;if(side==='sell'){base.percent=value;base.slippageMode=$('sellSlippageMode').value;}if(side==='mint'){base.quantity=$('quantity').value==='max'?'max':Number($('quantity').value);base.maxBnb=$('maxBnb').value;base.maxUsdt=$('maxUsdt').value;base.scope=$('scope').value;base.referral='account1';if($('mintRoute').value&&!$('mintRouteWrap').hidden)base.routeId=$('mintRoute').value;}
+ const base={side,asset,currency:side==='sell'?$('receive').value:$('currency').value,slippageBps:s};if(side==='buy')base.amount=value;if(side==='sell'){base.percent=value;base.slippageMode=$('sellSlippageMode').value;}if(side==='mint'){base.quantity=$('quantity').value==='max'?'max':Number($('quantity').value);base.maxBnb=$('maxBnb').value;base.maxUsdt=$('maxUsdt').value;base.scope=$('scope').value;if(!$('quoteBudgetWrap').hidden){base.maxQuote=$('maxQuote').value;base.quoteToken=$('quoteBudgetToken').textContent;}base.referral='account1';if($('mintRoute').value&&!$('mintRouteWrap').hidden)base.routeId=$('mintRoute').value;}
+ if(side==='mint'&&project?.platform==='corla'&&!corlaRedemption()){base.autoClaim=$('autoClaim').checked;if(base.autoClaim&&$('claimSell').checked)base.claimSell={percent:$('openingPercent').value,slippageBps:Math.round(Number($('openingSlippage').value)*100),currency:$('receive').value};}
+ if(side==='mint'&&corlaRedemption()){Object.assign(base,{quantity:1,maxBnb:'0',maxUsdt:'0',scope:'free'});delete base.maxQuote;delete base.quoteToken;}
  const context=side==='mint'&&project?{name:project.name,source:project.source,address:project.address}:side==='mint'?null:{name:['等待加载','正在读取代币'].includes($('tokenName').textContent)?null:$('tokenName').textContent,source:'手动交易 CA',address:asset};
  setBusy(true);note('正在读取当前状态并生成预览…');try{
  const id='manual-'+crypto.randomUUID(),accounts=[...selected],quick=side!=='mint'&&boot.mode==='LIVE'&&$('quick').checked;let completed=0;
- $('reviewBody').replaceChildren(el('h3',side==='mint'?'正在准备铸造预览':'正在准备'+(side==='sell'?'卖出':'买入')+'预览'),el('p',asset,'mono'));const progress=el('p',`正在检查 ${accounts.length} 个钱包…`);$('reviewBody').append(progress);$('ackWrap').hidden=true;$('confirm').disabled=true;$('confirm').textContent='预览中…';if(!quick&&!$('review').open)$('review').showModal();
+ $('reviewBody').replaceChildren(el('h3',side==='mint'?'正在准备铸造预览':'正在准备'+(side==='sell'?'卖出':'买入')+'预览'),el('p',asset,'mono'));const progress=el('p',`正在检查 ${accounts.length} 个钱包…`);$('reviewBody').append(progress);$('confirm').disabled=true;$('confirm').textContent='预览中…';if(!quick&&!$('review').open)$('review').showModal();
  const requests=accounts.map(account=>({id:id+'-account'+account,intent:{...base,account},project:context}));
  const results=quick?await runInstantTrades(requests,o=>api('run',{id:o.id,intent:o.intent,execute:true,fastReturn:true,acknowledgeReview:true,authorization:`用户在本地看板开启免二次确认后点击：${JSON.stringify(o.intent)}`}),{onResult:o=>{trackSubmitted([o]);completed++;note(`${o.intent.account} 号：${statusLabel(o)}；已返回 ${completed}/${accounts.length} 个钱包`);refreshOrders().catch(()=>{});}}):await Promise.all(accounts.map(async account=>{try{const o=await api('prepare',{id:id+'-account'+account,intent:{...base,account}});if(context)o.project={...context,...o.project,name:o.project?.name||context.name};return o;}catch(e){return {id:id+'-account'+account,intent:{...base,account},project:context,status:'BLOCKED',error:{message:e.message,details:e.details,code:e.code}};}finally{completed++;progress.textContent=`已返回 ${completed}/${accounts.length} 个钱包；等待其余预览…`;}}));
  reviewOrders=results;refreshOrders().catch(e=>note('记录刷新失败：'+e.message,true));
  if(quick){showTradeFeedback(results);note('本次'+(side==='buy'?'买入':'卖出')+'已处理，请查看各钱包结果。',results.some(o=>['BLOCKED','FAILED','REJECTED','SUBMISSION_UNKNOWN'].includes(o.status)));void Promise.allSettled([refreshOrders(),refreshAsset(true)]);}
  else showReviews(results);
  }catch(e){note(e.message,true);}finally{setBusy(false);}}
+function renderReviewDetail(o){const div=el('div',undefined,'review-item');div.append(el('h3',`${o.intent.account} 号 · ${o.intent.side==='mint'?'铸造':o.intent.side==='buy'?'买入':'卖出'}`),el('span',statusLabel(o),'review-status'));
+   if(o.intent.side==='mint')div.append(el('div',`${({free:'只用免费额度',paid:'只用付费额度',all:'全部额度'})[o.intent.scope]||'核对额度'} · ${o.intent.quantity==='max'?'打满可核验额度':o.intent.quantity+' 份'} · 预算 ${o.intent.maxBnb} BNB / ${o.intent.maxUsdt||'0'} USDT${o.intent.maxQuote!==undefined?' / '+o.intent.maxQuote+' '+(o.plan?.quota?.currency||'指定付款币'):''}（Gas 另计）`,'helper'));
+   if(o.intent.routeId)div.append(el('div','所选方法：'+o.intent.routeId.replace(/^auto:/,''),'mono'));
+   if(o.error){div.append(el('p',needsRoute(o)?'请使用上方选择框，然后点击重新预览。':o.error.message));if(o.error.providerMessage){const original=el('details');original.append(el('summary','币安原始返回'),el('p',o.error.providerMessage));div.append(original);}}
+   if(o.plan&&o.intent.side!=='mint'){const p=o.plan;div.append(el('p',`${o.intent.side==='sell'?'卖出当前持仓 '+o.intent.percent+'%':'买入'} · 支出 ${p.quote?.fromCoinAmount||p.amountIn+' 最小单位'} ${p.quote?.fromCoinSymbol||''}`,'review-trade-amount'),el('p',`预计到账 ${p.quote?.toCoinAmount||'见详情'} ${p.quote?.toCoinSymbol||o.intent.currency} · 滑点 ${(p.slippage?.bps??o.intent.slippageBps)/100}%${p.slippage?.mode==='auto'?'（自动建议，上限 '+p.slippage.capBps/100+'%）':''}`));}if(o.plan){div.append(el('p',`${o.plan.route==='corla:mint'?'首笔 1 份 · 本次最多 '+o.plan.fill.targetQuantity+' 份 · ':o.plan.quantity?o.plan.quantity+' 份 · ':''}准备 ${((o.timing?.prepareMs||0)/1000).toFixed(2)} 秒`),el('div',o.plan.token,'mono'));for(const r of o.review||[])div.append(el('p',r));const details=el('details');details.append(el('summary','查看金额、模拟资产变化与风险详情'),el('pre',JSON.stringify({route:o.plan.route,inputToken:o.plan.inputToken,amountRaw:o.plan.amountIn,minimumOutputRaw:o.plan.minOutput,quota:o.plan.quota,referral:o.plan.referral,fill:o.plan.fill,quote:o.plan.quote,preview:o.preview},null,2)));div.append(details);}
+   if(o.diagnostics){const details=el('details'),experience=o.plan?.experience||o.mintContext?.experience,labels={corlaDiscovery:'Corla 工厂直查',corlaMintPlan:'Corla 价格与额度预检',projectDiscovery:'网站与合约识别',codeIdentity:'合约版本检查',verifiedSource:'源码读取',walletReady:'钱包连接检查',mintPlan:'铸造参数与额度',officialPreview:'官方钱包模拟',chainLearning:'链上成功记录回查'};details.append(el('summary','预检耗时与历史经验'));for(const [key,label]of Object.entries(labels)){const stage=o.diagnostics.stages?.[key];if(stage)details.append(el('p',`${label}：${(stage.totalMs/1000).toFixed(2)} 秒${stage.calls>1?'（'+stage.calls+' 次）':''}`));}details.append(el('p',`本次预检合计 ${(o.diagnostics.totalMs/1000).toFixed(2)} 秒；部分阶段并行或嵌套，未包含真实成交时间。`,'helper'));if(experience)details.append(el('p',`匹配当前合约版本的历史记录：${experience.exactMatches} 条。${experience.recommendedRouteId?'已参考历史入口，价格和额度重新核验。':'本次按当前链上信息核验。'}`));details.append(el('p','历史预览通过与真实成交分开记录。','helper'));div.append(details);}
+   return div;
+}
 function showReviews(rows){
- reviewOrders=rows;$('reviewBody').replaceChildren();$('ack').checked=false;
+ reviewOrders=rows;$('reviewBody').replaceChildren();
  const groups=new Map();for(const o of rows){const key=o.intent.asset;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(o);}
  for(const [asset,items]of groups){
   const context=items[0].project||items[0].plan?.project||items[0].plan?.resolved;
-  const head=el('div',undefined,'review-project');head.append(el('h3',projectLabel(items[0])),el('div',asset,'mono'));if(context?.address)head.append(el('div','项目合约：'+context.address,'mono'));$('reviewBody').append(head);
+  const head=el('div',undefined,'review-project');head.append(el('h3',projectLabel(items[0])));$('reviewBody').append(head);
   const needing=items.filter(needsRoute);if(needing.length){
    const box=el('div',undefined,'route-picker'),select=el('select'),label=el('label','铸造方式（'+needing.map(o=>o.intent.account+' 号').join('、')+'）');
    const options=needing[0].error.details.routes.filter(r=>needing.every(o=>o.error.details.routes.some(x=>x.id===r.id)));
@@ -206,21 +247,30 @@ function showReviews(rows){
    }catch(e){note(e.message,true);box.append(el('p',e.message,'error'));select.disabled=false;retry.disabled=!select.value;}finally{setBusy(false);}});
    box.append(retry);if(!options.length)box.append(el('p','这些钱包没有共同入口，请按钱包分别预览。'));$('reviewBody').append(box);
   }
-  for(const o of items){const div=el('div',undefined,'review-item');div.append(el('h3',`${o.intent.account} 号 · ${o.intent.side==='mint'?'铸造':o.intent.side==='buy'?'买入':'卖出'}`),el('span',statusLabel(o),'review-status'));
-   if(o.intent.side==='mint')div.append(el('div',`${({free:'只用免费额度',paid:'只用付费额度',all:'全部额度'})[o.intent.scope]||'核对额度'} · ${o.intent.quantity==='max'?'打满可核验额度':o.intent.quantity+' 份'} · 预算 ${o.intent.maxBnb} BNB / ${o.intent.maxUsdt||'0'} USDT（Gas 另计）`,'helper'));
-   if(o.intent.routeId)div.append(el('div','所选方法：'+o.intent.routeId.replace(/^auto:/,''),'mono'));
-   if(o.error){div.append(el('p',needsRoute(o)?'请使用上方选择框，然后点击重新预览。':o.error.message));if(o.error.providerMessage){const original=el('details');original.append(el('summary','币安原始返回'),el('p',o.error.providerMessage));div.append(original);}}
-   if(o.plan&&o.intent.side!=='mint'){const p=o.plan;div.append(el('p',`${o.intent.side==='sell'?'卖出当前持仓 '+o.intent.percent+'%':'买入'} · 支出 ${p.quote?.fromCoinAmount||p.amountIn+' 最小单位'} ${p.quote?.fromCoinSymbol||''}`,'review-trade-amount'),el('p',`预计到账 ${p.quote?.toCoinAmount||'见详情'} ${p.quote?.toCoinSymbol||o.intent.currency} · 滑点 ${(p.slippage?.bps??o.intent.slippageBps)/100}%${p.slippage?.mode==='auto'?'（自动建议，上限 '+p.slippage.capBps/100+'%）':''}`));}if(o.plan){div.append(el('p',`${o.plan.quantity?o.plan.quantity+' 份 · ':''}准备 ${((o.timing?.prepareMs||0)/1000).toFixed(2)} 秒`),el('div',o.plan.token,'mono'));for(const r of o.review||[])div.append(el('p',r));const details=el('details');details.append(el('summary','查看金额、模拟资产变化与风险详情'),el('pre',JSON.stringify({route:o.plan.route,inputToken:o.plan.inputToken,amountRaw:o.plan.amountIn,minimumOutputRaw:o.plan.minOutput,quota:o.plan.quota,referral:o.plan.referral,fill:o.plan.fill,quote:o.plan.quote,preview:o.preview},null,2)));div.append(details);}
-   if(o.diagnostics){const details=el('details'),experience=o.plan?.experience||o.mintContext?.experience,labels={projectDiscovery:'网站与合约识别',codeIdentity:'合约版本检查',verifiedSource:'源码读取',walletReady:'钱包连接检查',mintPlan:'铸造参数与额度',officialPreview:'官方钱包模拟',chainLearning:'链上成功记录回查'};details.append(el('summary','预检耗时与历史经验'));for(const [key,label]of Object.entries(labels)){const stage=o.diagnostics.stages?.[key];if(stage)details.append(el('p',`${label}：${(stage.totalMs/1000).toFixed(2)} 秒${stage.calls>1?'（'+stage.calls+' 次）':''}`));}details.append(el('p',`本次预检合计 ${(o.diagnostics.totalMs/1000).toFixed(2)} 秒；部分阶段并行或嵌套，未包含真实成交时间。`,'helper'));if(experience)details.append(el('p',`匹配当前合约版本的历史记录：${experience.exactMatches} 条。${experience.recommendedRouteId?'已参考历史入口，价格和额度重新核验。':'本次按当前链上信息核验。'}`));details.append(el('p','历史预览通过与真实成交分开记录。','helper'));div.append(details);}
-   $('reviewBody').append(div);
+  const details=el('details',undefined,'review-all-details');details.append(el('summary','查看详情'));
+  details.append(el('p',asset,'mono'));if(context?.address)details.append(el('p','项目合约：'+context.address,'mono'));
+  for(const group of compactReviewGroups(items)){
+   const first=group.rows[0],summary=group.summary,accounts=group.rows.map(o=>o.intent.account).join('、');
+   if(summary){
+    const card=el('section',undefined,'review-compact');card.append(el('h3',summary.walletCount+' 个钱包'+(items.length!==group.rows.length?'（'+accounts+' 号）':'')));
+    const metrics=el('div',undefined,'review-compact-metrics');
+    for(const [label,value]of [['每钱包份数',summary.perWalletQuantity+' 份'],['每钱包认购',summary.perWalletAmount+' '+summary.symbol]]){const metric=el('div');metric.append(el('span',label),el('strong',value));metrics.append(metric);}card.append(metrics);
+    card.append(el('div',(summary.maximum?'合计最多 ':'合计 ')+summary.totalQuantity+' 份 · '+summary.totalAmount+' '+summary.symbol,'review-compact-total'));
+    const follow=first.plan.afterMint,terms=['Gas 另计'];if(summary.approval)terms.push('先授权，再认购');if(follow){terms.push('开盘领取 100%');if(follow.sell)terms.push('到账后卖出当前持仓 '+follow.sell.percent+'% · 滑点 '+follow.sell.slippageBps/100+'%');}
+    card.append(el('p',terms.join(' · '),'helper'));$('reviewBody').append(card);
+    for(const o of group.rows)details.append(renderReviewDetail(o));
+   }else if(group.error){const div=el('div',undefined,'review-compact-error');div.append(el('b',group.rows.length+' 个钱包（'+accounts+' 号）· '+statusLabel(first)),el('p',first.error.message));$('reviewBody').append(div);for(const o of group.rows)details.append(renderReviewDetail(o));}
+   else for(const o of group.rows)$('reviewBody').append(renderReviewDetail(o));
   }
+  if(details.children.length>2)$('reviewBody').append(details);
+
  }
- const state=reviewSummary(rows),hasRisk=rows.some(o=>isReady(o)&&o.review?.length),historic=boot.mode==='LIVE'&&rows.some(o=>o.simulationOnly&&['PREPARED','READY_TO_CONTINUE'].includes(o.status));$('confirm').textContent=historic?'旧模拟记录 · 请重新发起预览':state.waiting?'请先选择方式并重新预览':state.completed===rows.length?'已完成 · 无需再次提交':!state.ready?(state.skipped===rows.length?'无持仓 · 无需提交':'无待执行操作 · 请查看状态'):boot.mode==='SIMULATION'?'完成模拟 · 不提交':rows.filter(isReady).every(o=>o.intent.side==='sell')?'确认卖出':'确认并执行预览通过的操作';$('confirm').disabled=historic||!state.canConfirm;$('ackWrap').hidden=historic||boot.mode==='SIMULATION'||!state.canConfirm||!hasRisk;if(!$('review').open)$('review').showModal();note(historic?'这是切换实盘前的模拟记录。请从操作面板重新预览本次真实操作。':state.message,historic||!state.canConfirm);
+ const state=reviewSummary(rows),historic=boot.mode==='LIVE'&&rows.some(o=>o.simulationOnly&&['PREPARED','READY_TO_CONTINUE'].includes(o.status));$('confirm').textContent=historic?'旧模拟记录 · 请重新发起预览':state.waiting?'请先选择方式并重新预览':state.completed===rows.length?'已完成 · 无需再次提交':!state.ready?(state.skipped===rows.length?'无持仓 · 无需提交':'无待执行操作 · 请查看状态'):boot.mode==='SIMULATION'?'完成模拟 · 不提交':'确认执行';$('confirm').disabled=historic||!state.canConfirm;if(!$('review').open)$('review').showModal();note(historic?'这是切换实盘前的模拟记录。请从操作面板重新预览本次真实操作。':state.message,historic||!state.canConfirm);
 }
 async function executeReviews(ack,{instant=false}={}){
- const snapshot=[...reviewOrders],pending=snapshot.filter(isReady),independent=snapshot.every(o=>['buy','sell'].includes(o.intent.side));
+ const snapshot=[...reviewOrders],pending=snapshot.filter(isReady),independent=pending.every(independentOrder);
  if(snapshot.some(needsRoute))return;
- if(!instant&&boot.mode==='LIVE'&&!ack&&pending.some(o=>o.review?.length))return note('请先阅读并勾选本次风险提示',true);
+ if(busy||$('confirm').disabled)return;
  $('confirm').disabled=true;setBusy(true);note('正在提交本次操作；请勿重复点击…');
  const submit=(o,ack)=>api('execute',{id:o.id,fastReturn:true,acknowledgeReview:ack,authorization:`用户在本地看板${instant?'开启免二次确认后点击':'点击并确认'}：${JSON.stringify(o.intent)}`});
  try{
@@ -273,7 +323,7 @@ async function renderOrders(){
  }
 }
 $('reconcileOrders').addEventListener('click',async()=>{noticeTarget='appNotice';const b=$('reconcileOrders');b.disabled=true;b.textContent='正在核对…';try{const rows=await api('reconcile',{});const remaining=rows.filter(r=>!r.ready);note(remaining.length?`${remaining.map(r=>r.account).join('、')} 号仍有原单需要核对，请查看详情；其他钱包可正常操作。`:'原单已核对，钱包可继续操作。没有重新下单。',!!remaining.length);await refreshOrders();}catch(e){note(e.message,true);}finally{b.disabled=false;b.textContent='核对并恢复';}});
-$('inspect').addEventListener('click',inspect);$('asset').addEventListener('keydown',e=>{if(e.key==='Enter')inspect();});$('currency').addEventListener('change',buildButtons);$('mint').addEventListener('click',()=>act('mint'));$('closeReview').addEventListener('click',()=>$('review').close());$('confirm').addEventListener('click',()=>executeReviews($('ack').checked));$('refreshOrders').addEventListener('click',()=>refreshOrders().catch(e=>note(e.message,true)));
+$('inspect').addEventListener('click',inspect);$('asset').addEventListener('keydown',e=>{if(e.key==='Enter')inspect();});$('currency').addEventListener('change',buildButtons);$('mint').addEventListener('click',()=>act('mint'));$('closeReview').addEventListener('click',()=>$('review').close());$('confirm').addEventListener('click',()=>executeReviews(true));$('refreshOrders').addEventListener('click',()=>refreshOrders().catch(e=>note(e.message,true)));
 $('ready').addEventListener('click',async()=>{noticeTarget='appNotice';$('ready').disabled=true;$('ready').textContent='刷新中…';try{const [r]=await Promise.all([refreshWallets(true),refreshAsset(true)]);note(r.wallets.some(w=>w.connectionError||w.balanceError)?'刷新完成；异常钱包已标出，请查看提示。':'钱包连接、BNB 余额和当前代币持仓已刷新。');}catch(e){note('刷新失败：'+e.message,true);}finally{$('ready').disabled=false;$('ready').textContent='刷新 ↻';}});
 $('edit').addEventListener('click',()=>{$('buttonEditor').hidden=!$('buttonEditor').hidden;for(const side of ['buy','sell']){const box=$(side+'Inputs');box.replaceChildren();settings[side].forEach((v,n)=>{const i=el('input');i.value=v;i.setAttribute('aria-label',(side==='buy'?'买入金额':'卖出百分比')+(n+1));box.append(i);});}});
 $('saveButtons').addEventListener('click',async()=>{try{settings=await api('settings',{buy:[...$('buyInputs').children].map(e=>e.value),sell:[...$('sellInputs').children].map(e=>e.value)});buildButtons();$('buttonEditor').hidden=true;note('自定义按钮已保存到本机。');}catch(e){note(e.message,true);}});
@@ -282,7 +332,14 @@ const openingLabels={ARMED:'监测中',FIRING:'开盘检查中',TRACKING:'跟踪
 function openingInput(){const slip=$('openingSlippage').value;if(!/^\d+(?:\.\d{1,2})?$/.test(slip)||Number(slip)>50)throw Error('开盘滑点范围 0–50%，最多两位小数');return {asset:checkedTradeCA(),accounts:[...selected].sort((a,b)=>a-b),percent:$('openingPercent').value,slippageBps:Math.round(Number(slip)*100),currency:$('receive').value};}
 function openingPreflight(p){if(!p?.rows?.length)return '';return '预检 '+new Date(p.at).toLocaleTimeString()+' · '+p.rows.map(r=>{const ok=r.routes.filter(x=>x.ready),approved=ok.filter(x=>x.approvalNeeded===false);return r.account+' 号 '+ok.length+'/'+r.routes.length+' 条路线已核验，'+(approved.length?approved.length+' 条无需首次授权':'需首次授权')+(Number(r.bnb)===0?'，无 BNB 支付 Gas':'');}).join('；');}
 function openingNote(text){$('openingNotice').textContent=text;}
-$('openingEnabled').addEventListener('change',()=>{$('openingControls').hidden=!$('openingEnabled').checked;});
+$('openingEnabled').addEventListener('change',()=>{$('openingControls').hidden=!$('openingEnabled').checked;if(!$('openingEnabled').checked)$('claimSell').checked=false;renderClaimLink();});
+let corlaPoll=null;
+function refreshCorlaJobs(){if(corlaPoll)return corlaPoll;corlaPoll=(async()=>{const rows=await api('corla-jobs');$('corlaJobs').replaceChildren();const labels={WAITING_MINT:'等待认购确认',WATCHING:'监测开盘',CLAIMING:'领取处理中',SELLING:'联动卖出中',DONE:'已完成',REVIEW:'需核对',PAUSED:'已暂停',STOPPED:'已停止'};
+ for(const j of rows.slice(0,12)){const box=el('div',undefined,'opening-job'),head=el('div',undefined,'opening-job-head');head.append(el('b',j.account+' 号 · '+(labels[j.status]||j.status)+' · '+j.name));
+  if(['WAITING_MINT','WATCHING','CLAIMING','SELLING','PAUSED'].includes(j.status)){const b=el('button','停止','text-button');b.addEventListener('click',async()=>{try{await api('corla-stop',{id:j.id});}catch(e){note(e.message,true);}void refreshCorlaJobs();});head.append(b);}
+  if(j.status==='PAUSED'){const b=el('button','恢复','text-button');b.addEventListener('click',async()=>{try{await api('corla-resume',{id:j.id,confirmed:true});}catch(e){note(e.message,true);}void refreshCorlaJobs();});head.append(b);}
+  box.append(head,el('p',j.message,'helper'));$('corlaJobs').append(box);
+ }})().finally(()=>corlaPoll=null);return corlaPoll;}
 async function refreshOpening(){if(openingPoll)return openingPoll;openingPoll=(async()=>{const rows=await api('opening');$('openingJobs').replaceChildren();for(const j of rows.slice(0,8)){
  const box=el('details',undefined,'opening-job'),head=el('summary',undefined,'opening-job-head');box.open=['ARMED','FIRING','TRACKING'].includes(j.status)||expandedOpening.has(j.id);head.addEventListener('click',e=>{if(e.target.closest('button')){e.preventDefault();return;}if(box.open)expandedOpening.delete(j.id);else expandedOpening.add(j.id);});head.append(el('b',`${openingLabels[j.status]||j.status} · ${j.config.percent}% · 滑点 ${j.config.slippageBps/100}%${j.mode==='SIMULATION'?' · 模拟':''}`));
  if(['ARMED','FIRING','TRACKING'].includes(j.status)){const stop=el('button','停止','text-button');stop.addEventListener('click',async()=>{stop.disabled=true;try{await api('opening/stop',{id:j.id});await refreshOpening();}catch(e){openingNote(e.message);}finally{stop.disabled=false;}});head.append(stop);}
@@ -300,11 +357,11 @@ $('startOpening').addEventListener('click',async()=>{if(openingBusy||!boot)retur
   const b=$('openingReviewBody');b.replaceChildren(el('p',c.config.asset,'mono'),el('p',`${c.config.accounts.join('、')} 号钱包 · 卖出实时持仓 ${c.config.percent}% · 滑点 ${c.config.slippageBps/100}% · 到账 ${c.config.currency==='AUTO'?'池子原币种':c.config.currency}`),el('p',c.snapshot.open?'已经检测到流动性，确认后立即检查并卖出。':'检测到当前后端支持的有效流动性后，自动检查并卖出一次。'),el('p',c.mode==='SIMULATION'?'本次仅模拟，不签名、不提交。':'必要时执行本次数量授权；新增风险或模拟失败不会强行提交。'));if(c.preflight)b.append(el('p',openingPreflight(c.preflight),'muted'));$('openingReview').showModal();
  }catch(e){openingNote(e.message);}finally{openingBusy=false;$('startOpening').disabled=false;}});
 $('confirmOpening').addEventListener('click',armOpening);$('closeOpeningReview').addEventListener('click',()=>$('openingReview').close());
-setInterval(()=>{if(boot&&!document.hidden)refreshOpening().catch(()=>{});},1000);
+setInterval(()=>{if(boot&&!document.hidden){refreshOpening().catch(()=>{});refreshCorlaJobs().catch(()=>{});}},1000);
 let starting=null,resuming=null,lastResumeAt=0;
 function startApp(){
  if(boot)return Promise.resolve();if(starting)return starting;
- starting=(async()=>{boot=await client.refreshSession();settings=boot.settings;selected=new Set(boot.wallets.map(w=>w.account));loadTradePreferences();renderMode();note(boot.mode==='LIVE'?($('quick').checked?'真实交易 · 免二次确认已开启，点击买卖按钮即可提交本次操作。':'真实交易 · 二次确认已开启，点击按钮后弹窗核对。'):'模拟模式下所有按钮只检查和预览，不签名、不广播。');buildButtons();renderWallets();await Promise.all([refreshOpening(),refreshOrders(),refreshWallets().catch(e=>{$('walletState').textContent='BNB 读取失败：'+e.message;})]);})();
+ starting=(async()=>{boot=await client.refreshSession();settings=boot.settings;selected=new Set(boot.wallets.map(w=>w.account));loadTradePreferences();renderMode();note(boot.mode==='LIVE'?($('quick').checked?'真实交易 · 免二次确认已开启，点击买卖按钮即可提交本次操作。':'真实交易 · 二次确认已开启，点击按钮后弹窗核对。'):'模拟模式下所有按钮只检查和预览，不签名、不广播。');buildButtons();renderWallets();await Promise.all([refreshCorlaJobs(),refreshOpening(),refreshOrders(),refreshWallets().catch(e=>{$('walletState').textContent='BNB 读取失败：'+e.message;})]);})();
  starting.finally(()=>{starting=null;}).catch(()=>{});return starting;
 }
 function resumePage(){

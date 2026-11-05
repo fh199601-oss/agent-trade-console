@@ -24,6 +24,7 @@ import {assistMint,applyChainEvidence,adaptiveQuoteWithLearning} from './chain-a
 import {socialSalePlan} from './social-sale.mjs';
 import {sourceSalePlan} from './source-sale.mjs';
 import {protectedSalePlan} from './protected-sale.mjs';
+import {corlaPlan} from './corla.mjs';
 const REGISTRY='0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F';
 const templates=[
  {name:'scarab',detect:['547c1db9','fd326592','a2309ff8'],signature:'mintWithBnb(uint256,address,uint256,address,uint256)',price:'costOf(uint256)',output:'quoteTokens(uint256)'},
@@ -31,7 +32,9 @@ const templates=[
  {name:'bianren_core',detect:['e38fd349','fd326592'],signature:'mintWithBnb(uint256,address,uint256)',price:'costOf(uint256)'}
 ];
 function selects(code){const b=Buffer.from(code.slice(2),'hex'),set=new Set();for(let i=0;i<b.length;i++){const op=b[i];if(op>=0x60&&op<=0x7f){if(op===0x63)set.add(b.subarray(i+1,i+5).toString('hex'));i+=op-0x5f;}}return set;}
-export async function mintPlan(rpc,bridge,intent,target,resolved={source:'用户输入 CA'},experienceStore=null,{sourceLoader=sourceFor,chainLearner=null}={}){
+export async function mintPlan(rpc,bridge,intent,target,resolved={source:'用户输入 CA'},experienceStore=null,{sourceLoader=sourceFor,chainLearner=null,officialPreview=false}={}){
+ if(resolved.platform==='corla')return measure('corlaMintPlan',()=>corlaPlan(rpc,intent,wallet(intent.account),resolved,{officialPreview}));
+ if(intent.quoteToken!==undefined)throw Object.assign(Error('其他付款币预算目前仅适用于 Corla 专用入口'),{code:'MINT_ROUTE_INVALID'});
  const w=wallet(intent.account),meta={...await sourceLoader(rpc,target),abiHints:resolved.abiHints},experience=experienceStore?.lookup(meta.identity,{...intent,wallet:w.address});
  try{const plan=await measure('mintPlan',()=>buildMintPlan(rpc,bridge,intent,target,resolved,w,meta,experience,experienceStore,{sourceLoader,chainLearner}));plan.experience??=experience||null;return plan;}
  catch(e){e=mintError(e,meta.verified?meta.abi:null);e.mintContext={identity:meta.identity,wallet:w.address,sourceVerified:meta.verified,experience};if(resolved.chainLearning)e.details={...e.details,chainLearning:resolved.chainLearning};throw e;}

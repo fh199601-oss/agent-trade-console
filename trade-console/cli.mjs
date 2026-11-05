@@ -12,6 +12,9 @@ const help=`Agent 交易台 · Grok / Codex 共用入口（JSON）
   node trade-console/cli.mjs run --file request.json
   node trade-console/cli.mjs execute --file confirmation.json
   node trade-console/cli.mjs follow <原操作ID>
+  node trade-console/cli.mjs corla-jobs
+  node trade-console/cli.mjs corla-stop <任务ID>
+  node trade-console/cli.mjs corla-resume <任务ID> # 仅用户明确恢复后调用
   node trade-console/cli.mjs orders
 request.json: {"id":"稳定消息ID-account1","intent":{"account":1,"side":"mint","asset":"项目网址","quantity":1,"maxBnb":"0"}}
 买入 intent: side=buy, amount=金额, currency=BNB/USDT/QUOTE
@@ -24,8 +27,10 @@ const service=load(path.join(DATA,'service.json'));const installation=load(path.
 async function request(path,body){const b=await fetch(base+'/api/bootstrap',{signal:AbortSignal.timeout(3000)}).then(r=>r.json());if(b.installationId!==installation.installationId)throw Error('服务实例不匹配，拒绝发送命令');const r=await fetch(base+path,{method:body?'POST':'GET',headers:{'content-type':'application/json','x-console-token':b.token},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(150000)});const data=await r.json();if(!r.ok)throw Object.assign(Error(data.error?.message||data.error),{diagnostics:data.diagnostics});return data;}
 try{
  let result;
- if(['inspect','preflight','learn'].includes(command)){const started=performance.now(),d=await request('/api/project?asset='+encodeURIComponent(argv[0])+(command==='learn'?'&learn=1':''));result=d;if(command==='inspect'&&(d.token||/^0x[0-9a-f]{40}$/i.test(argv[0]))){const ca=d.token||argv[0];const [m,h]=await Promise.allSettled([request('/api/market?ca='+ca),request('/api/holdings?ca='+ca)]);result={...d,market:m.status==='fulfilled'?m.value:{error:m.reason.message},holdings:h.status==='fulfilled'?h.value:{error:h.reason.message}};}result.clientMs=Math.round(performance.now()-started);}
+ if(['inspect','preflight','learn'].includes(command)){const started=performance.now(),d=await request('/api/project?asset='+encodeURIComponent(argv[0])+(command==='learn'?'&learn=1':''));result=d;if(command==='inspect'&&(d.platform!=='corla'||d.quotas?.some(q=>q.status===3))&&(d.token||/^0x[0-9a-f]{40}$/i.test(argv[0]))){const ca=d.token||argv[0];const [m,h]=await Promise.allSettled([request('/api/market?ca='+ca),request('/api/holdings?ca='+ca)]);result={...d,market:m.status==='fulfilled'?m.value:{error:m.reason.message},holdings:h.status==='fulfilled'?h.value:{error:h.reason.message}};}result.clientMs=Math.round(performance.now()-started);}
  else if(command==='ready')result=await request('/api/ready',{});
+ else if(command==='corla-jobs')result=await request('/api/corla-jobs');
+ else if(['corla-stop','corla-resume'].includes(command))result=await request('/api/'+command,{id:argv[0],confirmed:command==='corla-resume'});
  else if(command==='orders')result=await request('/api/orders');
  else if(command==='follow')result=await request('/api/follow',{id:argv[0]});
  else if(['prepare','run','execute','batch'].includes(command)){

@@ -15,6 +15,7 @@ import {ExperienceStore} from './experience.mjs';
 import {profiled,measure,snapshot,preflightReport} from './diagnostics.mjs';
 import {rejectedSwapQuery,uniqueFailedSwap,applyFailedSwap} from './order-reconciliation.mjs';
 import {tradeError} from './sell-policy.mjs';
+import {corlaReceipt,corlaRefundReceipt,corlaInput} from './corla.mjs';
 const unresolved=new Set(['SUBMITTING','SUBMISSION_UNKNOWN','PENDING','APPROVAL_CONFIRMED','READY_TO_CONTINUE','RECEIPT_REVIEW']);
 const terminal=new Set(['CONFIRMED','FAILED','SIMULATED','BLOCKED','PARTIAL','CANCELLED','SKIPPED','REJECTED']);
 function integer(x){if(typeof x==='number'&&!Number.isSafeInteger(x))throw Error('模拟金额精度不足，无法安全核验');if(!/^-?\d+$/.test(String(x)))throw Error('模拟金额不是精确整数');return BigInt(x);}
@@ -34,7 +35,7 @@ export function verifyPreview(p,plan,step){
   // They cannot authorize a debit and are not proof of exact incoming quantity.
   if(typeof c.change==='number'&&!Number.isSafeInteger(c.change)&&c.change>0){if(plan.requireSellCredit||(!plan.metaVerified||plan.requireAssetCredit)&&step.kind==='mint')throw Error('模拟到账精度不足，无法核验未知模板');continue;}
   const v=integer(c.change);
-  if(v>0n&&same(token,plan.outputToken)&&(!plan.requireAssetCredit||plan.expectedAsset?.kind!=='Erc20'||c.tokenType==='Erc20'))output+=v;
+  if(v>0n&&(same(token,plan.outputToken)||plan.requireRefundCredit&&native(token)&&native(plan.outputToken))&&(!plan.requireAssetCredit||plan.expectedAsset?.kind!=='Erc20'||c.tokenType==='Erc20'))output+=v;
   if(v===1n&&same(token,plan.outputToken)&&c.tokenType==='Erc721'&&/^(?:0x[0-9a-f]+|\d+)$/i.test(String(c.tokenId)))nftCredits.add(String(BigInt(c.tokenId)));
   if(v>0n&&same(token,plan.outputToken)&&(c.tokenType==='Erc1155'||plan.erc1155InterfaceVerified&&c.tokenType==='Erc721'&&v===1n)){if(!/^(?:0x[0-9a-f]+|\d+)$/i.test(String(c.tokenId)))throw Error('ERC1155 模拟缺少 tokenId');const key=String(BigInt(c.tokenId));if(multiIds.has(key))throw Error('ERC1155 模拟重复资产变更，需要核对');multiIds.add(key);multiCredit+=v;}
   if(v>=0n)continue;const k=native(token)?BNB:token.toLowerCase(),n=(debits.get(k)||0n)-v;debits.set(k,n);
@@ -46,6 +47,7 @@ export function verifyPreview(p,plan,step){
   const v=ERC20.decodeFunctionData('approve',step.data);if(!same(v[0],step.spender)||v[1]!==BigInt(step.allowance))throw Error('授权 calldata 不一致');
  }
  if(step.kind==='sell'&&plan.requireSellCredit&&output<BigInt(plan.minOutput))throw Error('官方卖出模拟到账不足最低到账，停止提交');
+ if(plan.requireRefundCredit&&output<BigInt(plan.minOutput))throw Error('官方预览未证明本钱包退款足额到账');
  // Runtime-only ERC20 recognition requires proof of the promised incoming asset.
  if(step.kind==='mint'&&(!plan.metaVerified||plan.requireAssetCredit)&&plan.expectedAsset?.kind==='Erc20'&&output<BigInt(plan.minOutput||0))throw Error('模拟到账少于模板最低数量');
  if(step.kind==='mint'&&plan.requireNftCredit&&BigInt(nftCredits.size)<BigInt(plan.minOutput||0))throw Error('官方预览未证明本次 NFT 足额到账，停止提交');
@@ -72,27 +74,30 @@ export class Engine{
  async exclusive(account,fn,id){if(this.running.has(account))throw Object.assign(Error('该钱包正在处理上一笔操作，请稍后核对'),{code:'WALLET_BUSY',details:{account,requestAccepted:false}});const pending=this.orderIndex.find(o=>o.intent.account===account&&o.id!==id&&unresolved.has(o.status));if(pending)throw Object.assign(Error('上一笔交易尚未确定结果，已保留原单供核对'),{code:'ORDER_UNRESOLVED',details:{account,orderId:pending.id,status:pending.status,requestAccepted:false}});this.running.add(account);try{return await fn();}finally{this.running.delete(account);}}
  async plan(intent,context={}){
   if(this.planFn)return this.planFn(intent);
-  const resolved=await measure('projectDiscovery',()=>discover(intent.asset,{rpc:this.rpc,chainFallback:intent.side==='mint'}));
-  const project={name:resolved.name||resolved.addresses?.find(r=>r.primary)?.name||null,source:resolved.source,address:resolved.address};
+  const preflight=()=>Promise.all([this.rpc.verifyChain(),measure('walletReady',()=>this.bridge.ready(intent.account,{external:intent.side==='mint'}))]).then(()=>({}),error=>({error}));
+  const earlyReady=intent.side==='mint'&&(corlaInput(intent.asset)?.priority||/^corla:/.test(intent.routeId||''))?preflight():null;
+  const resolved=await measure('projectDiscovery',()=>discover(intent.asset,{rpc:this.rpc,chainFallback:intent.side==='mint',corlaRouting:intent.side==='mint'}));
+  const project={name:resolved.name||resolved.addresses?.find(r=>r.primary)?.name||null,source:resolved.source,address:resolved.address,platform:resolved.platform};
   try{
   if(!resolved.address)throw Object.assign(Error(resolved.failure?.message||resolved.reason||'尚未核验项目 Mint 入口，请提供完整合约地址'),{code:resolved.failure?.code||'MINT_NOT_VERIFIED',details:resolved});
   if(intent.side!=='mint'&&/^https:/i.test(intent.asset))throw Error('网址可能指向 Mint 合约。买卖请使用 inspect 返回的 token（到账代币 CA），不要把 Mint 地址当作代币');
   // Public balance/registry reads need no wallet session. Start them during a
   // cold/reconnecting preflight, while every official quote still waits for
   // both the chain and wallet checks. Failed guards cannot produce a plan.
-  const ready=Promise.all([this.rpc.verifyChain(),measure('walletReady',()=>this.bridge.ready(intent.account,{external:intent.side==='mint'}))]).then(()=>({}),error=>({error}));
+  const ready=earlyReady||preflight();
   const ensureReady=async()=>{const r=await ready;if(r.error)throw r.error;};
-  const overlap=intent.side!=='mint'&&!intent.openingOnly&&this.tradePlanOptions.overlapTradePreflight!==false;
+  const overlap=intent.side==='mint'?resolved.platform==='corla':!intent.openingOnly&&this.tradePlanOptions.overlapTradePreflight!==false;
   if(!overlap)await ensureReady();
   const tradeBridge=overlap?{call:async(...args)=>{await ensureReady();return this.bridge.call(...args);},ready:async(...args)=>{await ensureReady();return this.bridge.ready(...args);}}:this.bridge;
   // Buying always targets the explicitly supplied token CA. Audit and quote
   // are independent reads; both still complete before preview/submission.
   const [p,audit]=await Promise.all([
-   intent.side==='mint'?mintPlan(this.rpc,this.bridge,intent,resolved.address,resolved,this.experience):(intent.openingOnly?openingPlan(this.rpc,this.bridge,intent,{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation,aggregatePlan:i=>tradePlan(this.rpc,this.bridge,i,resolved.address,resolved.platform,this.tradePlanOptions)}):tradePlan(this.rpc,tradeBridge,intent,resolved.address,resolved.platform,this.tradePlanOptions)),
+   intent.side==='mint'?mintPlan(this.rpc,this.bridge,intent,resolved.address,resolved,this.experience,{officialPreview:true}):(intent.openingOnly?openingPlan(this.rpc,this.bridge,intent,{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation,aggregatePlan:i=>tradePlan(this.rpc,this.bridge,i,resolved.address,resolved.platform,this.tradePlanOptions)}):tradePlan(this.rpc,tradeBridge,intent,resolved.address,resolved.platform,this.tradePlanOptions)),
    intent.side==='buy'?measure('tokenAudit',()=>this.auditFn(resolved.address)).catch(e=>({available:false,reason:e.message})):null,
    ensureReady()
   ]);
   project.address=resolved.address;p.resolved=resolved;p.project=project;
+  if(intent.claimSell&&p.route!=='corla:mint')throw Error('领取后联动卖出目前仅支持 Corla 认购');
   if(intent.side==='buy'){
    if(!same(p.token,resolved.address))throw Error('交易目标与本次已审计代币不一致');p.audit=audit;
    if(audit.available&&audit.level>=5)throw Error('代币风险 5 级，拒绝提交');
@@ -118,7 +123,7 @@ export class Engine{
    try{const plan=await measure('plan',()=>this.plan(intent,context));o.plan=JSON.parse(json(plan));o.project=plan.project;o.timing.planReadyAt=Date.now();const p=await measure('officialPreview',()=>this.preview(plan,intent));if(p){this.previews.set(id,p);o.preview=p.review;o.previewAt=p.at;}
     o.status='PREPARED';o.review=[...(plan.review||[]),...(Array.isArray(p?.raw.risks)&&p.raw.risks.length?['钱包预览存在风险提示，请查看详情']:[])];o.timing.preparedAt=Date.now();o.timing.prepareMs=o.timing.preparedAt-o.createdAt;
    }catch(e){o.status=intent.side==='sell'&&e.code==='NO_HOLDINGS'?'SKIPPED':'BLOCKED';o.project??=e.project;o.mintContext=e.mintContext;o.error={...tradeError(e),details:e.details};o.timing.prepareMs=Date.now()-o.createdAt;}
-   o.diagnostics=snapshot();o.preflight=preflightReport(o);if(intent.side==='mint')o.inputExperience=this.experience.lookupInput(intent.asset);
+   o.diagnostics=snapshot();o.preflight=preflightReport(o);if(intent.side==='mint'&&o.project?.platform!=='corla')o.inputExperience=this.experience.lookupInput(intent.asset);
    return this.write(o);
   },id));
  }
@@ -143,7 +148,7 @@ export class Engine{
   });this.mintSequences.set(key,task);
   try{return await task;}finally{if(this.mintSequences.get(key)===task)this.mintSequences.delete(key);}
  }
- async execute(id,{authorization,acknowledgeReview=false,swapReceiptWaitMs=10000,continueAllowed=()=>true}={}){
+ async execute(id,{authorization,acknowledgeReview=false,swapReceiptWaitMs=10000,continueAllowed=()=>true,rejectRisks=false}={}){
   const o=this.get(id);if(!o)throw Error('找不到原始预览');
   if(!['PREPARED','READY_TO_CONTINUE'].includes(o.status))return {...o,duplicateSuppressed:true};
   if(!this.live){o.status='SIMULATED';o.executeCalls=0;o.message='模拟模式，未签名、未广播；多批次仅预览首批，未宣称额度已打满';return this.write(o);}
@@ -155,6 +160,7 @@ export class Engine{
    const mayContinue=()=>typeof continueAllowed!=='function'||continueAllowed();
    const cancelled=()=>{o.status='CANCELLED';o.message='任务已停止，尚未提交的步骤已取消；已完成的授权不会自动撤销';return this.write(o);};
    try{
+    if(o.plan.route==='corla:mint')o.targetQuantity??=o.plan.fill.targetQuantity;
     if(!mayContinue())return cancelled();
     if(o.status==='PREPARED'&&(o.plan.freshBeforeExecute||Date.now()-o.timing.preparedAt>15000)){
      const fresh=await this.plan(o.intent);
@@ -164,6 +170,7 @@ export class Engine{
      o.review=[...(fresh.review||[]),...(p?.raw.risks?.length?['钱包预览包含风险提示']:[])];o.timing.preparedAt=Date.now();this.write(o);
      if(o.review.length&&!acknowledgeReview)return {...o,needsReview:true};
     }
+    if(o.plan.afterMint){if(!this.onAuthorized)throw Error('自动领取服务未连接，请关闭自动领取或使用交易台服务');this.onAuthorized(o);}
     // Independent read-only guards; both must finish before any submission.
     await Promise.all([this.bridge.ready(o.intent.account,{external:o.plan.kind==='contract'}),(async()=>{
      if(o.intent.side==='sell'){const [now]=await read(this.rpc,o.plan.token,ERC20,'balanceOf',[o.plan.wallet]);if(String(now)!==o.plan.holdingBefore)throw Error('当前持仓已变化，请重新预览，按最新余额计算');}
@@ -176,37 +183,43 @@ export class Engine{
       if(!mayContinue())return cancelled();
       const step=o.plan.steps[index];let p=o.steps.length===0?this.previews.get(id):null;
       if(!p||Date.now()-p.at>15000)p=await this.preview(o.plan,o.intent,index);
-      if(p.raw.risks?.length&&!acknowledgeReview)throw Error('新的钱包预览包含风险，需要查看并确认');
-      await verifyIdentity(this.rpc,o.plan.identity);
+      if(p.raw.risks?.length&&(rejectRisks||!acknowledgeReview))throw Error('新的钱包预览包含风险，需要查看并确认');
+      await Promise.all([verifyIdentity(this.rpc,o.plan.identity),...(o.plan.protocolIdentities||[]).map(identity=>verifyIdentity(this.rpc,identity))]);
       if(!mayContinue())return cancelled();
       const entry={index,stage:o.stage||0,plan:o.plan,step,preview:p.review,requestId:p.raw.requestId,status:'SUBMITTING',submitStartedAt:Date.now()};
       o.steps.push(entry);o.status='SUBMITTING';this.write(o);
       let result;try{result=await this.bridge.call(o.intent.account,['contract-call','execute','--requestId',p.raw.requestId]);}
       catch(e){entry.status=e.dispatched===false?'FAILED':'SUBMISSION_UNKNOWN';entry.error=publicError(e);o.status=entry.status;return this.write(o);}
       entry.result=result;entry.txHash=result.txHash||result.transactionHash||null;entry.orderId=result.orderId||null;entry.status='PENDING';entry.submittedAt=Date.now();o.status='PENDING';o.timing.submittedAt??=Date.now();o.timing.toSubmitMs=o.timing.submittedAt-o.createdAt;this.write(o);
-      await this.observeContract(o,entry,step.kind==='sell'&&swapReceiptWaitMs===0?0:10000);
+      await this.observeContract(o,entry,(step.kind==='sell'||o.plan.route==='corla:claim')&&swapReceiptWaitMs===0?0:10000);
       if(entry.status!=='CONFIRMED')return this.write(o);
       o.nextStep=index+1;o.status='READY_TO_CONTINUE';this.write(o);
      }
      if(o.intent.side!=='mint')return this.finish(o);
      if(o.settledStage!==(o.stage||0)){
       o.completedQuantity=(o.completedQuantity||0)+o.plan.quantity;
-      const key=o.plan.budgetCurrency==='USDT'?'usdt':'bnb';o.spent??={bnb:'0',usdt:'0'};o.spent[key]=String(BigInt(o.spent[key])+BigInt(o.plan.amountIn));o.settledStage=o.stage||0;this.write(o);
+      const key=o.plan.budgetCurrency==='QUOTE'?'quote':o.plan.budgetCurrency==='USDT'?'usdt':'bnb';o.spent??={bnb:'0',usdt:'0'};o.spent[key]=String(BigInt(o.spent[key]||'0')+BigInt(o.plan.amountIn));o.settledStage=o.stage||0;this.write(o);
      }
      const requested=o.intent.quantity==='max'?null:o.intent.quantity-o.completedQuantity;
-     if(!o.plan.fill?.continue||requested===0)return this.finish(o);
-     if(o.completedQuantity>=500||(o.stage||0)>=49){o.status='PARTIAL';o.error={message:'达到本次 500 份 / 50 批次保护上限；尚未打满'};return this.write(o);}
-     const next={...o.intent,quantity:requested===null?'max':requested,maxBnb:formatUnits(parseUnits(o.intent.maxBnb,18)-BigInt(o.spent.bnb),18),...(o.intent.maxUsdt!==undefined?{maxUsdt:formatUnits(parseUnits(o.intent.maxUsdt,18)-BigInt(o.spent.usdt),18)}:{})};
+     if(!o.plan.fill?.continue||requested===0||o.plan.route==='corla:mint'&&o.completedQuantity>=o.targetQuantity)return this.finish(o);
+     const batchLimit=o.plan.route==='corla:mint'?500:50;
+     if(o.completedQuantity>=500||(o.stage||0)>=batchLimit-1){o.status='PARTIAL';o.error={message:'达到本次 500 份 / '+batchLimit+' 批次保护上限；尚未打满'};return this.write(o);}
+     const next={...o.intent,quantity:requested===null?'max':requested,maxBnb:formatUnits(parseUnits(o.intent.maxBnb,18)-BigInt(o.spent.bnb),18),...(o.intent.maxUsdt!==undefined?{maxUsdt:formatUnits(parseUnits(o.intent.maxUsdt,18)-BigInt(o.spent.usdt),18)}:{}),...(o.intent.maxQuote!==undefined?{maxQuote:formatUnits(parseUnits(o.intent.maxQuote,o.plan.budgetDecimals)-BigInt(o.spent.quote||'0'),o.plan.budgetDecimals)}:{})};
      try{
       const plan=await this.plan(next);
       if(plan.identity?.fingerprint!==o.plan.identity?.fingerprint||!same(plan.token,o.plan.token))throw Error('跨批次合约或输出资产发生变化');
+      if(o.plan.route==='corla:mint'&&(!same(plan.inputToken,o.plan.inputToken)||plan.budgetDecimals!==o.plan.budgetDecimals||plan.budgetCurrency!==o.plan.budgetCurrency))throw Error('Corla 跨批次付款币或精度发生变化，停止剩余认购');
       o.plan=JSON.parse(json(plan));o.stage=(o.stage||0)+1;o.nextStep=0;this.write(o);
      }catch(e){if(e.code==='NO_QUOTA'||e.code==='NO_FREE_MINT'&&o.intent.scope==='free')return this.finish(o);o.status='PARTIAL';o.error=publicError(e);return this.write(o);}
     }
    }catch(e){
     // A receipt lookup failure is not proof that a dispatched swap failed.
     if(o.plan?.kind==='swap'&&(o.orderId||['SUBMITTING','SUBMISSION_UNKNOWN','PENDING'].includes(o.status))){if(o.status==='SUBMITTING')o.status='SUBMISSION_UNKNOWN';o.followError=publicError(e);return this.write(o);}
-    o.status=o.steps.some(x=>x.submittedAt)?'RECEIPT_REVIEW':'BLOCKED';o.error=publicError(e);return this.write(o);
+    // A later Corla preview can fail after earlier lots/approval settled. There
+    // is no unknown transaction in that case; keep the completed portion and
+    // let a new explicit operation retry without locking the wallet forever.
+    const corlaPartial=o.plan?.route==='corla:mint'&&o.steps.length>0&&o.steps.every(x=>x.status==='CONFIRMED');
+    o.status=corlaPartial?'PARTIAL':o.steps.some(x=>x.submittedAt)?'RECEIPT_REVIEW':'BLOCKED';o.error=publicError(e);return this.write(o);
    }
   },id));
  }
@@ -233,14 +246,22 @@ export class Engine{
   const plan=entry.plan||o.plan;
   if(!entry.txHash){o.status='SUBMISSION_UNKNOWN';entry.status='SUBMISSION_UNKNOWN';o.error={message:'官方返回未包含交易哈希，仅可核对原 requestId/orderId，禁止重发'};return;}
   const end=Date.now()+timeout;do{
+   // Claim confirmation gates a subsequent sale. Fetch its immutable original
+   // transaction alongside the receipt, not one network round trip later.
+   const txRead=plan.route==='corla:claim'?this.rpc.getTransaction(entry.txHash).then(tx=>({tx}),error=>({error})):null;
    const receipt=await this.rpc.getTransactionReceipt(entry.txHash);
    if(receipt){entry.receipt=receipt;if(!same(receipt.from,plan.wallet)||!same(receipt.to,entry.step.to)){entry.status=o.status='RECEIPT_REVIEW';break;}
     if(BigInt(receipt.status)!==1n){entry.status=o.status='FAILED';break;}
-    const tx=await this.rpc.getTransaction(entry.txHash);if(!tx||!same(tx.from,plan.wallet)||!same(tx.to,entry.step.to)||tx.input.toLowerCase()!==entry.step.data.toLowerCase()||BigInt(tx.value)!==BigInt(entry.step.value)){entry.status=o.status='RECEIPT_REVIEW';break;}
+    const result=txRead?await txRead:{tx:await this.rpc.getTransaction(entry.txHash)};if(result.error)throw result.error;
+    const tx=result.tx;if(!tx||!same(tx.from,plan.wallet)||!same(tx.to,entry.step.to)||tx.input.toLowerCase()!==entry.step.data.toLowerCase()||BigInt(tx.value)!==BigInt(entry.step.value)){entry.status=o.status='RECEIPT_REVIEW';break;}
     if(entry.step.kind==='approve'){
      const [allowance]=await read(this.rpc,entry.step.to,ERC20,'allowance',[plan.wallet,entry.step.spender]);if(allowance<BigInt(entry.step.allowance)){entry.status=o.status='RECEIPT_REVIEW';break;}
     }else if(settlements[plan.route]){entry.settlement=settlements[plan.route]({receipt,wallet:plan.wallet,token:plan.token,side:o.intent.side,state:plan.state});if(entry.settlement.amountOut<BigInt(plan.minOutput||0)||entry.settlement.amountIn!==null&&entry.settlement.amountIn>BigInt(plan.amountIn))throw Error('实际成交超出本笔输入或最低到账约束');}
-    else if(entry.step.kind==='mint'){
+    else if(entry.step.kind==='mint'&&plan.subscription?.protocol==='corla'){
+     entry.settlement=corlaReceipt(receipt,plan);entry.received='1';
+    }else if(entry.step.kind==='mint'&&plan.redemption?.protocol==='corla'){
+     entry.settlement=corlaRefundReceipt(receipt,plan);entry.received=entry.settlement.amount;
+    }else if(entry.step.kind==='mint'){
      const asset=plan.expectedAsset;const topic='0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';let received=0n;
      for(const log of receipt.logs||[])if(same(log.address,asset?.token||plan.token)&&log.topics?.[0]===topic&&same('0x'+log.topics[2]?.slice(-40),plan.wallet))received+=log.topics.length===4?1n:BigInt(log.data);
      if(asset?.kind==='Erc1155')received=erc1155Received(receipt.logs,asset.token,plan.wallet);
@@ -258,7 +279,7 @@ export class Engine{
     const e=o.steps.at(-1);if(e?.txHash){await this.observeContract(o,e,0);if(e.status==='CONFIRMED'){
      o.nextStep=e.index+1;
      if(o.nextStep<o.plan.steps.length||o.intent.side==='mint'&&o.plan.fill?.continue)o.status='READY_TO_CONTINUE';else{
-      if(o.intent.side==='mint'&&o.settledStage!==(o.stage||0)){o.completedQuantity=(o.completedQuantity||0)+o.plan.quantity;const key=o.plan.budgetCurrency==='USDT'?'usdt':'bnb';o.spent??={bnb:'0',usdt:'0'};o.spent[key]=String(BigInt(o.spent[key])+BigInt(o.plan.amountIn));o.settledStage=o.stage||0;}
+      if(o.intent.side==='mint'&&o.settledStage!==(o.stage||0)){o.completedQuantity=(o.completedQuantity||0)+o.plan.quantity;const key=o.plan.budgetCurrency==='QUOTE'?'quote':o.plan.budgetCurrency==='USDT'?'usdt':'bnb';o.spent??={bnb:'0',usdt:'0'};o.spent[key]=String(BigInt(o.spent[key]||'0')+BigInt(o.plan.amountIn));o.settledStage=o.stage||0;}
       this.finish(o);
      }
     }}

@@ -1,0 +1,3 @@
+import {corlaHint} from './corla-input.mjs';
+export function corlaProgress(asset){try{const hint=corlaHint(asset);return hint?.priority?'已进入 Flap / Corla 快速识别，正在核验平台登记、价格和钱包额度…':null;}catch{return null;}}
+export function corlaSummary(project){if(project?.platform!=='corla')return null;const states=[...new Set((project.quotas||[]).map(q=>q.stateLabel).filter(Boolean))];const quotas=(project.quotas||[]).map(q=>q.account+' 号：'+(q.error||(q.agentOnly&&q.agentEligible?'Agent ID 通过，':'')+'剩余可认购 '+q.paidRemaining+' 份')+(BigInt(q.claimable||0)>0n?'；有代币可领取':'')+(BigInt(q.refundable||0)>0n?'；有认购费可退款':'')).join('；');return 'Flap / Corla 专用通道 · '+(states.join(' / ')||'已核验平台登记')+'。'+(quotas?quotas+'。':'')+'认购成功后保留份额；勾选自动领取后，开盘将领取全部代币，也可使用手动领取入口。退款须单独选择。';}

@@ -8,10 +8,11 @@ FORBIDDEN={'.git','.baw','.env','local','runtime','node_modules','wallet-contain
 
 def check_path(name):
     p=Path(name)
-    if p.is_absolute() or '..' in p.parts or '\\' in name or set(p.parts)&FORBIDDEN or any(part.startswith('.env') for part in p.parts):
+    parts={part.casefold() for part in p.parts}
+    if p.is_absolute() or not p.parts or '..' in p.parts or '\\' in name or ':' in name or parts&FORBIDDEN or any(part.startswith('.env') for part in parts):
         raise ValueError('拒绝私有或不安全路径：'+name)
     target=ROOT/p
-    if target.is_symlink() or not target.is_file() or not target.resolve().is_relative_to(ROOT):raise ValueError('只允许仓库内普通文件：'+name)
+    if any((ROOT/Path(*p.parts[:i])).is_symlink() for i in range(1,len(p.parts)+1)) or not target.is_file() or not target.resolve().is_relative_to(ROOT):raise ValueError('只允许仓库内普通文件：'+name)
     if name not in {'.gitignore','.gitattributes','LICENSE'} and p.suffix not in {'.py','.mjs','.js','.c','.css','.svg','.html','.json','.md','.txt','.yml','.vbs','.command'}:raise ValueError('不支持的发行文件类型：'+name)
     return target
 

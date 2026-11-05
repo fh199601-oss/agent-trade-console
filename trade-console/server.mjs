@@ -1,3 +1,4 @@
+import {CorlaAutomation} from './lib/corla-automation.mjs';
 import {OpeningPreparation} from './lib/opening-preparation.mjs';
 import {OpeningSell} from './lib/opening-sell.mjs';
 import {OpeningPools} from './lib/opening-pools.mjs';
@@ -29,10 +30,14 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
  const openingRpc=rpc instanceof Rpc?new Rpc(rpc.url,{timeoutMs:2000,fetchImpl:rpc.fetch}):rpc;
  const detector=new OpeningPools(openingRpc),preparation=new OpeningPreparation(rpc instanceof Rpc?new Rpc(rpc.url,{timeoutMs:2000,fetchImpl:rpc.fetch}):rpc);engine.openingScan=(t,o)=>detector.scan(t,o);engine.openingPreparation=preparation;
  const opening=providedOpening||new OpeningSell({engine,rpc:openingRpc,bridge,detector,data,preparation});
+ const corla=new CorlaAutomation({engine,rpc:openingRpc,opening,data});engine.onAuthorized=o=>corla.enroll(o);
  const readiness=new Map();const settings=()=>load(configFile,{buy:['0.005','0.01','0.02','0.05','0.1'],sell:['10','25','50','75','100']});
  function guard(req){
   const host=req.headers.host;if(!/^(127\.0\.0\.1|localhost):\d+$/.test(host||''))throw Error('Host 不允许');
-  const landing=req.method==='GET'&&new URL(req.url,'http://'+host).pathname==='/'&&req.headers['sec-fetch-mode']==='navigate'&&req.headers['sec-fetch-dest']==='document';
+  // Opening a dashboard link from another site is a top-level navigation,
+  // not an API call. Only the public landing document gets this exception.
+  const landing=req.method==='GET'&&new URL(req.url,'http://'+host).pathname==='/'&&
+   req.headers['sec-fetch-mode']==='navigate'&&req.headers['sec-fetch-dest']==='document';
   if(!landing&&req.headers.origin&&!['http://'+host].includes(req.headers.origin))throw Error('Origin 不允许');
   if(!landing&&['cross-site','same-site'].includes(req.headers['sec-fetch-site']))throw Error('跨站请求不允许');
  }
@@ -42,10 +47,13 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
   const send=(code,v,type='application/json')=>{res.writeHead(code,{'content-type':type+'; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer','content-security-policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"});res.end(type==='application/json'?json(v):v);};
   try{
    guard(req);const u=new URL(req.url,'http://'+req.headers.host),p=u.pathname;
-   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,capabilities:{openingVersion:2,recoveryVersion:1,instantReview:true},token,mode:live?'LIVE':'SIMULATION',wallets:bindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list()});
+   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,capabilities:{openingVersion:2,recoveryVersion:1,instantReview:true,corlaVersion:3,corlaAutomationVersion:2},token,mode:live?'LIVE':'SIMULATION',wallets:bindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list(),corla:corla.list()});
    if(p.startsWith('/api/'))auth(req);
    if(req.method==='GET'&&p==='/api/order'){const o=engine.get(u.searchParams.get('id'));if(!o)throw Error('未找到原单');return send(200,o);}
    if(req.method==='POST'&&p==='/api/reconcile'){const b=await body(req),accounts=b.accounts||bindings().map(w=>w.account);if(!Array.isArray(accounts)||accounts.some(a=>!bindings().some(w=>w.account===a)))throw Error('钱包编号无效');return send(200,await Promise.all([...new Set(accounts)].map(a=>engine.reconcileAccount(a))));}
+   if(req.method==='GET'&&p==='/api/corla-jobs')return send(200,corla.list());
+   if(req.method==='POST'&&p==='/api/corla-stop'){const b=await body(req);return send(200,corla.stop(b.id));}
+   if(req.method==='POST'&&p==='/api/corla-resume'){const b=await body(req);if(b.confirmed!==true)throw Error('需要点击恢复任务');return send(200,corla.resume(b.id));}
    if(req.method==='GET'&&p==='/api/opening')return send(200,opening.list());
    if(req.method==='POST'&&p==='/api/opening/check')return send(200,await opening.check(await body(req)));
    if(req.method==='POST'&&p==='/api/opening/arm'){const b=await body(req);return send(200,opening.arm(b.id,b));}
@@ -58,8 +66,8 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
    if(req.method==='GET'&&p==='/api/project')return send(200,await inspectProject(readRpc,bridge,u.searchParams.get('asset'),{experience:engine.experience,learn:u.searchParams.get('learn')==='1'}));
    if(req.method==='GET'&&p==='/api/orders')return send(200,u.searchParams.get('summary')==='1'?engine.history(50):engine.list(50));
    if(req.method==='POST'&&p==='/api/shutdown'){
-    if(opening.active()||engine.running.size||engine.list().some(o=>['PENDING','SUBMITTING','SUBMISSION_UNKNOWN','APPROVAL_CONFIRMED','READY_TO_CONTINUE','RECEIPT_REVIEW'].includes(o.status)))throw Error('存在运行中或待核对原单，暂不能切换模式');
-    send(200,{stopping:true});setTimeout(()=>{opening.close();server.close();bridge.close();server.closeIdleConnections();},100);return;
+    if(corla.active()||opening.active()||engine.running.size||engine.list().some(o=>['PENDING','SUBMITTING','SUBMISSION_UNKNOWN','APPROVAL_CONFIRMED','READY_TO_CONTINUE','RECEIPT_REVIEW'].includes(o.status)))throw Error('存在运行中或待核对原单，暂不能切换模式');
+    send(200,{stopping:true});setTimeout(()=>{corla.close();opening.close();server.close();bridge.close();server.closeIdleConnections();},100);return;
    }
    if(req.method==='POST'&&p==='/api/ready'){const b=await body(req);const result=await Promise.all(bindings().filter(w=>!b.account||w.account===b.account).map(async w=>{try{const r=await bridge.ready(w.account,{force:true});readiness.set(w.account,r);return r;}catch(e){const r={...w,status:'ERROR',error:e.message};readiness.set(w.account,r);return r;}}));return send(200,result);}
    if(req.method==='POST'&&p==='/api/settings'){const s=validateSettings(await body(req));save(configFile,s);return send(200,s);}
@@ -69,7 +77,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
    if(req.method==='POST'&&p==='/api/batch')return send(200,await batches.run(await body(req)));
    if(req.method==='POST'&&p==='/api/run'){const b=await body(req);return send(200,await engine.run(b.intent,b.id,{...b,swapReceiptWaitMs:b.fastReturn===true?0:10000}));}
    if(req.method==='POST'&&p==='/api/follow'){const b=await body(req);return send(200,await engine.follow(b.id));}
-   if(req.method==='GET'&&['/','/app.js','/review-model.mjs','/failure-kind.mjs','/trade-workflow.mjs','/asset-input.mjs','/session-client.mjs','/style.css','/favicon.svg'].includes(p)){const file=path.join(HERE,'public',p==='/'?'index.html':p.slice(1));return send(200,fs.readFileSync(file,'utf8'),/\.m?js$/.test(p)?'text/javascript':p.endsWith('.css')?'text/css':p.endsWith('.svg')?'image/svg+xml':'text/html');}
+   if(req.method==='GET'&&['/','/app.js','/corla-input.mjs','/corla-view.mjs','/corla-budget.mjs','/review-model.mjs','/failure-kind.mjs','/trade-workflow.mjs','/asset-input.mjs','/session-client.mjs','/style.css','/favicon.svg'].includes(p)){const file=path.join(HERE,'public',p==='/'?'index.html':p.slice(1));return send(200,fs.readFileSync(file,'utf8'),/\.m?js$/.test(p)?'text/javascript':p.endsWith('.css')?'text/css':p.endsWith('.svg')?'image/svg+xml':'text/html');}
    return send(404,{error:'未找到接口'});
   }catch(e){return send(e.code==='LOCAL_SESSION_EXPIRED'&&e.statusCode===401?401:400,{error:publicError(e),details:e.details,diagnostics:e.diagnostics});}
  });
@@ -78,8 +86,8 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
   try{const result=await bridge.warm(w.account);if(result)readiness.set(w.account,result);}
   catch(e){readiness.set(w.account,{...w,status:'ERROR',error:e.message});}
  }));}
- server.on('close',()=>opening.close());
- return {server,engine,bridge,token,warm,rpc,readRpc,opening};
+ server.on('close',()=>{corla.close();opening.close();});
+ return {server,engine,bridge,token,warm,rpc,readRpc,opening,corla};
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  const install=load(path.join(LOCAL,'install.json'));if(!install?.installationId)throw Error('请先运行 python3 setup.py');const live=true;if(install.liveEnabled!==true)throw Error('请重新运行安装器更新配置；用户入口仅提供真实交易模式');const port=0;
@@ -90,5 +98,5 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
  const app=createServer({live});let timer;app.server.on('close',()=>{clearInterval(timer);release();});app.server.on('error',()=>release());
  app.server.listen(port,'127.0.0.1',()=>{const port=app.server.address().port;save(path.join(DATA,'service.json'),{installationId:install.installationId,pid:process.pid,port,mode:live?'LIVE':'SIMULATION',startedAt:Date.now()});console.log(`Agent 交易台 http://127.0.0.1:${port} · ${live?'真实交易模式':'模拟模式（不签名、不广播）'}`);});
  app.warm().catch(()=>{});timer=setInterval(()=>app.warm().catch(()=>{}),15000);timer.unref();
- const close=()=>{app.opening.close();app.server.close();app.bridge.close();setTimeout(()=>process.exit(0),12000).unref();};process.on('SIGINT',close);process.on('SIGTERM',close);
+ const close=()=>{app.corla.close();app.opening.close();app.server.close();app.bridge.close();setTimeout(()=>process.exit(0),12000).unref();};process.on('SIGINT',close);process.on('SIGTERM',close);
 }

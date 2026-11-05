@@ -8,7 +8,7 @@ export function openingConfig(input){
  const asset=address(input.asset);if(/^0x0{40}$/i.test(asset))throw Error('代币地址不能为零');
  if(!Array.isArray(input.accounts)||!input.accounts.length||input.accounts.length>5||new Set(input.accounts).size!==input.accounts.length)throw Error('请选择不重复的已绑定钱包');
  const accounts=[...input.accounts].sort((a,b)=>a-b);accounts.forEach(wallet);
- const percent=String(input.percent??'100'),slippageBps=input.slippageBps??5000,currency=input.currency??'AUTO';
+ const percent=String(input.percent??'50'),slippageBps=input.slippageBps??5000,currency=input.currency??'AUTO';
  if(!['AUTO','BNB','WBNB','USDT'].includes(currency))throw Error('开盘卖出到账支持自动、BNB、WBNB、USDT');
  validateIntent({account:accounts[0],asset,side:'sell',percent,slippageBps,currency,slippageMode:'fixed'});
  return {asset,accounts,percent,slippageBps,currency};
@@ -26,6 +26,37 @@ export class OpeningSell{
  persist(){save(this.file,[...this.jobs.values()]);}
  list(){return [...this.jobs.values()].sort((a,b)=>b.createdAt-a.createdAt);}
  active(){return this.list().some(j=>ACTIVE.has(j.status));}
+ // Internal handoff only: the engine has already verified the claim receipt.
+ // A stable ID makes a crash between the two journals harmless.
+ afterClaim(id,claim,policy,authorization){
+  if(this.closed||claim.status!=='CONFIRMED'||claim.plan?.route!=='corla:claim'||claim.simulationOnly||!this.engine.live)throw Error('领取尚未确认到账，不能启动联动卖出');
+  const config=openingConfig({asset:claim.plan.outputToken,accounts:[claim.intent.account],...policy});
+  if(!same(wallet(claim.intent.account).address,claim.plan.wallet))throw Error('钱包绑定已变化');
+  const old=this.jobs.get(id);if(old){if(old.sourceClaim!==claim.id||hash(old.config)!==hash(config)||!same(old.bindings?.[0]?.address,claim.plan.wallet))throw Error('联动卖出 ID 与原领取或策略不一致');return old;}
+  if(this.list().some(j=>ACTIVE.has(j.status)&&same(j.config.asset,config.asset)&&j.config.accounts.includes(claim.intent.account)))throw Error('此钱包已有该代币的开盘卖出任务，未重复启动');
+  const job={id,config,bindings:[{account:claim.intent.account,address:claim.plan.wallet}],sourceClaim:claim.id,status:'ARMED',mode:'LIVE',createdAt:this.now(),expiresAt:this.now()+86400000,authorization,rows:[{account:claim.intent.account,status:'WAITING',attempts:0}],message:'领取已确认到账，立即检查开盘卖出路线'};
+  this.jobs.set(id,job);try{this.persist();}catch(e){this.jobs.delete(id);throw e;}this.schedule(job,0);this.scheduleFollow(job);return job;
+ }
+ // Called only by the user's explicit Corla resume action, never startup.
+ // Pending sends keep their original order IDs. Uncertain PREPARED sends are
+ // reviewed, not re-signed; only a never-dispatched preview may be rebuilt.
+ resumeAfterClaim(id,claim,policy,authorization){
+  const j=this.afterClaim(id,claim,policy,authorization);if(j.status!=='PAUSED')return j;
+  if(j.cancelRequested||j.mode!=='LIVE')throw Error('原卖出任务已取消或模式不一致，不能恢复');
+  if(this.list().some(x=>x.id!==id&&ACTIVE.has(x.status)&&same(x.config.asset,j.config.asset)&&x.config.accounts.some(a=>j.config.accounts.includes(a))))throw Error('已有另一个卖出任务，不能重复恢复');
+  for(const r of j.rows){
+   if(r.status==='PREPARING'||r.status==='TRACKING'||r.commitStartedAt){
+    const o=r.orderId?this.engine.get(r.orderId):null;
+    if(o&&['PENDING','SUBMITTING','SUBMISSION_UNKNOWN','RECEIPT_REVIEW','READY_TO_CONTINUE'].includes(o.status))r.status='TRACKING';
+    else if(o&&['CONFIRMED','FAILED','REJECTED','BLOCKED','CANCELLED','SIMULATED'].includes(o.status))this.result(r,o);
+    else if(r.commitStartedAt){r.status='REVIEW';r.error={message:'原提交边界未明确，保留原单；不重复卖出'};}
+    else r.status='WAITING';
+   }
+   if(WATCHING.has(r.status)&&this.now()>j.expiresAt)r.status='EXPIRED';
+  }
+  j.status=j.rows.some(r=>WATCHING.has(r.status))?'ARMED':j.rows.some(r=>r.status==='TRACKING')?'TRACKING':'COMPLETED';
+  j.message='用户已恢复领取后的原卖出任务；已提交的操作只核对原单';this.persist();this.schedule(j,0);this.scheduleFollow(j);return j;
+ }
  async check(input){
   const config=openingConfig(input),[snapshot,rows,preflight]=await Promise.all([this.detector.scan(config.asset,{currency:config.currency}),Promise.all(config.accounts.map(async account=>{
    const w=wallet(account);await this.bridge.ready(account,{external:true});

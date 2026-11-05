@@ -1,5 +1,6 @@
 import path from 'node:path';
 import {bindings,hash,load,save,validateIntent,publicError} from './common.mjs';
+import {independentOrder} from '../public/trade-workflow.mjs';
 // Shared message ID fixes the child order IDs across retries and bot restarts.
 export class Batches{
  constructor(engine){this.engine=engine;this.running=new Set();}
@@ -15,10 +16,14 @@ export class Batches{
   this.running.add(id);const row=old||{id,fingerprint,accounts:sorted,intent,createdAt:Date.now(),orders:[]};
   try{
    row.orders=[];delete row.stoppedAt;
-   if(intent.side!=='mint'){
+   // First prepare is read-only. Only a server-verified Corla plan permits
+   // independent execution; generic inviter-dependent mints remain serial.
+   const first=intent.side==='mint'&&execute&&this.engine.live?await this.engine.prepare({...intent,account:sorted[0]},`${id}-a${sorted[0]}`):null;
+   if(intent.side!=='mint'||!execute||!this.engine.live||first&&(independentOrder(first)||first.project?.platform==='corla')){
     row.orders=await Promise.all(sorted.map(async account=>{try{return await this.engine.run({...intent,account},`${id}-a${account}`,{execute,authorization,acknowledgeReview});}catch(e){return {id:`${id}-a${account}`,intent:{...intent,account},status:'BLOCKED',error:publicError(e)};}}));
     const active=row.orders.filter(o=>o.status!=='SKIPPED');
-    row.status=!active.length?'SKIPPED':active.every(o=>['CONFIRMED','SIMULATED'].includes(o.status))?(this.engine.live?'CONFIRMED':'SIMULATED'):active.every(o=>o.status==='PREPARED')?'PREPARED':'INCOMPLETE';
+    const available=intent.side==='mint'?active.filter(o=>o.error?.code!=='NO_QUOTA'):active;
+    row.status=!active.length?'SKIPPED':!available.length?'NO_QUOTA':available.every(o=>['CONFIRMED','SIMULATED'].includes(o.status))?(this.engine.live?'CONFIRMED':'SIMULATED'):available.every(o=>o.status==='PREPARED')?'PREPARED':'INCOMPLETE';
     row.updatedAt=Date.now();save(file,row);return row;
    }
    for(const account of sorted){

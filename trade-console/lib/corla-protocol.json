@@ -1,0 +1,233 @@
+{
+  "source": "https://flap.sh/apps/corla?lang=zh",
+  "artifact": "v20261104184813351_mint-launchpad_c3b9f9549276",
+  "chainId": 56,
+  "factories": [
+    {
+      "id": "corla-mint-factory",
+      "address": "0xfba753f8b890eb35caa000c427f99ed5903ea517",
+      "version": "5",
+      "mintImplementation": "0x43bC7908852bcEe060B95FC7A237bDB2d4591cfc",
+      "mintImplementationHash": "0xa2b984c6e9eb05fef30b19082fae97d8f370cf62a0adc2e4669080cb60eef61b",
+      "fingerprint": "4ab23d06967b247df5943fe295f1912baa4ee3946a6bd4c0f776149e95a839e1"
+    },
+    {
+      "id": "corla-mint-factory-legacy-v7",
+      "address": "0xd409d0028394fec96247945e6a45ac0c11e7e632",
+      "version": "5",
+      "mintImplementation": "0xb4f8Be51a2C81a6bEeEf18095b308b22B13525d3",
+      "mintImplementationHash": "0x5c5726fb15b753b1b8702ceb250ab59797e57cf6fae5e629e08a5b6f9e16e8d5",
+      "fingerprint": "a4730537db324d6db28c29ebcfa972c3aa8b469819c0052485aec0a9932c3c63"
+    },
+    {
+      "id": "corla-mint-factory-legacy-v6",
+      "address": "0xe3afa4d37edbabadd5f04c3dbe1f799f64d36988",
+      "version": "6",
+      "mintImplementation": "0x8632A3A706eaeC1a0D53619321ab343f15146911",
+      "mintImplementationHash": "0xb647d74cecae2a684fda2b894231e46cc9c559aa03026a683285863c72a816d9",
+      "fingerprint": "11978f662f1fb4e5d6ae0c0e8e2b79e40b6f4c97ee9b6d4997365d2a93c204f8"
+    },
+    {
+      "id": "corla-mint-factory-legacy-v5-dock",
+      "address": "0x373b3320fee8cb6b2889e2591dad24cb2923c53f",
+      "version": "5",
+      "mintImplementation": "0x54BBde9a11059c8aBe6298855d10E1Ab5f7D3dEF",
+      "mintImplementationHash": "0x849ea387d576fbd167acc0d4ff54b3f57ca9f162191e96cd5345f6843b530201",
+      "fingerprint": "93feb547d11cf82709f5e24d0a62d4018764a9250ef2968b1c50e6c2d3793e15"
+    },
+    {
+      "id": "corla-mint-factory-legacy",
+      "address": "0x1c474b27604e2dca2dd62384076ec31d64d94eea",
+      "version": "4",
+      "mintImplementation": "0xB39e7fbD71A758A94d4c9fAe74394B57DEBf8064",
+      "mintImplementationHash": "0xcda5d23408e6d4e9ae896b27f487de904c08695ec98c869f96ef4f6632083aad",
+      "fingerprint": "30e56b4746fe3a1fa93b59a37ed6b6ed89901799a6e6fecfcdaf9aa4eb15d1f3"
+    },
+    {
+      "id": "corla-mint-factory-legacy-v5",
+      "address": "0x1a0a9bbd1b5b7bad88d5cc2e25a7af02dd598cdf",
+      "version": "5",
+      "mintImplementation": "0x159d6Dd79b5e78Bd7C8463Ed993a9BC437CAb127",
+      "mintImplementationHash": "0x93ecb34127f754e8eccaefa1705a2a410a12df120ad9d5309b729493cdaaa0e7",
+      "fingerprint": "e74c9eda3dab1a7f1fe7ebddb81d3d039373b54d2bcfb73ebc184a4905609983"
+    },
+    {
+      "id": "corla-mint-factory-legacy-v4",
+      "address": "0x3f7478c736f3e75e8c93735819d584310edf9f93",
+      "version": "4",
+      "mintImplementation": "0x5244a6EF2f71985D2DEADA3606Eaad359D644484",
+      "mintImplementationHash": "0x5aaff736be4fc6c5c4b2535fd54b3850d0221ad729704811ed47ccb5a7ad185e",
+      "fingerprint": "02b0ee2e8786caacf539d28b1e5c7f54a80853e8932c2d3b5426538cf080572f"
+    }
+  ],
+  "factoryAbi": [
+    "error FundingBelowMinimum(uint256 required, uint256 actual)",
+    "error FundingQuoteUnavailable(address quoteToken)",
+    "error InvalidQuoteDecimals(address quoteToken)",
+    "function mintQuote(bytes32 resolverKey,bytes32[] candidates)",
+    "function quoteTokenFor(bytes32 resolverKey) view returns (address)",
+    "function mintTermsVersion() view returns (uint8)",
+    "function MAGIC_DIVIDEND_SELF() view returns (address)",
+    "function commissionReceiver() view returns (address)",
+    "function deploymentCount() view returns (uint256)",
+    "function getDeployments(uint256 offset, uint256 limit) view returns ((address mint, address creator, address expectedToken, bytes32 mintSalt, bytes32 launchSalt, bytes32 configurationHash, uint64 createdAt, uint64 fundingDeadline, uint256 totalLots, uint256 pricePerLot)[])",
+    "function isVaultFactoryAllowed(address factory) view returns (bool)",
+    "function vaultDataValidator(address factory) view returns (address)",
+    "function getVaultFactories(uint256 offset, uint256 limit) view returns ((address factory, bool allowed, (string nameZh, string nameEn, string descriptionZh, string descriptionEn) metadata)[] result)",
+    "function predictMintAddress(address creator, bytes32 mintSalt) view returns (address)",
+    "function mintImplementation() view returns (address)",
+    "function predictTokenAddress(bytes32 launchSalt) view returns (address)",
+    "function previewQuoteToken(address quoteToken) view returns (uint8 decimals)",
+    "function minimumFunding(address quoteToken) view returns (uint256 minimumQuote,uint256 bnbPriceUsd,uint256 quotePriceUsd)",
+    "function deployment(uint256 index) view returns ((address mint, address creator, address expectedToken, bytes32 mintSalt, bytes32 launchSalt, bytes32 configurationHash, uint64 createdAt, uint64 fundingDeadline, uint256 totalLots, uint256 pricePerLot))",
+    "function deploymentIndexPlusOne(address) view returns (uint256)",
+    "function deploymentSalt(address creator,bytes32 mintSalt) view returns (bytes32)",
+    "function mintForLaunchSalt(bytes32) view returns (address)",
+    "function quoteCreationFee() view returns (uint256)",
+    "function portal() view returns (address)",
+    "function tokenInitCodeHash() view returns (bytes32)",
+    "function isLaunchSaltAvailable(bytes32 candidate) view returns (bool)"
+  ],
+  "mintAbi": [
+    "function portal() view returns (address)",
+    "function tokenInitCodeHash() view returns (bytes32)",
+    "function quoteTokenDecimals() view returns (uint8)",
+    "function quoteAllowance(address account) view returns (uint256)",
+    "function getAgentStatus(address account) view returns (bool required, bool eligible)",
+    "function agentOnly() view returns (bool)",
+    "function maxMintsPerWallet() view returns (uint32)",
+    "function walletMintCount(address account) view returns (uint32)",
+    "function getCreationParams() view returns (((uint256 totalLots, uint256 pricePerLot, uint32 maxMintsPerWallet, bool whitelistEnabled, uint32 whitelistDurationSeconds, address[] whitelist) terms, (string name, string symbol, string meta, uint256 totalSupply, bytes32 salt, address quoteToken, uint8 dexId, uint256 poolQuote, uint256 poolToken, uint16 buyTaxRate, uint16 sellTaxRate, uint32 taxDuration, uint32 antiFarmerDuration, (uint8 feeType, uint16 bps, bytes configData)[] feeConfigs, uint8 antiSniperMode, uint32 exemptWindow, address[] exemptAddrs, uint256 creatorBuyQuote, bytes32 extensionID, bytes extensionData, address commissionReceiver) launch, (uint8 target, address strategy, uint128 amount, bytes configData) distribution))",
+    "function token() view returns (address)",
+    "function mint() payable",
+    "function mint(bytes32[] candidates) payable",
+    "function totalLots() view returns (uint256)",
+    "function claim()",
+    "function refund()",
+    "function getMintState() view returns (uint256 mintedLots, uint8 status)",
+    "function refundMintVersion() view returns (uint8)",
+    "function lockedLaunchVersion() view returns (uint8)",
+    "function lockedTokenVersion() view returns (bool recorded,uint8 expectedTokenVersion)",
+    "function refundedAmount() view returns (uint256)",
+    "function getUserInfo(address account) view returns (bool participated, uint256 claimable, uint256 refundable, bool didClaim, bool didRefund, bool whitelistAllowed)",
+    "function creator() view returns (address)",
+    "function expectedToken() view returns (address)",
+    "function quoteToken() view returns (address)",
+    "function pricePerLot() view returns (uint256)",
+    "function fundingDeadline() view returns (uint64)",
+    "function whitelistDeadline() view returns (uint64)",
+    "function getWhitelist(uint256 cursor, uint256 limit) view returns (address[] accounts, uint256 nextCursor)",
+    "function whitelistEntryCount() view returns (uint256)",
+    "function tokensPerLot() view returns(uint256)",
+    "event Minted(address indexed account,uint256 mintedLots)",
+    "event Refunded(address indexed account,uint256 amount)"
+  ],
+  "errors": [
+    {
+      "name": "AgentIdRequired",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "AgentIdentityUnavailable",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "AlreadyMinted",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "IncorrectPayment",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "InvalidDistribution",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "InvalidInitialization",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "InvalidLaunchResult",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "InvalidMintInitialization",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "InvalidSaltCandidates",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "InvalidWhitelist",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "NoAvailableLaunchSalt",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "NotInitializing",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "NotWhitelisted",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "NothingToClaim",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "NothingToRefund",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "ReentrancyGuardReentrantCall",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "SafeERC20FailedOperation",
+      "type": "error",
+      "inputs": [
+        {
+          "name": "token",
+          "type": "address",
+          "internalType": "address"
+        }
+      ]
+    },
+    {
+      "name": "TransferFailed",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "Unauthorized",
+      "type": "error",
+      "inputs": []
+    },
+    {
+      "name": "WrongPhase",
+      "type": "error",
+      "inputs": []
+    }
+  ]
+}

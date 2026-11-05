@@ -1,6 +1,7 @@
 """Build a clean, self-contained platform ZIP from an explicit source manifest."""
 import argparse,hashlib,json,os,shutil,stat,subprocess,tarfile,tempfile,urllib.request,zipfile
 from pathlib import Path
+from update_manifest import check_path
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -24,8 +25,8 @@ def extract(archive,destination):
 def build(platform,output):
     manifest=json.loads((ROOT/'MANIFEST.json').read_text())
     for name,want in manifest['files'].items():
-        p=ROOT/name
-        if p.is_symlink() or not p.is_file() or digest(p)!=want:raise ValueError('Source verification failed: '+name)
+        p=check_path(name)
+        if digest(p)!=want:raise ValueError('Source verification failed: '+name)
     locks=json.loads((ROOT/'tools/runtime-lock.json').read_text());lock=locks['platforms'][platform]
     version=json.loads((ROOT/'trade-console/package.json').read_text())['version']
     output=output.resolve();output.mkdir(parents=True,exist_ok=True)
