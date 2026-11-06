@@ -26,7 +26,7 @@ def run_smoke(archive=None):
         env=dict(os.environ,AGENT_TRADE_HOME=str(temp/'用户 data'/'AgentTradeConsole'/'new-install'),PYTHONIOENCODING='utf-8')
         python=str(root/'portable/python'/('python.exe' if os.name=='nt' else 'bin/python3')) if archive else sys.executable
         def cmd(*args):
-            r=subprocess.run([python,str(root/'setup.py'),*args],cwd=root,env=env,capture_output=True,text=True,encoding='utf-8',timeout=120)
+            r=subprocess.run([python,str(root/'setup.py'),*args,'--autostart','skip'],cwd=root,env=env,capture_output=True,text=True,encoding='utf-8',timeout=120)
             try:result=json.loads(r.stdout)
             except Exception:raise AssertionError('Installer did not return JSON: '+r.stderr[-600:])
             assert r.returncode==0 and result.get('success'),result
@@ -45,7 +45,7 @@ def run_smoke(archive=None):
             # Exercise the desktop entry, including pythonw on Windows, without
             # opening a real browser or discovering any recipient wallet.
             desktop_python=str(Path(python).with_name('pythonw.exe')) if os.name=='nt' else python
-            desktop=subprocess.run([desktop_python,str(root/'desktop.py'),'--no-browser'],cwd=root,env=env,capture_output=True,timeout=120)
+            desktop=subprocess.run([desktop_python,str(root/'desktop.py'),'--no-browser','--autostart','skip'],cwd=root,env=env,capture_output=True,timeout=120)
             assert desktop.returncode==0,'desktop entry failed'
             launch=json.loads((Path(env['AGENT_TRADE_HOME'])/'last-launch.json').read_text(encoding='utf-8'))
             assert launch.get('success') and launch['url']==first['url'] and launch['mode']=='LIVE',launch
@@ -92,7 +92,32 @@ def run_smoke(archive=None):
             assert request(third['url']+'/api/orders',token=boot['token'])==[]
             cmd('stop');reused=cmd();assert reused['walletCheck']['savedBindingsReused'],reused
             cmd('stop');assert not cmd('status')['running']
-            print(json.dumps({'success':True,'platform':sys.platform,'portable':bool(archive),'checks':['install','LIVE without writes','paths with spaces and Chinese','repeat install','desktop entry','assets','numbered wrapper','read-only readiness','no automatic jobs','custom pool profile','account above five','entrypoint manifest','reuse saved bindings','stop'],'fakeWalletCommands':len(calls.read_text().splitlines()),'realWalletCommands':0,'submittedTransactions':0}))
+            # Generate both OS artifacts only under this test's temporary tree.
+            # Run the exact login entry with a stripped login-style environment;
+            # it must retain the saved original wallet environment and identity.
+            support=temp/'启动支持';folders={'desktop':str(temp/'桌面'),'login':str(temp/'登录项')}
+            script='import sys,json;from pathlib import Path;sys.path.insert(0,'+repr(str(root))+');import setup,startup;cfg=setup.read(setup.CONFIG);result=startup.configure(cfg,True,support=Path('+repr(str(support))+'),folders={k:Path(v) for k,v in '+repr(folders)+'.items()},register=False);print(json.dumps(result))'
+            generated=subprocess.run([python,'-c',script],env=env,cwd=root,capture_output=True,text=True,encoding='utf-8',timeout=30)
+            assert generated.returncode==0,generated.stderr
+            integration=json.loads(generated.stdout);config=integration['config']
+            isolated=dict(env,PATH=os.defpath,DOCKER_CONTEXT='synthetic-wrong-context')
+            isolated.pop('AGENT_TRADE_HOME',None);isolated.pop('ATC_WALLET_PATH',None)
+            def login(action='run'):
+                r=subprocess.run([python,str(root/'startup.py'),action,'--config',config,'--no-browser'],cwd=support,env=isolated,capture_output=True,text=True,encoding='utf-8',timeout=120)
+                assert r.returncode==0,(r.stdout,r.stderr)
+                return json.loads(r.stdout)
+            login_result=login();assert login_result['success'] and login_result['walletCount']==1,login_result
+            boot=request(login_result['url']+'/api/bootstrap');assert boot['installationId']==cfg['installationId']
+            ready=request(login_result['url']+'/api/ready',{},boot['token']);assert ready[0]['status']=='CONNECTED',ready
+            instance=boot['instance']
+            assert login('open')['url']==login_result['url']
+            assert request(login_result['url']+'/api/bootstrap')['instance']==instance,'second click restarted server'
+            assert request(login_result['url']+'/api/orders',token=boot['token'])==[]
+            assert request(login_result['url']+'/api/opening',token=boot['token'])==[]
+            commands=[json.loads(x) for x in calls.read_text(encoding='utf-8').splitlines()]
+            assert all(' '.join(c[:2]) in {'wallet status','wallet address','wallet settings'} and '--json' in c for c in commands)
+            cmd('stop')
+            print(json.dumps({'success':True,'platform':sys.platform,'portable':bool(archive),'checks':['install','LIVE without writes','paths with spaces and Chinese','repeat install','desktop entry','assets','numbered wrapper','read-only readiness','no automatic jobs','custom pool profile','account above five','entrypoint manifest','reuse saved bindings','login cold start','saved environment restored','one-click without restart','stop'],'fakeWalletCommands':len(calls.read_text().splitlines()),'realWalletCommands':0,'submittedTransactions':0}))
         finally:
             try:cmd('stop')
             except Exception:pass

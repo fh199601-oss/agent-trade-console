@@ -28,4 +28,10 @@ local/
 portable/
 dist/
 PORTABLE.json
+**/startup.json
+**/startup-error.json
+**/startup-error.html
+**/startup.html
+**/last-launch.json
+**/rpc-settings.json
 !licenses/python-build-standalone/LICENSE.sqlite.txt

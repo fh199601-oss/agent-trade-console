@@ -4,7 +4,7 @@ import argparse,hashlib,json,re
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
-FORBIDDEN={'.git','.baw','.env','local','runtime','node_modules','wallet-containers','accounts.json','wallet-entrypoints.json','install.json','service.json','.migration','evidence','reports','__pycache__'}
+FORBIDDEN={'.git','.baw','.env','local','runtime','node_modules','wallet-containers','accounts.json','wallet-entrypoints.json','install.json','service.json','startup.json','startup-error.json','startup-error.html','startup.html','last-launch.json','rpc-settings.json','.migration','evidence','reports','__pycache__'}
 
 def check_path(name):
     p=Path(name)

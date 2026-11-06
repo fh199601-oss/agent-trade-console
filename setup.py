@@ -212,7 +212,8 @@ def start(cfg,live=True):
 
 def main():
     parser=argparse.ArgumentParser(description='安装并只读接入本机钱包，启动真实交易看板；安装不下单，交易仍需本人操作')
-    parser.add_argument('action',choices=['install','start','stop','status','discover','verify'],nargs='?',default='install')
+    parser.add_argument('action',choices=['install','start','stop','status','discover','verify','startup'],nargs='?',default='install')
+    parser.add_argument('--autostart',choices=['on','off','status','skip'],help='登录自启：on 开启、off 关闭、status 查看、skip 不更改启动项（测试用）；首次安装默认开启')
     parser.add_argument('--wallet-dir',help='已有账号池目录或工作区；识别公开清单与编号脚本，跳过全盘搜索')
     parser.add_argument('--wallet-map',help='AI 生成的 wallet-entrypoints.json 公开启动清单，跳过搜索')
     parser.add_argument('--wallet-entry',action='append',help='编号=完整启动脚本路径，可重复；跳过搜索')
@@ -236,6 +237,11 @@ def main():
             dirs=find_wallet_dirs(args.scan_root or default_scan_roots())
             return {'success':True,'directories':[str(p) for p in dirs],'scanComplete':not getattr(dirs,'truncated',False),'credentialsRead':False}
         cfg=read(CONFIG)
+        if args.action=='startup':
+            if not cfg:raise RuntimeError('请先安装本看板，再配置登录自启')
+            from startup import after_install
+            result=after_install(cfg,args.autostart or 'status')
+            return {'success':'error' not in result,'startup':result,'submittedTransactions':0}
         if args.action=='stop':return {'success':True,**(stop(cfg) if cfg else {'stopped':True,'alreadyStopped':True})}
         if args.action=='status':
             running=current(cfg) if cfg else None
@@ -248,7 +254,9 @@ def main():
                 url,state=current(cfg)
                 if state['mode']!='LIVE':
                     stop(cfg)
-                else:return {'success':True,'url':url,'mode':state['mode'],'walletCount':len(state['wallets']),'issues':cfg.get('issues',[]),'alreadyInstalled':True,'dataDir':str(LOCAL)}
+                else:
+                    from startup import after_install
+                    return {'success':True,'url':url,'mode':state['mode'],'walletCount':len(state['wallets']),'issues':cfg.get('issues',[]),'alreadyInstalled':True,'dataDir':str(LOCAL),'startup':after_install(cfg,args.autostart)}
             progress('正在准备运行环境…');dependencies(node,npm)
             progress('正在只读检查钱包入口；不会登录、签名或交易…')
             started=time.monotonic()
@@ -270,7 +278,9 @@ def main():
         cfg=dict(cfg,python=python,node=node)
         if not current(cfg):save(CONFIG,cfg)
         progress('正在启动本地看板…');url,state=start(cfg)
-        return {'success':True,'url':url,'mode':state['mode'],'walletCount':len(state['wallets']),'issues':cfg.get('issues',[]),'walletCheck':cfg.get('walletCheck',{}),'dataDir':str(LOCAL),'submittedTransactions':0,'next':'打开 url；有未接入账号时按 issues 定点处理，不要反复全盘搜索或重装。'}
+        from startup import after_install
+        startup=after_install(cfg,args.autostart) if args.action=='install' or args.autostart else None
+        return {'success':True,'url':url,'mode':state['mode'],'walletCount':len(state['wallets']),'issues':cfg.get('issues',[]),'walletCheck':cfg.get('walletCheck',{}),'dataDir':str(LOCAL),'startup':startup,'submittedTransactions':0,'next':'打开 url；有未接入账号时按 issues 定点处理，不要反复全盘搜索或重装。'}
     except Exception as e:
         return {'success':False,'error':str(e),'submittedTransactions':0}
 

@@ -15,12 +15,14 @@
 
 便携包自带固定版本的 Python、Node 和 npm 依赖，**不用手动安装 Python、Node、npm 或 Git**，也不修改系统 PATH。启动时先显示进度，再打开实际看板地址。Windows 钱包查询在后台静默运行。不要选 GitHub 自动生成的 Source code ZIP，那是开发用源码包。
 
+**1.5 起首次安装默认配置登录自启，并创建桌面 `AGENT-xxxxxx` 一键入口。** 重启并登录电脑后后台启动，点击桌面入口即可打开本安装的实际网址；重复点击不会重启服务。Mac 使用 LaunchAgent，Windows 使用当前用户的启动目录和隐藏进程，不需要管理员权限。原自动领取、卖出任务继续保持重启后暂停，由本人恢复。自启关闭、旧版补装和钱包环境边界见 [STARTUP.md](STARTUP.md)。
+
 看板不是钱包客户端：仍需要你自己已连接的 Binance Agentic Wallet。现有编号入口如果依赖 Docker，Docker 必须正常运行；看板不会重新注册、重置或反复启动 Docker。直接使用官方 CLI 的用户不因看板而需要 Docker。
 
 ## 发给 AI 的安装提示词
 
 ```text
-请安装 https://github.com/fh199601-oss/agent-trade-console 最新 Release 中适合我 Windows/Mac 和芯片的便携包，先读 AGENTS.md、START_HERE.md、WALLET_SETUP.md 和 WALLET_SAFETY.md。找到已有钱包/账号池的公开启动入口，先确认原主机、容器或 WSL 环境，再用 --wallet-dir、--wallet-entry 或按文档生成的 --wallet-map 接入，保留原 CLI、解释器、账号选择和锁。包内运行环境只运行看板，绝不能用主机或其他版本 CLI 打开容器登录目录，不安装升级钱包 CLI，不复制会话、不重建容器。已有绑定直接复用，失败按 issues 定点处理，不反复搜索或重装；原环境无法确认时先开空看板并说明原因。启动后验证页面和只读连接，把含端口的完整网址及接入结果发给我。安装测试不得买卖、Mint、授权、签名或启动自动交易，不得读取、复制、导出或索要私钥、助记词、登录凭据；确认确需 App 登录或多套账号池范围不明确时才让我操作。
+请安装 https://github.com/fh199601-oss/agent-trade-console 最新 Release 中适合我 Windows/Mac 和芯片的便携包，先读 AGENTS.md、START_HERE.md、STARTUP.md、WALLET_SETUP.md 和 WALLET_SAFETY.md。找到已有钱包/账号池的公开启动入口，先确认原主机、容器或 WSL 环境，再用 --wallet-dir、--wallet-entry 或按文档生成的 --wallet-map 接入，保留原 CLI、解释器、账号选择和锁。包内运行环境只运行看板，绝不能用主机或其他版本 CLI 打开容器登录目录，不安装升级钱包 CLI，不复制会话、不重建容器。已有绑定直接复用，失败按 issues 定点处理，不反复搜索或重装；原环境无法确认时先开空看板并说明原因。启用登录自动启动并创建桌面一键入口，核验安装结果的 startup 字段；自动领取、卖出任务不自动恢复。打开并验证页面和只读连接，把含端口的完整网址及接入结果发给我。安装测试不得买卖、Mint、授权、签名或启动自动交易，不得读取、复制、导出或索要私钥、助记词、登录凭据；确认确需 App 登录或多套账号池范围不明确时才让我操作。
 ```
 
 ## 功能

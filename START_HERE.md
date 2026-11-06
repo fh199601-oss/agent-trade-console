@@ -6,6 +6,8 @@
 
 运行环境随包提供，不安装到系统、不修改全局 PATH。包内 Node/Python 与所有依赖均列入 MANIFEST；运行时来源和原始 SHA256 在 PORTABLE.json。发行 ZIP 的 SHA256 也在 Release 提供；校验和不是第三方审计或作者数字签名。
 
+首次成功安装会配置当前用户登录自启和桌面一键入口，结果见 JSON `startup`。失败不影响直接使用原 Start 入口；关闭/重新启用及原钱包环境要求见 [STARTUP.md](STARTUP.md)。登录自启不恢复自动交易任务，不重新搜索钱包。
+
 仅提供真实交易模式。安装、识别、查询与预览不会提交交易；只有本人明确点击交易或给 bot 本次具体执行指令后才签名。开盘任务必须单独点击启动，重启不恢复旧任务。
 
 ## AI 安装流程
@@ -14,6 +16,7 @@
 2. 先按 [WALLET_SETUP.md](WALLET_SETUP.md) 使用已知入口路径，或由 AI 自动生成公开入口清单。不要从头反复搜账号池。使用便携 Python 执行 setup.py，或双击启动入口。首次可用 `--no-wallet` 只装空看板，不调用任何钱包。源码安装才需要系统 Python 3.10+、Node 24+、npm。
 3. 按返回的 `url` 访问页面，核验 bootstrap 的 installationId 与 `dataDir/install.json` 相同。不要输出 token、完整会话或 settings。把完整的 `http://127.0.0.1:端口/` 发给用户。
 4. 查看 walletCount 和 issues，不把“页面打开”说成“钱包全部可用”。已有绑定在环境暂时故障时保留；实际连接实时检查。
+5. 检查 `startup` 的启用状态、桌面入口及提示。自启仅使用本次接收者原环境的本地配置；若系统策略阻止，明确告诉用户，不能关闭系统保护或改为管理员运行。测试使用 `--autostart skip`。
 
 ## 钱包发现
 

@@ -66,7 +66,7 @@ jobs:
           locks=json.loads((root/'tools/runtime-lock.json').read_text())['platforms']
           version=json.loads((root/'trade-console/package.json').read_text())['version']
           assert re.fullmatch(r'\d+\.\d+\.\d+',version)
-          forbidden={'.git','.baw','.env','local','wallet-containers','accounts.json','wallet-entrypoints.json','install.json','service.json'}
+          forbidden={'.git','.baw','.env','local','wallet-containers','accounts.json','wallet-entrypoints.json','install.json','service.json','startup.json','startup-error.json','startup-error.html','startup.html','last-launch.json','rpc-settings.json'}
           secret=re.compile(rb'-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----|(?:ghp_|github_pat_)[A-Za-z0-9_]{30,}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}')
           for name,want in expected.items():
               p=PurePosixPath(name)
@@ -117,8 +117,8 @@ jobs:
           import os,subprocess
           from pathlib import Path
           notes=Path('release-notes.md')
-          notes.write_text('新增任务中心分组、暂停/删除/恢复、修改卖出比例与认购后补建任务；改善领取/卖出失败恢复、免费额度模拟探测，并支持自定义查询 RPC。保留原钱包环境与登录保护。说明见 CHANGELOG.md、TASKS.md、WALLET_SAFETY.md。\n\n四个平台均已通过源码和便携包安装测试，仅使用合成钱包、零真实交易。每个发行文件已核验清单和哈希。\n',encoding='utf-8')
-          subprocess.run(['gh','release','create',os.environ['RELEASE_TAG'],'--repo',os.environ['GH_REPO'],'--target',os.environ['SOURCE_SHA'],'--draft','--title',os.environ['RELEASE_TAG']+' · 任务管理与交易恢复','--notes-file',str(notes),*[str(p) for p in sorted(Path('packages').iterdir())]],check=True)
+          notes.write_text('新增 Mac / Windows 登录自启与桌面一键打开，复用已核验的钱包入口和原环境。Windows 静默启动，Mac 使用应用支持目录，重复点击不重启服务。自动领取和卖出任务重启后仍需本人恢复。另修复列表滚轮衔接。说明见 CHANGELOG.md、STARTUP.md、WALLET_SAFETY.md。\n\n四个平台均已通过源码和便携包安装测试，仅使用合成钱包、零真实交易。每个发行文件已核验清单和哈希。\n',encoding='utf-8')
+          subprocess.run(['gh','release','create',os.environ['RELEASE_TAG'],'--repo',os.environ['GH_REPO'],'--target',os.environ['SOURCE_SHA'],'--draft','--title',os.environ['RELEASE_TAG']+' · 登录自启与一键打开','--notes-file',str(notes),*[str(p) for p in sorted(Path('packages').iterdir())]],check=True)
       - uses: actions/upload-artifact@v4
         with:
           name: release-audit
