@@ -117,8 +117,8 @@ jobs:
           import os,subprocess
           from pathlib import Path
           notes=Path('release-notes.md')
-          notes.write_text('新增 Mac / Windows 登录自启与桌面一键打开，复用已核验的钱包入口和原环境。Windows 静默启动，Mac 使用应用支持目录，重复点击不重启服务。自动领取和卖出任务重启后仍需本人恢复。另修复列表滚轮衔接。说明见 CHANGELOG.md、STARTUP.md、WALLET_SAFETY.md。\n\n四个平台均已通过源码和便携包安装测试，仅使用合成钱包、零真实交易。每个发行文件已核验清单和哈希。\n',encoding='utf-8')
-          subprocess.run(['gh','release','create',os.environ['RELEASE_TAG'],'--repo',os.environ['GH_REPO'],'--target',os.environ['SOURCE_SHA'],'--draft','--title',os.environ['RELEASE_TAG']+' · 登录自启与一键打开','--notes-file',str(notes),*[str(p) for p in sorted(Path('packages').iterdir())]],check=True)
+          notes.write_text('适配 Corla 最新工厂、Mint 实现和两个结算模块，保持注册表快速识别及提交前身份校验。新增已终止项目处理和名称限制错误说明。验证范围见 CORLA_UPGRADE.md。\n\nMac / Windows 四个平台均通过源码及便携包安装测试；测试仅使用合成钱包、零真实交易。每个发行文件均核验清单和哈希。\n',encoding='utf-8')
+          subprocess.run(['gh','release','create',os.environ['RELEASE_TAG'],'--repo',os.environ['GH_REPO'],'--target',os.environ['SOURCE_SHA'],'--draft','--title',os.environ['RELEASE_TAG']+' · Corla 新版适配','--notes-file',str(notes),*[str(p) for p in sorted(Path('packages').iterdir())]],check=True)
       - uses: actions/upload-artifact@v4
         with:
           name: release-audit

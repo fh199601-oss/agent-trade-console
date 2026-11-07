@@ -209,3 +209,9 @@ test('refund-only phase five stops monitoring; refund-mint version one keeps wat
 });
 test('bulk-compatible Corla resume rejects an overlapping active task and cancelled marker',t=>{const h=harness(t),j=h.m.enroll(h.parent);j.status='PAUSED';j.resumeStatus='WATCHING';const other=h.m.enroll({...h.parent,id:'another-subscription'});assert.throws(()=>h.m.resume(j.id),/已有/);h.m.stop(other.id);j.cancelled=true;assert.throws(()=>h.m.resume(j.id),/未停止/);j.cancelled=false;assert.equal(h.m.resume(j.id).status,'WATCHING');assert.equal(h.calls().execs,0);});
 test('Corla resume persistence failure remains paused and does not schedule actions',t=>{const h=harness(t),j=h.m.enroll(h.parent);j.status='PAUSED';j.resumeStatus='WATCHING';h.m.persist=()=>{throw Error('disk full');};let schedules=0;h.m.schedule=()=>schedules++;assert.throws(()=>h.m.resume(j.id),/disk full/);assert.equal(j.status,'PAUSED');assert.equal(j.resumeStatus,'WATCHING');assert.equal(schedules,0);assert.equal(h.calls().execs,0);});
+
+test('terminated Corla project stops waiting without submitting or automatically selling',async t=>{
+ const h=harness(t),j=h.m.enroll(h.parent);h.options.client.get=async()=>[2n,6n];
+ await h.m.tick(j.id);assert.equal(j.status,'REVIEW');assert.match(j.message,/终止/);
+ h.advance(1000);await h.m.tick(j.id);assert.equal(h.calls().execs,0);assert.equal(h.calls().prepares,0);assert.equal(h.calls().handoffs,0);
+});

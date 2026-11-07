@@ -1,15 +1,25 @@
 {
   "source": "https://flap.sh/apps/corla?lang=zh",
-  "artifact": "v20261104184813351_mint-launchpad_c3b9f9549276",
+  "artifact": "v20261105100423838_mint-launchpad_bf58371898a4",
   "chainId": 56,
   "factories": [
     {
       "id": "corla-mint-factory",
       "address": "0xfba753f8b890eb35caa000c427f99ed5903ea517",
       "version": "5",
-      "mintImplementation": "0x43bC7908852bcEe060B95FC7A237bDB2d4591cfc",
-      "mintImplementationHash": "0xa2b984c6e9eb05fef30b19082fae97d8f370cf62a0adc2e4669080cb60eef61b",
-      "fingerprint": "4ab23d06967b247df5943fe295f1912baa4ee3946a6bd4c0f776149e95a839e1"
+      "mintImplementation": "0x9a2E15A581CE87F5D586745dA78b9AeB01633583",
+      "mintImplementationHash": "0x14a2b6569fbf22f98704500d13da0142ebe67017c1b42b42b5bbba37abb647f8",
+      "fingerprint": "16a330080e976d85fa345618768bc42202bff59c5abf0b71b34d26d0061f6f58",
+      "dependencies": [
+        {
+          "address": "0x17aa48af116d3195e449e31c617dfe5a4d48151b",
+          "codeHash": "0xb9ebf0b2b681643a402a7ae437085632bc95e51e2fc5909b8af8d8286198e944"
+        },
+        {
+          "address": "0xd8cd6aed1fef34f947b99d369bf73fbaab4612c2",
+          "codeHash": "0x8e5824dcb77317e5f97fd380d8e96803cd662cf9fd6a8dec3add98c33360eaa2"
+        }
+      ]
     },
     {
       "id": "corla-mint-factory-legacy-v7",
@@ -228,6 +238,17 @@
       "name": "WrongPhase",
       "type": "error",
       "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "BlacklistedNameOrSymbol",
+      "inputs": [
+        {
+          "name": "value",
+          "type": "string"
+        }
+      ]
     }
-  ]
+  ],
+  "reviewedAt": "2026-11-07"
 }

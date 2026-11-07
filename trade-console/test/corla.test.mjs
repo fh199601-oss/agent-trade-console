@@ -224,3 +224,34 @@ test('claim diagnostics distinguish unopened, refund phase, already claimed and 
   const {client,state,row}=fixture();Object.assign(state,patch);await assert.rejects(client.claimState(row,w),e=>{assert.equal(e.code,code);if(reason)assert.equal(e.details.reason,reason);return true;});assert.equal(state.simulations,0);
  }
 });
+
+test('reviewed delegate modules are pinned, coalesced and carried into mint/claim/refund submission checks',async()=>{
+ const {rpc,client,state,root}=fixture(),module=addr(8),code='0x6000600500';root.dependencies=[{address:module,codeHash:keccak256(code)}];
+ const identity=client.identity;let reads=0;client.identity=async(...args)=>{if(args[1]===module)reads++;return identity(...args);};
+ await Promise.all([client.factory(root),client.factory(root),client.verify({root,record:state.record})]);assert.equal(reads,1);
+ for(const routeId of ['corla:mint','corla:claim','corla:refund']){
+  state.status=routeId==='corla:claim'?3n:routeId==='corla:refund'?4n:1n;state.claimable=100n;state.refundable=100n;
+  const p=await corlaPlan(rpc,{...intent,routeId},w,{address:mint},{client});assert.equal(p.protocolIdentities[1].target,module);
+  const original=rpc.getCode;rpc.getCode=async a=>a===module?'0x6000600600':original(a);
+  await assert.rejects(verifyIdentity(rpc,p.protocolIdentities[1]),/变化|改变|不一致/);rpc.getCode=original;
+ }
+});
+test('changed or proxied delegate modules block before simulation and failed checks are not cached',async()=>{
+ const {rpc,client,state,root}=fixture(),module=addr(8);root.dependencies=[{address:module,codeHash:keccak256('0x6000600500')}];
+ const original=rpc.getCode;rpc.getCode=async a=>a===module?'0x6000600600':original(a);
+ await assert.rejects(client.locate(mint),{code:'CORLA_VERSION_CHANGED'});assert.equal(state.simulations,0);
+ rpc.getCode=original;await client.factory(root);rpc.getCode=async a=>a===module?'0x6000600600':original(a);
+ await assert.rejects(client.verify({root,record:state.record},{fresh:true}),{code:'CORLA_VERSION_CHANGED'});
+ rpc.getCode=original;const originalIdentity=client.identity;client.identity=async(...a)=>{const x=await originalIdentity(...a);return a[1]===module?{...x,implementation:impl}:x;};
+ await assert.rejects(client.dependencies(root,true),{code:'CORLA_VERSION_CHANGED'});
+});
+test('terminated phase is distinct from waiting for launch and cannot create a claim',async()=>{
+ const {client,state,row,rpc}=fixture();state.status=6n;
+ assert.equal((await client.state(row,w)).info.errorCode,'MINT_ENDED');
+ await assert.rejects(corlaPlan(rpc,{...intent,routeId:'corla:claim'},w,{address:mint},{client}),{code:'CORLA_ENDED'});assert.equal(state.simulations,0);
+});
+
+test('platform-rejected name stops mint with an explicit launch failure instead of a generic RPC error',async()=>{
+ const {rpc,client,state}=fixture();state.simulationError=Object.assign(Error('execution reverted'),{data:M.encodeErrorResult('BlacklistedNameOrSymbol',['BNB'])});
+ await assert.rejects(corlaPlan(rpc,intent,w,{address:mint},{client}),e=>e.code==='CORLA_LAUNCH_BLOCKED'&&/名称或符号：BNB/.test(e.message));assert.equal(state.simulations,0);
+});

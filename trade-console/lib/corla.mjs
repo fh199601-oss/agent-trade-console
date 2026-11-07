@@ -12,7 +12,9 @@ const TRANSFER=new Interface(['event Transfer(address indexed from,address index
 const fail=(code,message,details)=>Object.assign(Error(message),{code,details});
 async function simulateCorla(rpc,step,w,block){try{return await rpc.call({to:step.to,from:w.address,value:BigInt(step.value),data:step.data},block);}catch(e){
  if(/insufficient funds|insufficient balance/i.test(e.message))throw fail('BUDGET_LIMIT','当前钱包 BNB 余额不足以支付本次认购费用和 Gas');
- let name;try{name=CORLA_MINT.parseError(e.data)?.name;}catch{}
+ let decoded;try{decoded=CORLA_MINT.parseError(e.data);}catch{}
+ const name=decoded?.name;
+ if(name==='BlacklistedNameOrSymbol')throw fail('CORLA_LAUNCH_BLOCKED','平台拒绝该项目的名称或符号：'+String(decoded.args[0]).slice(0,80)+'；最后一份认购触发开盘时会回滚，需项目方处理',{selector:'0x40598abb'});
  if(name==='NothingToRefund')throw fail('NO_QUOTA','当前钱包没有可退款的 Corla 份额');
  const errors={AlreadyMinted:['NO_QUOTA','钱包认购额度已用完，请刷新额度'],WrongPhase:['MINT_ENDED','项目阶段已变化，当前不能认购'],AgentIdRequired:['MINT_INELIGIBLE','当前钱包没有此项目要求的 Agent ID'],AgentIdentityUnavailable:['MINT_INELIGIBLE','项目当前无法核验 Agent ID'],NotWhitelisted:['MINT_INELIGIBLE','当前钱包不在项目白名单内'],NothingToClaim:['NO_QUOTA','当前钱包没有可领取的份额'],NoAvailableLaunchSalt:['CORLA_SALT','开盘候选已失效，请重新预览'],TransferFailed:['CORLA_PAYMENT_FAILED','付款币转入数量不符合合约要求（可能有转账税）'],SafeERC20FailedOperation:['CORLA_PAYMENT_FAILED','付款币合约拒绝转账，请检查余额和授权']};
  if(errors[name])throw fail(...errors[name]);throw e;
@@ -31,10 +33,17 @@ export class CorlaClient{
   const task=work().then(value=>{if(ttl){if(this.cache.size>=512)this.cache.delete(this.cache.keys().next().value);this.cache.set(key,{value,until:this.now()+ttl});}return value;});this.pending.set(key,task);try{return await task;}finally{this.pending.delete(key);}}
  get(to,abi,name,args=[],block='latest'){return read(this.rpc,to,abi,name,args,block);}
  async factory(root,fresh=false){return this.cached('factory:'+root.address,fresh?0:15000,async()=>{
-  await this.rpc.verifyChain();const [identity,[impl],code]=await Promise.all([this.identity(this.rpc,root.address),this.get(root.address,CORLA_FACTORY,'mintImplementation'),this.rpc.getCode(root.mintImplementation)]);
+  await this.rpc.verifyChain();const [identity,[impl],code]=await Promise.all([this.identity(this.rpc,root.address),this.get(root.address,CORLA_FACTORY,'mintImplementation'),this.rpc.getCode(root.mintImplementation),this.dependencies(root,fresh)]);
   if(identity.fingerprint!==root.fingerprint||!same(impl,root.mintImplementation)||keccak256(code)!==root.mintImplementationHash)throw fail('CORLA_VERSION_CHANGED','Corla 工厂或实现已更新，当前版本需重新核验；不会改走历史重放');
   return identity;
  });}
+ async dependencies(root,fresh=false){return this.cached('dependencies:'+root.address,fresh?0:15000,async()=>Promise.all((root.dependencies||[]).map(async pin=>{
+  // Reviewed immutable delegate targets are part of the protocol identity too.
+  // A valid main implementation does not make an altered settlement module safe.
+  const identity=await this.identity(this.rpc,pin.address);
+  if(identity.implementation||identity.beacon||keccak256(identity.code||'0x')!==pin.codeHash)throw fail('CORLA_VERSION_CHANGED','Corla 结算模块已变化，需要重新核验');
+  return identity;
+ })));}
  remember(root,record){const row={root,record};this.records.set(record.mint.toLowerCase(),row);if(!same(record.expectedToken,ZeroAddress))this.records.set(record.expectedToken.toLowerCase(),row);return row;}
  async directory(root){return this.cached('directory:'+root.address,1200,async()=>{
   const [,[count]]=await Promise.all([this.factory(root),this.get(root.address,CORLA_FACTORY,'deploymentCount')]);const old=this.counts.get(root.address)||0n;
@@ -81,7 +90,7 @@ export class CorlaClient{
     if(!same(record.expectedToken,ZeroAddress)||same(expected,ZeroAddress)||!same(next.expectedToken,expected)||immutable.some(k=>String(next[k]).toLowerCase()!==String(record[k]).toLowerCase()))throw fail('CORLA_NOT_VERIFIED','Corla 开盘代币与原工厂登记不匹配');
     row.record=next;this.remember(root,next);
    }
-   return {identity,factoryIdentity};
+   return {identity,factoryIdentity,dependencies:await this.dependencies(root,fresh)};
   });
  }
  async terms(row){return this.cached('terms:'+row.record.mint,10000,async()=>{
@@ -110,7 +119,7 @@ export class CorlaClient{
   const total=p.terms.totalLots,max=BigInt(p.terms.maxMintsPerWallet);if(minted>total||BigInt(used)>max||![0n,1n].includes(BigInt(locked)))throw fail('CORLA_STATE','Corla 额度或开盘模式数据异常');
   const open=status===1n||status===5n&&refundVersion===1n,remaining=[total-minted,max-BigInt(used)].reduce((a,b)=>a<b?a:b);
   let error=null,errorCode=null;
-  if(!open){error=status===3n?'项目已开盘，认购结束；已有份额请领取代币':status===4n||status===5n?'认购已结束，当前为退款阶段':'项目当前不可认购';errorCode='MINT_ENDED';}
+  if(!open){error=status===3n?'项目已开盘，认购结束；已有份额请领取代币':status===4n||status===5n?'认购已结束，当前为退款阶段':status===6n?'项目已终止，不能继续认购':'项目当前不可认购';errorCode='MINT_ENDED';}
   else if(!remaining){error='当前钱包或全局认购额度已用完';errorCode='NO_QUOTA';}
   else if(agentOnly&&!eligible){error='此项目仅限 Agent ID 钱包，当前钱包资格未通过';errorCode='MINT_INELIGIBLE';}
   else if(!whitelistAllowed){error='当前处于白名单阶段，本钱包不在白名单内';errorCode='MINT_INELIGIBLE';}
@@ -123,6 +132,7 @@ export class CorlaClient{
  async claimState(row,w){
   const block=await this.rpc.getBlockNumber(),get=(name,args=[])=>this.get(row.record.mint,CORLA_MINT,name,args,block);
   const [[,status],[participated,claimable,,didClaim],[actualToken]]=await Promise.all([get('getMintState'),get('getUserInfo',[w.address]),get('token')]);
+  if(status===6n)throw fail('CORLA_ENDED','项目已终止，不能等待开盘领取',{phase:String(status),block});
   if(status!==3n)throw fail(status===4n||status===5n?'CORLA_REFUND_ONLY':'CORLA_CLAIM_NOT_OPEN',status===4n||status===5n?'项目当前处于退款阶段，尚不能领取代币':'项目尚未开盘，继续等待领取开放',{phase:String(status),block});
   if(didClaim)throw fail('CORLA_ALREADY_CLAIMED','本钱包已领取过该项目，请检查持仓',{block});
   if(claimable<=0n)throw fail('NO_QUOTA',participated?'本钱包当前可领取数量为 0':'本钱包没有该项目的认购份额',{block,reason:participated?'empty':'no-allocation'});
@@ -166,12 +176,12 @@ export async function corlaPlan(rpc,intent,w,resolved,{client=corlaClient(rpc),o
  if(intent.routeId==='corla:refund'){
   if(s.refundable<=0n||s.didRefund)throw fail('NO_QUOTA','当前钱包没有可退回的 Corla 认购费用',{quota:s.info});
   const native=s.currency==='BNB',output=native?BNB:s.quote,step={kind:'mint',to:r.mint,value:'0',data:CORLA_MINT.encodeFunctionData('refund')};await simulateCorla(rpc,step,w,s.block);
-  return {kind:'contract',route:'corla:refund',token:output,wallet:w.address,inputToken:output,outputToken:output,amountIn:'0',minOutput:String(s.refundable),quantity:1,identity:proof.identity,protocolIdentities:[proof.factoryIdentity,...(s.payment.identity?[s.payment.identity]:[])],metaVerified:false,requireAssetCredit:true,requireRefundCredit:true,expectedAsset:{token:output,kind:native?'Native':'Erc20',amount:String(s.refundable)},redemption:{protocol:'corla',mint:r.mint,amount:String(s.refundable)},quota:s.info,review:['仅退回当前钱包可退款费用 '+formatUnits(s.refundable,s.payment.decimals)+' '+s.payment.symbol+'，不会新增认购或授权；Gas 另计。'],steps:[step]};
+  return {kind:'contract',route:'corla:refund',token:output,wallet:w.address,inputToken:output,outputToken:output,amountIn:'0',minOutput:String(s.refundable),quantity:1,identity:proof.identity,protocolIdentities:[proof.factoryIdentity,...(proof.dependencies||[]),...(s.payment.identity?[s.payment.identity]:[])],metaVerified:false,requireAssetCredit:true,requireRefundCredit:true,expectedAsset:{token:output,kind:native?'Native':'Erc20',amount:String(s.refundable)},redemption:{protocol:'corla',mint:r.mint,amount:String(s.refundable)},quota:s.info,review:['仅退回当前钱包可退款费用 '+formatUnits(s.refundable,s.payment.decimals)+' '+s.payment.symbol+'，不会新增认购或授权；Gas 另计。'],steps:[step]};
  }
  // The engine's mandatory official preview proves the exact full claim credit.
  // Standalone planners still simulate with eth_call; never skip both.
  if(claim){const step={kind:'mint',to:r.mint,value:'0',data:CORLA_MINT.encodeFunctionData('claim')};if(!officialPreview)await simulateCorla(rpc,step,w,s.block);
-  return {kind:'contract',route:'corla:claim',token:s.actualToken,wallet:w.address,inputToken:BNB,outputToken:s.actualToken,amountIn:'0',minOutput:String(s.claimable),quantity:1,identity:proof.identity,protocolIdentities:[proof.factoryIdentity],metaVerified:false,requireAssetCredit:true,expectedAsset:{token:s.actualToken,kind:'Erc20',amount:String(s.claimable)},quota:s.info,review:['领取本钱包已认购份额对应的代币，不会新增付费认购。'],steps:[step]};}
+  return {kind:'contract',route:'corla:claim',token:s.actualToken,wallet:w.address,inputToken:BNB,outputToken:s.actualToken,amountIn:'0',minOutput:String(s.claimable),quantity:1,identity:proof.identity,protocolIdentities:[proof.factoryIdentity,...(proof.dependencies||[])],metaVerified:false,requireAssetCredit:true,expectedAsset:{token:s.actualToken,kind:'Erc20',amount:String(s.claimable)},quota:s.info,review:['领取本钱包已认购份额对应的代币，不会新增付费认购。'],steps:[step]};}
  if(s.info.error)throw fail(s.info.errorCode,s.info.error,{quota:s.info});
  if(intent.scope==='free')throw fail('NO_FREE_MINT','Corla 此项目没有免费额度；单份 '+(s.info.unitPrice?.formatted||r.pricePerLot)+' '+s.info.currency+'。请自行选择付费 / 全部并设置预算。',{quota:s.info});
  if(s.currency==='QUOTE'&&(!same(intent.quoteToken,s.quote)||intent.maxQuote===undefined))throw fail('BUDGET_LIMIT','请明确本项目 '+s.payment.symbol+' 的每钱包预算及付款币 CA；不会使用 BNB / USDT 预算代替',{quota:s.info});
@@ -200,7 +210,7 @@ export async function corlaPlan(rpc,intent,w,resolved,{client=corlaClient(rpc),o
   step.data=native?CORLA_MINT.encodeFunctionData('mint(bytes32[])',[fresh]):CORLA_FACTORY.encodeFunctionData('mintQuote',[r.launchSalt,fresh]);await simulateCorla(rpc,step,w,await rpc.getBlockNumber());
  }
  const afterMint=intent.autoClaim===false?null:{autoClaim:true,sell:intent.claimSell||null,mint:r.mint,expectedToken:r.expectedToken};
- return {kind:'contract',route:'corla:mint',afterMint,token:same(r.expectedToken,ZeroAddress)?r.mint:r.expectedToken,wallet:w.address,inputToken:native?BNB:s.quote,outputToken:same(r.expectedToken,ZeroAddress)?r.mint:r.expectedToken,amountIn:String(r.pricePerLot),minOutput:'0',quantity:1,identity:proof.identity,protocolIdentities:[proof.factoryIdentity,...(s.payment.identity?[s.payment.identity]:[])],metaVerified:false,subscription:{protocol:'corla',mint:r.mint,walletCountBefore:String(s.used)},expectedAsset:null,budgetCurrency:s.currency,budgetDecimals:s.payment.decimals,budgetToken:s.quote,quota:s.info,fill:{targetQuantity:Number(target),quotaRemaining:String(s.remaining),continue:target>1n},review:['按当前额度、余额和费用预算，本次最多认购 '+target+' 份，认购费用 '+formatUnits(target*r.pricePerLot,s.payment.decimals)+' '+s.payment.symbol+'（Gas 另计）；逐份确认并重查剩余额度。',afterMint?'认购确认后持续监测 Corla 开盘，自动领取全部可领代币（Gas 另计）；服务重启暂停，需手动恢复。'+(afterMint.sell?'到账后按当时总持仓卖出 '+afterMint.sell.percent+'%，滑点 '+afterMint.sell.slippageBps/100+'%，到账 '+afterMint.sell.currency+(afterMint.sell.gasLimit===undefined?'':'，卖出 Gas 上限 '+afterMint.sell.gasLimit)+'；必要时仅授权本次数量。':'不自动卖出。'):'本次为 Corla 份额认购，成功后记录认购凭证；募满开盘后需手动领取代币。','平台适配不代表该项目已完成安全审计。',...(steps.length?['先预览本次份额所需的精确 '+s.payment.symbol+' 授权（最多 '+target+' 份），供后续逐份使用；不会无限授权。授权后仍须通过认购模拟。']:[])],steps:[...steps,step]};
+ return {kind:'contract',route:'corla:mint',afterMint,token:same(r.expectedToken,ZeroAddress)?r.mint:r.expectedToken,wallet:w.address,inputToken:native?BNB:s.quote,outputToken:same(r.expectedToken,ZeroAddress)?r.mint:r.expectedToken,amountIn:String(r.pricePerLot),minOutput:'0',quantity:1,identity:proof.identity,protocolIdentities:[proof.factoryIdentity,...(proof.dependencies||[]),...(s.payment.identity?[s.payment.identity]:[])],metaVerified:false,subscription:{protocol:'corla',mint:r.mint,walletCountBefore:String(s.used)},expectedAsset:null,budgetCurrency:s.currency,budgetDecimals:s.payment.decimals,budgetToken:s.quote,quota:s.info,fill:{targetQuantity:Number(target),quotaRemaining:String(s.remaining),continue:target>1n},review:['按当前额度、余额和费用预算，本次最多认购 '+target+' 份，认购费用 '+formatUnits(target*r.pricePerLot,s.payment.decimals)+' '+s.payment.symbol+'（Gas 另计）；逐份确认并重查剩余额度。',afterMint?'认购确认后持续监测 Corla 开盘，自动领取全部可领代币（Gas 另计）；服务重启暂停，需手动恢复。'+(afterMint.sell?'到账后按当时总持仓卖出 '+afterMint.sell.percent+'%，滑点 '+afterMint.sell.slippageBps/100+'%，到账 '+afterMint.sell.currency+(afterMint.sell.gasLimit===undefined?'':'，卖出 Gas 上限 '+afterMint.sell.gasLimit)+'；必要时仅授权本次数量。':'不自动卖出。'):'本次为 Corla 份额认购，成功后记录认购凭证；募满开盘后需手动领取代币。','平台适配不代表该项目已完成安全审计。',...(steps.length?['先预览本次份额所需的精确 '+s.payment.symbol+' 授权（最多 '+target+' 份），供后续逐份使用；不会无限授权。授权后仍须通过认购模拟。']:[])],steps:[...steps,step]};
 }
 export function corlaReceipt(receipt,plan){
  const logs=(receipt.logs||[]).filter(l=>same(l.address,plan.subscription.mint)).flatMap(l=>{try{const x=CORLA_MINT.parseLog(l);return x?.name==='Minted'&&same(x.args.account,plan.wallet)?[x]:[];}catch{return [];}});

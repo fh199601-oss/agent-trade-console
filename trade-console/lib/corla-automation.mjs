@@ -116,6 +116,7 @@ export class CorlaAutomation{
    if(j.status==='WATCHING'){
     this.warm(j);this.warmClaim(j);if(this.now()<(j.retryAt||0))return j;
     const [,phase]=await this.probe(j.mint);if(!this.allowed(j)||j.status!=='WATCHING')return j;j.lastScanAt=this.now();
+    if(BigInt(phase)===6n)return this.review(j,'项目已终止；已暂停等待领取，请核对项目状态');
     if(BigInt(phase)===4n)return this.review(j,'项目进入退款阶段；未自动退款，请使用退款入口');
     if(BigInt(phase)===5n){
      const row=await this.client.locate(j.mint,{explicit:true});if(!row)throw Error('无法核验退款阶段的项目登记');
@@ -132,7 +133,7 @@ export class CorlaAutomation{
     if(!this.allowed(j)||j.status!=='WATCHING')return j;
     if(o.status==='BLOCKED'&&!o.steps?.length){
      this.rememberError(j,o.error||{message:'领取预览未通过'});
-     if(['CORLA_ALREADY_CLAIMED','CORLA_REFUND_ONLY'].includes(o.error?.code)||o.error?.code==='NO_QUOTA'&&o.error.details?.reason==='no-allocation')return this.review(j,o.error.message+'；没有重复领取或自动卖出');
+     if(['CORLA_ALREADY_CLAIMED','CORLA_REFUND_ONLY','CORLA_ENDED'].includes(o.error?.code)||o.error?.code==='NO_QUOTA'&&o.error.details?.reason==='no-allocation')return this.review(j,o.error.message+'；没有重复领取或自动卖出');
      j.message='等待领取预览通过：'+(o.error?.message||'未知原因');j.retryAt=this.now()+1000;this.persist();return j;
     }
     const p=o.plan;
