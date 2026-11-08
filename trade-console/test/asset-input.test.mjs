@@ -1,10 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {normalizeAssetInput,mintTradeCA} from '../public/asset-input.mjs';
+import {normalizeAssetInput,mintTradeCA,pasteAsset,resolvedTradeAsset} from '../public/asset-input.mjs';
 import {websiteUrl} from '../lib/network.mjs';
 import {discover} from '../lib/discovery.mjs';
 import {validateIntent,bindings} from '../lib/common.mjs';
 const ca='0x0Cbc2C5f9c5Bdac24d98E71Bf173192692050946';
+test('a mirrored launchpad Mint CA becomes its verified trading token without overwriting another manual token',()=>{
+ const p={platform:'binancians',address:ca,token:'0x'+'1'.repeat(40)};assert.equal(resolvedTradeAsset(p,ca,ca),p.token);assert.equal(resolvedTradeAsset(p,ca,p.token),null);assert.equal(resolvedTradeAsset(p,'https://example.com/'+ca,ca),null);
+});
+test('repeated click-paste URLs are repaired, mixed project URLs are rejected',()=>{
+ const u='https://binanciansai.meme/project/'+ca;assert.equal(normalizeAssetInput(u+u),u);assert.equal(normalizeAssetInput(ca+ca),ca);
+ assert.throws(()=>normalizeAssetInput(u+'https://example.com/mint'),/拼接/);assert.equal(normalizeAssetInput('example.com/?next=https://test.com/mint'),'https://example.com/?next=https://test.com/mint');
+});
+test('manual paste replaces a complete asset and dispatches input to cancel pending clipboard reads',()=>{
+ let prevented=0,events=0;const input={value:ca,dispatchEvent:e=>{assert.equal(e.type,'input');events++;}},event=text=>({clipboardData:{getData:()=>text},preventDefault:()=>prevented++});
+ assert.equal(pasteAsset(input,event(ca),{caOnly:true}),true);assert.equal(input.value,ca);assert.equal(events,1);assert.equal(prevented,1);
+ assert.equal(pasteAsset(input,event('example.com/mint')),true);assert.equal(input.value,'https://example.com/mint');
+ assert.equal(pasteAsset(input,event('partial edit')),false);assert.equal(prevented,2);
+});
 test('Mint sync accepts complete nonzero CAs only, never a URL containing a CA',()=>{
  assert.equal(mintTradeCA(' '+ca+' '),ca);assert.equal(mintTradeCA(ca.toUpperCase()),ca.toUpperCase());
  for(const s of ['',null,'0x123','0x'+'0'.repeat(40),'example.com',`https://flap.sh/apps/corla/mint/${ca}`,`flap.sh/?ca=${ca}`,`CA: ${ca}`])assert.equal(mintTradeCA(s),null);

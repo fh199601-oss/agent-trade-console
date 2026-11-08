@@ -104,7 +104,7 @@ export class Engine{
   // both the chain and wallet checks. Failed guards cannot produce a plan.
   const ready=earlyReady||preflight();
   const ensureReady=async()=>{const r=await ready;if(r.error)throw r.error;};
-  const overlap=intent.side==='mint'?resolved.platform==='corla':!intent.openingOnly&&this.tradePlanOptions.overlapTradePreflight!==false;
+  const overlap=intent.side==='mint'?['corla','binancians'].includes(resolved.platform):!intent.openingOnly&&this.tradePlanOptions.overlapTradePreflight!==false;
   if(!overlap)await ensureReady();
   const tradeBridge=overlap?{call:async(...args)=>{await ensureReady();return this.bridge.call(...args);},ready:async(...args)=>{await ensureReady();return this.bridge.ready(...args);}}:this.bridge;
   // Buying always targets the explicitly supplied token CA. Audit and quote

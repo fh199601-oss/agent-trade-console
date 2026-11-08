@@ -6,7 +6,8 @@ import {corlaBudget} from './corla-budget.mjs';
 import {needsRoute,statusLabel,projectLabel,reviewSummary,totalTimeLabel,compactReviewGroups} from './review-model.mjs';
 import {corlaProgress,corlaSummary} from './corla-view.mjs';
 import {executeIndependent,runInstantTrades,isReady,independentOrder,tradeResultMessage,followSubmittedOrder} from './trade-workflow.mjs';
-import {normalizeAssetInput,mintTradeCA} from './asset-input.mjs';
+import {normalizeAssetInput,mintTradeCA,pasteAsset,resolvedTradeAsset} from './asset-input.mjs';
+import {binanciansInput} from './binancians-input.mjs';
 import {createConsoleClient} from './session-client.mjs';
 const $=id=>document.getElementById(id);
 let boot,ca=null,settings,selected=new Set(),busy=false,reviewOrders=[],refreshing=false,holdingsRows=[],nativeRows=[],walletRequest=null,project=null,generation=0,tradeRevision=0,tradeManual=false,tradeKind=null;
@@ -19,6 +20,7 @@ for(const [id,target] of [['asset','mintNotice'],['tradeCA','tradeNotice']]){
  // Reading is tied to a real click, never to page load or programmatic focus.
  const cancel=()=>clipboardReads.delete(id);
  input.addEventListener('input',cancel);input.addEventListener('blur',cancel);
+ input.addEventListener('paste',event=>{cancel();pasteAsset(input,event,{caOnly:id==='tradeCA'});});
  input.addEventListener('click',async event=>{
   if(!event.isTrusted||event.button!==0||event.detail<1||busy)return;
   const ticket=Symbol(),before=input.value;clipboardReads.set(id,ticket);
@@ -107,7 +109,7 @@ async function refreshWallets(checkConnection=false){
  try{return await walletRequest;}finally{walletRequest=null;}
 }
 function renderProject(){
- $('chainTools').hidden=project?.platform==='corla';
+ $('chainTools').hidden=['corla','binancians'].includes(project?.platform);
  const other=project?.platform==='corla'?project.quotas?.find(q=>q.budgetCurrency==='QUOTE'):null;$('quoteBudgetWrap').hidden=!other;$('quoteBudgetLabel').textContent=other?'每钱包 '+other.currency+' 预算':'其他付款币预算';$('quoteBudgetToken').textContent=other?.paymentToken||'';
  renderMintRoutes();
  renderChainLearning(project?.chainLearning);
@@ -199,12 +201,12 @@ async function refreshAsset(force=false){if(!ca||refreshing===tradeRevision||!fo
  const [m,h]=results;if(m.status==='fulfilled'){const x=m.value;$('tokenName').textContent=x.name||x.symbol||(!tradeManual?project?.name:null)||'未命名代币';$('mcap').textContent=compactUsd(x.marketCap);$('mcap').title=usd(x.marketCap);$('price').textContent=usd(x.price);$('holders').textContent=num(x.holders);$('liquidity').textContent=compactUsd(x.liquidity);$('liquidity').title=usd(x.liquidity);$('volume').textContent='24h 成交 '+compactUsd(x.volume24h);$('change').textContent='24h '+(x.priceChange24h==null?'—':num(x.priceChange24h)+'%');$('holdersSource').textContent=x.sources.holders?'来源 '+x.sources.holders:'来源暂未提供';$('updated').textContent=(x.sources.market||'行情未知')+' · '+new Date(x.at).toLocaleTimeString();}
  if(h.status==='fulfilled'){tradeKind=h.value.assetType;holdingsRows=h.value.wallets;renderWallets();$('holdingBlock').textContent='持仓 #'+h.value.block;for(const id of ['notice','tradeNotice','mintNotice'])if($(id).textContent.startsWith('持仓读取失败：')){$(id).textContent='持仓已恢复更新';$(id).classList.remove('error');$(id).style.color='var(--gold)';}}else {note('持仓读取失败：'+h.reason.message,true);if(force)throw h.reason;}
  }finally{if(refreshing===revision)refreshing=false;}}
-async function inspect({learn=false}={}){noticeTarget='mintNotice';let asset;try{asset=normalizeAssetInput($('asset').value);}catch(e){clearProject();return note(e.message,true);}$('asset').value=asset;clearProject();const revision=generation;$('inspect').disabled=true;$('learnChain').disabled=true;$('chainTools').hidden=!!corlaProgress(asset);note(corlaProgress(asset)||(learn?'正在回查近期成功 Mint 交易并核验入口、资产和代码…':'正在识别地址用途；常规识别不足时自动回查链上 Mint…'));try{
+async function inspect({learn=false}={}){noticeTarget='mintNotice';let asset;try{asset=normalizeAssetInput($('asset').value);}catch(e){clearProject();return note(e.message,true);}$('asset').value=asset;clearProject();const revision=generation;$('inspect').disabled=true;$('learnChain').disabled=true;const platformProgress=binanciansInput(asset)?.explicit?'正在核验币安人发射台项目、Agent ID 额度和实时费用…':corlaProgress(asset);$('chainTools').hidden=!!platformProgress;note(platformProgress||(learn?'正在回查近期成功 Mint 交易并核验入口、资产和代码…':'正在识别地址用途；常规识别不足时自动回查链上 Mint…'));try{
  const d=await api('project?asset='+encodeURIComponent(asset)+(learn?'&learn=1':''));if(revision!==generation||$('asset').value.trim()!==asset)return;
  renderAddressRoles(d);if(!d.address){project=d;renderProject();for(const c of d.candidates||[]){const b=el('button',(c.roleLabels||[c.field||'待核验']).join(' / ')+' · '+c.address,'secondary candidate');b.addEventListener('click',()=>{$('asset').value=c.source?.startsWith('https://flap.sh/apps/corla/')?c.source:c.address;inspect();});$('candidates').append(b);}
   if(!tradeManual)$('tokenName').textContent=d.name||'待核验项目';
   $('discovery').textContent=(d.name||'当前项目')+' · '+(d.access?.kind==='site-session-targets'?'合约地址需要官网登录后提供':d.candidates?.length?'请选择下方候选入口':'尚未找到可核验合约地址')+' · 来源：'+d.source;note(d.reason||'尚未核验到项目合约地址。',true);return;}
- project=d;if(!tradeManual){if(d.token&&(d.platform!=='corla'||d.quotas?.some(q=>q.status===3)))activateTrade(d.token,d.assetKind,d.name);else {clearTrade();$('tradeCA').value='';}}const primary=d.addresses?.find(r=>r.primary);$('discovery').textContent='已识别当前项目：'+(primary?.roleLabels?.filter((_,n)=>(primary.verifiedRoles||[]).includes(primary.roles[n])).join(' + ')||'项目合约')+' · '+d.address+' · 来源：'+d.source;
+ project=d;const correctedTrade=resolvedTradeAsset(d,asset,$('tradeCA').value);if(correctedTrade)activateTrade(correctedTrade,d.assetKind,d.name);else if(!tradeManual){if(d.token&&(d.platform!=='corla'||d.quotas?.some(q=>q.status===3)))activateTrade(d.token,d.assetKind,d.name);else {clearTrade();$('tradeCA').value='';}}const primary=d.addresses?.find(r=>r.primary);$('discovery').textContent='已识别当前项目：'+(primary?.roleLabels?.filter((_,n)=>(primary.verifiedRoles||[]).includes(primary.roles[n])).join(' + ')||'项目合约')+' · '+d.address+' · 来源：'+d.source;
  if(!tradeManual)$('tokenName').textContent=d.token?(d.name||primary?.name||'项目资产'):'尚未核验交易代币 CA';renderProject();note(corlaSummary(d)||(automaticMintLanes(d.mintRoutes)?'已识别免费及付费入口，将按本次范围自动选择；全部额度会逐批重查，先免费后付费。':d.mintRoutes?.length>1?'已识别项目，请在 Mint 区域选择铸造方式；也可点击预览 Mint 查看选项。':'地址用途已识别。当前 '+(boot.mode==='SIMULATION'?'模拟模式：只检查和预览，不提交。':'真实模式：请核对每笔预览。')));if(d.platform!=='corla'||d.quotas?.some(q=>q.status===3))await refreshAsset();
  }catch(e){if(revision===generation)note(e.message,true);}finally{$('inspect').disabled=false;$('learnChain').disabled=false;}}
 $('learnChain').addEventListener('click',()=>inspect({learn:true}));

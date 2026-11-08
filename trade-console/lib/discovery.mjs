@@ -11,6 +11,9 @@ import {learnerFor} from './chain-learning.mjs';
 import {applyChainEvidence} from './chain-assist.mjs';
 import {staticDeployments,deploymentIsBsc} from './static-config.mjs';
 import {discoverCorla,corlaInput} from './corla.mjs';
+import {discoverBinancians} from './binancians.mjs';
+import {binanciansInput} from '../public/binancians-input.mjs';
+import {normalizeAssetInput} from '../public/asset-input.mjs';
 const memory=new Map(),pending=new Map(),scopeIds=new WeakMap();let nextScope=0;
 const scopeId=v=>{if(!v)return 0;if(!scopeIds.has(v))scopeIds.set(v,++nextScope);return scopeIds.get(v);};
 const scopeKey=o=>[o.rpc,o.fetchText||publicText,o.sourceLoader||sourceFor,o.chainLearner].map(scopeId).join(':');
@@ -65,6 +68,7 @@ export function extractCandidates(text,source){
 }
 function rawCandidates(text,source){return foreignJsonChain(text)?[]:[...text.matchAll(new RegExp(ADDR,'g'))].slice(0,80).map(m=>({address:address(m[1]),priority:0,source,field:'网页提及地址',roles:[]}));}
 export async function discover(asset,options={}){
+ asset=normalizeAssetInput(asset);
  if(/^0x[0-9a-f]{40}$/i.test(asset))return discoverImpl(asset,options);
  const key=[websiteUrl(asset).href,scopeKey(options),!!options.chainFallback,!!options.learn,options.corlaRouting!==false].join('|');
  let task=pending.get(key);
@@ -73,10 +77,14 @@ export async function discover(asset,options={}){
  try{return structuredClone(await task);}finally{if(pending.get(key)===task)pending.delete(key);}
 }
 async function discoverImpl(asset,{rpc,fetchText=publicText,sourceLoader=sourceFor,chainFallback=false,learn=false,chainLearner=null,corlaRouting=true}={}){
+ if(rpc&&corlaRouting&&binanciansInput(asset)?.explicit)return measure('binanciansDiscovery',()=>discoverBinancians(rpc,asset));
  // Platform dispatch precedes generic source/ABI/history discovery. A verified
  // Corla project never enters the unrelated mint-guessing fallback.
  if(rpc&&corlaRouting&&(chainFallback||learn||corlaInput(asset)?.priority)){
   const corla=await measure('corlaDiscovery',()=>discoverCorla(rpc,asset));if(corla)return corla;
+ }
+ if(rpc&&corlaRouting&&(chainFallback||learn)&&/^0x[\da-f]{40}$/i.test(asset)){
+  const launchpad=await measure('binanciansDiscovery',()=>discoverBinancians(rpc,asset));if(launchpad)return launchpad;
  }
  const assist=async r=>applyChainEvidence(r,await (chainLearner||learnerFor(rpc)).learn(r.addresses?.length?r.addresses:[{address:r.address}],{sourceLoader,force:learn}));
  if(/^0x[0-9a-f]{40}$/i.test(asset)){const r={address:address(asset),source:'用户输入 CA',candidates:[]};return learn&&rpc?assist(r):r;}

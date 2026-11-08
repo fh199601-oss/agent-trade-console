@@ -6,7 +6,7 @@ import {specialMintPlan} from './special-mint.mjs';
 import path from 'node:path';
 import {verifiedSalePlan} from './verified-sale.mjs';
 import {Interface,id,ZeroAddress,keccak256,toUtf8Bytes} from 'ethers';
-import {read,ERC20,BNB,parseUnits,wallet,same} from './common.mjs';
+import {read,ERC20,BNB,parseUnits,wallet,same,bindings} from './common.mjs';
 import {sourceFor,codeIdentity} from './discovery.mjs';
 import {recognizeMint,adaptiveQuote,runtimeShape} from './adaptive-mint.mjs';
 import {samplePlan} from './sample-mints.mjs';
@@ -25,6 +25,7 @@ import {socialSalePlan} from './social-sale.mjs';
 import {sourceSalePlan} from './source-sale.mjs';
 import {protectedSalePlan} from './protected-sale.mjs';
 import {corlaPlan} from './corla.mjs';
+import {binanciansPlan} from './binancians.mjs';
 import {probeFreeBatch} from './free-mint-probe.mjs';
 const REGISTRY='0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F';
 const templates=[
@@ -35,6 +36,7 @@ const templates=[
 function selects(code){const b=Buffer.from(code.slice(2),'hex'),set=new Set();for(let i=0;i<b.length;i++){const op=b[i];if(op>=0x60&&op<=0x7f){if(op===0x63)set.add(b.subarray(i+1,i+5).toString('hex'));i+=op-0x5f;}}return set;}
 export async function mintPlan(rpc,bridge,intent,target,resolved={source:'用户输入 CA'},experienceStore=null,{sourceLoader=sourceFor,chainLearner=null,officialPreview=false}={}){
  if(resolved.platform==='corla')return measure('corlaMintPlan',()=>corlaPlan(rpc,intent,wallet(intent.account),resolved,{officialPreview}));
+ if(resolved.platform==='binancians')return measure('binanciansMintPlan',()=>binanciansPlan(rpc,intent,wallet(intent.account),resolved,{officialPreview,wallets:bindings()}));
  if(intent.quoteToken!==undefined)throw Object.assign(Error('其他付款币预算目前仅适用于 Corla 专用入口'),{code:'MINT_ROUTE_INVALID'});
  const w=wallet(intent.account),meta={...await sourceLoader(rpc,target),abiHints:resolved.abiHints},experience=experienceStore?.lookup(meta.identity,{...intent,wallet:w.address});
  try{const plan=await measure('mintPlan',()=>buildMintPlan(rpc,bridge,intent,target,resolved,w,meta,experience,experienceStore,{sourceLoader,chainLearner}));plan.experience??=experience||null;return plan;}
