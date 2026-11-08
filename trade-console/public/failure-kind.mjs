@@ -13,7 +13,7 @@ export function failureKind(error){
  if(/VOUCHER_REQUIRED|REFERRAL_NOT_VERIFIED/.test(code))return 'adapter_needed';
  if(code==='MINT_ENDED'||/阶段已结束|铸造已结束|项目已结束|铸造阶段已关闭|\b(?:sale ended|mint ended|presale ended)\b/i.test(message))return 'ended';
  if(code==='NO_QUOTA'||/额度.*(?:为 0|用完|耗尽)|已售罄|(?:free|paid) (?:pool )?(?:exhausted|sold out)/i.test(message))return 'no_quota';
- if(code==='BUDGET_LIMIT'||/预算不足|超过.*预算|没有符合预算|没有零费用|不属于零费用/.test(message))return 'budget';
+ if(['BUDGET_LIMIT','GAS_BALANCE_LOW'].includes(code)||/预算不足|超过.*预算|没有符合预算|没有零费用|不属于零费用/.test(message))return 'budget';
  if(code==='MINT_INELIGIBLE'||/资格不足|没有.*Agent ID|NotAgentIdHolder|NotAgent\b|不满足.*资格|未通过.*资格/i.test(message))return 'ineligible';
  if(code==='MINT_PAUSED'||/合约暂停|合约当前暂停|铸造已暂停|合约已暂停/.test(message))return 'paused';
  if(code==='MINT_NOT_OPEN'||/未开放|未开始|尚未开放/.test(message))return 'not_open';

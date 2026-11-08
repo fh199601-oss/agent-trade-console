@@ -19,12 +19,22 @@ export function corlaBudget(project,accounts,scope,quantity){
 function binanciansBudget(project,accounts,scope,quantity){
  if(normalizeMintQuantity(quantity)!=='max'||!['paid','all'].includes(scope))return null;
  const rows=accounts.map(a=>project.quotas?.find(q=>q.account===a));if(!rows.length||rows.some(q=>!q))throw Error('请选择钱包并刷新额度');
- const currency=rows[0]?.budgetCurrency;if(!['BNB','USDT'].includes(currency))throw Error('付款币尚未核验');
- let maximum=0n,total=0n;const costs=[];
+ const ready=rows.filter(q=>!q.error||['MINT_ENDED','NO_QUOTA','MINT_INELIGIBLE','MINT_PAUSED'].includes(q.errorCode));
+ const currency=ready[0]?.budgetCurrency;if(!['BNB','USDT'].includes(currency))throw Error('未取得可核验的付款币和钱包报价，请重新预览');
+ let maximum=0n,total=0n;const costs=[],unavailable=[];const bufferBps=1000;
  for(const q of rows){
-  if(q.error&&!['MINT_ENDED','NO_QUOTA','MINT_INELIGIBLE','MINT_PAUSED'].includes(q.errorCode))throw Error(q.account+' 号额度尚未核验：'+q.error);
+  if(!ready.includes(q)){unavailable.push({account:q.account,error:q.error});continue;}
   if(q.budgetCurrency!==currency||!Number.isInteger(q.fullBudget?.quantity)||q.fullBudget.quantity<0||q.fullBudget.quantity>500||!/^\d+$/.test(q.fullBudget.raw))throw Error('未取得完整的链上打满报价');
-  const raw=BigInt(q.fullBudget.raw);maximum=raw>maximum?raw:maximum;total+=raw;costs.push({account:q.account,lots:q.fullBudget.quantity,cost:decimal(raw,18),limited:BigInt(q.paidRemaining||'0')>500n,error:q.error});
+  const raw=BigInt(q.fullBudget.raw),cap=(raw*BigInt(10000+bufferBps)+9999n)/10000n;maximum=cap>maximum?cap:maximum;total+=raw;costs.push({account:q.account,lots:q.fullBudget.quantity,cost:decimal(raw,18),budget:decimal(cap,18),limited:BigInt(q.paidRemaining||'0')>500n,error:q.error});
  }
- return {currency,symbol:currency,decimals:18,token:rows[0].paymentToken,maxBnb:currency==='BNB'?decimal(maximum,18):'0',maxUsdt:currency==='USDT'?decimal(maximum,18):'0',maxQuote:'0',total:decimal(total,18),costs};
+ return {currency,symbol:currency,decimals:18,token:ready[0].paymentToken,maxBnb:currency==='BNB'?decimal(maximum,18):'0',maxUsdt:currency==='USDT'?decimal(maximum,18):'0',maxQuote:'0',total:decimal(total,18),totalLimit:decimal(maximum*BigInt(accounts.length),18),bufferBps,costs,unavailable};
+}
+
+// Only automatic price caps may be refreshed before confirmation. The caller
+// supplies a stable snapshot so edits during a request cannot change its scope.
+export async function refreshMintBudget({project,asset,accounts,scope,quantity,manual=false},inspect){
+ if(manual||project?.platform!=='binancians'||normalizeMintQuantity(quantity)!=='max'||!['all','paid'].includes(scope))return null;
+ const fresh=await inspect(asset);
+ if(fresh?.platform!==project.platform||String(fresh.address).toLowerCase()!==String(project.address).toLowerCase()||String(fresh.token).toLowerCase()!==String(project.token).toLowerCase())throw Error('预算刷新时项目入口或到账代币发生变化，请重新识别');
+ return {project:fresh,budget:corlaBudget(fresh,accounts,scope,quantity)};
 }

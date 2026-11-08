@@ -16,10 +16,12 @@ export class Batches{
   this.running.add(id);const row=old||{id,fingerprint,accounts:sorted,intent,createdAt:Date.now(),orders:[]};
   try{
    row.orders=[];delete row.stoppedAt;
-   // First prepare is read-only. Only a server-verified Corla plan permits
-   // independent execution; generic inviter-dependent mints remain serial.
-   const first=intent.side==='mint'&&execute&&this.engine.live?await this.engine.prepare({...intent,account:sorted[0]},`${id}-a${sorted[0]}`):null;
-   if(intent.side!=='mint'||!execute||!this.engine.live||first&&(independentOrder(first)||first.project?.platform==='corla')){
+   // Read-only preparation is isolated per wallet. A failed first wallet must
+   // not hide another wallet's verified independent platform. Generic mints
+   // retain their inviter ordering; every actual run still validates its plan.
+   const prepared=intent.side==='mint'&&execute&&this.engine.live?await Promise.all(sorted.map(async account=>{try{return await this.engine.prepare({...intent,account},`${id}-a${account}`);}catch{return null;}})):[];
+   const independent=prepared.some(o=>o&&(independentOrder(o)||['corla','binancians'].includes(o.project?.platform)))&&prepared.every(o=>!o?.plan||independentOrder(o));
+   if(intent.side!=='mint'||!execute||!this.engine.live||independent){
     row.orders=await Promise.all(sorted.map(async account=>{try{return await this.engine.run({...intent,account},`${id}-a${account}`,{execute,authorization,acknowledgeReview});}catch(e){return {id:`${id}-a${account}`,intent:{...intent,account},status:'BLOCKED',error:publicError(e)};}}));
     const active=row.orders.filter(o=>o.status!=='SKIPPED');
     const available=intent.side==='mint'?active.filter(o=>o.error?.code!=='NO_QUOTA'):active;

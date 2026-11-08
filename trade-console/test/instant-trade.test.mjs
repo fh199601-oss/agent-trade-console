@@ -39,6 +39,18 @@ test('independent wallets submit concurrently; pending/failure does not stop oth
  const reached=[],release=[];const work=executeIndependent([row(1),row(2),row(3,'SKIPPED')],o=>new Promise(resolve=>{reached.push(o.intent.account);release.push(()=>resolve({...o,status:o.intent.account===1?'PENDING':'CONFIRMED'}));}));assert.deepEqual(reached,[1,2]);release.forEach(f=>f());assert.deepEqual((await work).map(o=>o.status),['PENDING','CONFIRMED','SKIPPED']);
  const failed=await executeIndependent([row(1),row(2)],async o=>{if(o.intent.account===1)throw Error('request timeout');return {...o,status:'CONFIRMED'};});assert.equal(failed[0].status,'SUBMISSION_UNKNOWN');assert.equal(failed[1].status,'CONFIRMED');
 });
+test('Binancians dashboard starts all wallets before any result; partial and pending cannot stop peers',async()=>{
+ const rows=[1,2,3,4].map(account=>({...row(account),intent:{...intent,side:'mint',account},plan:{route:'binancians:mint',resolved:{platform:'binancians'}}})),seen=[],release=[];
+ const work=executeIndependent(rows,o=>new Promise(resolve=>{seen.push(o.intent.account);release.push(()=>resolve({...o,status:['PARTIAL','PENDING','BLOCKED','CONFIRMED'][o.intent.account-1]}));}));
+ assert.deepEqual(seen,[1,2,3,4]);release.forEach(r=>r());const results=await work;assert.deepEqual(results.map(o=>o.status),['PARTIAL','PENDING','BLOCKED','CONFIRMED']);assert.match(tradeResultMessage(results),/部分完成/);
+ await executeIndependent(results,()=>assert.fail('completed/uncertain originals cannot replay'));
+});
+test('Binancians bot batch isolates failed first preparation and retains independent original IDs',async t=>{
+ const data=temp();t.after(()=>fs.rmSync(data,{recursive:true,force:true}));const input={side:'mint',asset:token,scope:'all',quantity:'max',maxBnb:'0.0363'},seen=[],stored=new Map();
+ const fake={live:true,data,prepare:async(i,id)=>{if(i.account===1)throw Error('fixture balance read failed');if(!stored.has(id))stored.set(id,{id,intent:i,status:'PREPARED',plan:{route:'binancians:mint',resolved:{platform:'binancians'}}});return stored.get(id);},run:async(i,id)=>{const o=await fake.prepare(i,id);if(o.status!=='PREPARED')return o;seen.push(i.account);o.status=i.account===2?'PARTIAL':i.account===3?'PENDING':'CONFIRMED';return o;}};
+ const batch=new Batches(fake),request={id:'independent-binancians',accounts:[1,2,3,4],intent:input,execute:true,authorization:'synthetic only'},r=await batch.run(request);
+ assert.deepEqual(seen,[2,3,4]);assert.deepEqual(r.orders.map(o=>o.status),['BLOCKED','PARTIAL','PENDING','CONFIRMED']);assert.equal(r.stoppedAt,undefined);assert.equal(r.orders[3].id,request.id+'-a4');await batch.run(request);assert.deepEqual(seen,[2,3,4]);
+});
 test('verified Corla wallets execute independently while generic mint retains its confirmation sequence',async()=>{
  const mintRow=a=>({...row(a),intent:{...intent,account:a,side:'mint'},plan:{route:'corla:mint',resolved:{platform:'corla'}}}),reached=[],release=[];
  const work=executeIndependent([mintRow(1),mintRow(2),{...mintRow(3),plan:{route:'generic:mint',resolved:{}}}],o=>new Promise(resolve=>{reached.push(o.intent.account);release.push(()=>resolve({...o,status:'PENDING'}));}));

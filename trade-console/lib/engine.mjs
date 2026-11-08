@@ -187,11 +187,13 @@ export class Engine{
    const mayContinue=()=>typeof continueAllowed!=='function'||continueAllowed();
    const cancelled=()=>{o.status='CANCELLED';o.message='任务已停止，尚未提交的步骤已取消；已完成的授权不会自动撤销';return this.write(o);};
    try{
-    if(o.plan.route==='corla:mint')o.targetQuantity??=o.plan.fill.targetQuantity;
+    if(['corla:mint','binancians:mint'].includes(o.plan.route))o.targetQuantity??=o.plan.fill.targetQuantity;
     if(!mayContinue())return cancelled();
-    if(o.status==='PREPARED'&&(o.plan.freshBeforeExecute||Date.now()-o.timing.preparedAt>15000)){
-     const fresh=await this.plan(o.intent,o.intent.openingOnly&&o.plan.recovery?{openingRecovery:{sourceId:o.plan.recovery.originalId}}:{});
+    if(o.status==='PREPARED'&&(o.plan.freshBeforeExecute||o.plan.refreshQuoteBeforeExecute||Date.now()-o.timing.preparedAt>15000)){
+     const refreshIntent=o.plan.route==='binancians:mint'&&o.targetQuantity?{...o.intent,quantity:o.targetQuantity}:o.intent;
+     const fresh=await this.plan(refreshIntent,o.intent.openingOnly&&o.plan.recovery?{openingRecovery:{sourceId:o.plan.recovery.originalId}}:{});
      if(!same(fresh.token,o.plan.token)||fresh.resolved?.address!==o.plan.resolved?.address)throw Error('预览期间目标资产发生变化，停止提交');
+     if(o.plan.refreshQuoteBeforeExecute&&(fresh.route!==o.plan.route||!same(fresh.inputToken,o.plan.inputToken)||fresh.quantity!==o.plan.quantity||fresh.fill?.targetQuantity!==o.targetQuantity||BigInt(fresh.minOutput)<BigInt(o.plan.minOutput)))throw Error('最新报价的份数、付款币或最低到账已超出本次预览，请重新核对');
      if(o.plan.freshBeforeExecute&&(fresh.quantity!==o.plan.quantity||BigInt(fresh.amountIn)>BigInt(o.plan.amountIn)||BigInt(fresh.minOutput)<BigInt(o.plan.minOutput)))throw Error('动态 Mint 的份数、费用或最低到账已超出本次预览，请重新核对');
      const p=await this.preview(fresh,o.intent);o.plan=JSON.parse(json(fresh));if(p){this.previews.set(id,p);o.preview=p.review;o.previewAt=p.at;}
      o.review=[...(fresh.review||[]),...(hasPreviewRisks(p?.raw.risks)?['钱包预览包含风险提示']:[])];o.timing.preparedAt=Date.now();this.write(o);
@@ -234,7 +236,7 @@ export class Engine{
       o.completedQuantity=(o.completedQuantity||0)+o.plan.quantity;
       const key=o.plan.budgetCurrency==='QUOTE'?'quote':o.plan.budgetCurrency==='USDT'?'usdt':'bnb';o.spent??={bnb:'0',usdt:'0'};o.spent[key]=String(BigInt(o.spent[key]||'0')+BigInt(o.plan.amountIn));o.settledStage=o.stage||0;this.write(o);
      }
-     const requested=o.intent.quantity==='max'?null:o.intent.quantity-o.completedQuantity;
+     const requested=o.plan.route==='binancians:mint'&&o.targetQuantity?o.targetQuantity-o.completedQuantity:o.intent.quantity==='max'?null:o.intent.quantity-o.completedQuantity;
      if(!o.plan.fill?.continue||requested===0||o.plan.route==='corla:mint'&&o.completedQuantity>=o.targetQuantity)return this.finish(o);
      const batchLimit=o.plan.route==='corla:mint'?500:50;
      if(o.completedQuantity>=500||(o.stage||0)>=batchLimit-1){o.status='PARTIAL';o.error={message:'达到本次 500 份 / '+batchLimit+' 批次保护上限；尚未打满'};return this.write(o);}
@@ -244,7 +246,7 @@ export class Engine{
       if(plan.identity?.fingerprint!==o.plan.identity?.fingerprint||!same(plan.token,o.plan.token))throw Error('跨批次合约或输出资产发生变化');
       if(o.plan.route==='corla:mint'&&(!same(plan.inputToken,o.plan.inputToken)||plan.budgetDecimals!==o.plan.budgetDecimals||plan.budgetCurrency!==o.plan.budgetCurrency))throw Error('Corla 跨批次付款币或精度发生变化，停止剩余认购');
       o.plan=JSON.parse(json(plan));o.stage=(o.stage||0)+1;o.nextStep=0;this.write(o);
-     }catch(e){if(e.code==='NO_QUOTA'||e.code==='NO_FREE_MINT'&&o.intent.scope==='free')return this.finish(o);o.status='PARTIAL';o.error=publicError(e);return this.write(o);}
+     }catch(e){if((e.code==='NO_QUOTA'||e.code==='NO_FREE_MINT'&&o.intent.scope==='free')&&o.plan.route!=='binancians:mint')return this.finish(o);o.status='PARTIAL';o.error=publicError(e);o.timing.finishedAt=Date.now();return this.write(o);}
     }
    }catch(e){
     const pendingStep=o.steps?.at(-1);
@@ -256,9 +258,9 @@ export class Engine{
     // A later Corla preview can fail after earlier lots/approval settled. There
     // is no unknown transaction in that case; keep the completed portion and
     // let a new explicit operation retry without locking the wallet forever.
-    const corlaPartial=o.plan?.route==='corla:mint'&&o.steps.length>0&&o.steps.every(x=>x.status==='CONFIRMED');
-    const approvalOnly=o.intent.side==='sell'&&o.steps.length>0&&o.steps.every(x=>x.status==='CONFIRMED'&&x.step.kind==='approve');
-    o.status=corlaPartial?'PARTIAL':approvalOnly?'BLOCKED':o.steps.some(x=>x.submittedAt)?'RECEIPT_REVIEW':'BLOCKED';o.error=publicError(e);return this.write(o);
+    const mintPartial=o.intent.side==='mint'&&o.steps.some(x=>x.step.kind==='mint')&&o.steps.every(x=>x.status==='CONFIRMED');
+    const approvalOnly=o.steps.length>0&&o.steps.every(x=>x.status==='CONFIRMED'&&x.step.kind==='approve');
+    o.status=mintPartial?'PARTIAL':approvalOnly?'BLOCKED':o.steps.some(x=>x.submittedAt)?'RECEIPT_REVIEW':'BLOCKED';o.error=publicError(e);if(terminal.has(o.status))o.timing.finishedAt=Date.now();return this.write(o);
    }
   },id));
  }

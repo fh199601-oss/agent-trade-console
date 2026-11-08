@@ -36,13 +36,14 @@ function mintNumbers(o){
  // Continuations already have spent amounts. Do not present their original
  // target as a new charge, or count a single batch as an unbounded max fill.
  if(o.status!=='PREPARED'||o.intent?.side!=='mint'||!p||o.steps?.length||['corla:claim','corla:refund'].includes(p.route))return null;
- const corla=p.route==='corla:mint';if(!corla&&p.fill?.continue)return null;
- const quantity=corla?p.fill?.targetQuantity:p.quantity;
+ const corla=p.route==='corla:mint',binancians=p.route==='binancians:mint';if(!corla&&!binancians&&p.fill?.continue)return null;
+ const quantity=corla||binancians?p.fill?.targetQuantity:p.quantity;
  if(!Number.isSafeInteger(quantity)||quantity<=0||!/^\d+$/.test(String(p.amountIn)))return null;
  const currency=p.budgetCurrency,decimals=p.budgetDecimals??(['BNB','USDT'].includes(currency)?18:null),symbol=currency==='QUOTE'?p.quota?.currency:currency;
  if(!symbol||!Number.isInteger(decimals)||decimals<0||decimals>36)return null;
- const cost=BigInt(p.amountIn)*(corla?BigInt(quantity):1n);
- return {quantity,cost,decimals,symbol,token:p.budgetToken||p.inputToken,maximum:corla,approval:p.steps?.[0]?.kind==='approve'};
+ if(binancians&&!/^\d+$/.test(String(p.fill?.targetCost)))return null;
+ const cost=binancians?BigInt(p.fill.targetCost):BigInt(p.amountIn)*(corla?BigInt(quantity):1n);
+ return {quantity,cost,decimals,symbol,token:p.budgetToken||p.inputToken,maximum:corla||binancians,budgetCap:binancians?(currency==='BNB'?o.intent.maxBnb:o.intent.maxUsdt):undefined,approval:p.steps?.[0]?.kind==='approve'};
 }
 export function compactReviewGroups(rows){
  const grouped=new Map(),seen=new Set();
@@ -50,8 +51,8 @@ export function compactReviewGroups(rows){
   // Duplicate rows are retained separately, never inflated into an aggregate.
   const duplicate=seen.has(o.intent?.account);seen.add(o.intent?.account);
   const n=mintNumbers(o),error=o.intent?.side==='mint'&&!['PREPARED','READY_TO_CONTINUE'].includes(o.status)&&o.error&&!needsRoute(o);
-  const key=!duplicate&&n?JSON.stringify(['mint',o.intent.asset,o.project?.address||o.plan.resolved?.address,o.plan.route,o.status,o.simulationOnly,n.quantity,String(n.cost),n.decimals,n.symbol,n.token,n.approval,o.plan.afterMint||null,o.review||[],o.preview?.risks||[]]):!duplicate&&error?JSON.stringify(['error',o.intent.asset,o.status,o.error.code,o.error.message]):Symbol();
+  const key=!duplicate&&n?JSON.stringify(['mint',o.intent.asset,o.project?.address||o.plan.resolved?.address,o.plan.route,o.status,o.simulationOnly,n.quantity,String(n.cost),n.budgetCap,n.decimals,n.symbol,n.token,n.approval,o.plan.afterMint||null,o.review||[],o.preview?.risks||[]]):!duplicate&&error?JSON.stringify(['error',o.intent.asset,o.status,o.error.code,o.error.message]):Symbol();
   if(!grouped.has(key))grouped.set(key,{rows:[],numbers:n,error:!!error});grouped.get(key).rows.push(o);
  }
- return [...grouped.values()].map(g=>{const n=g.numbers;if(!n)return {...g,summary:null};const count=g.rows.length;return {...g,summary:{walletCount:count,perWalletQuantity:n.quantity,perWalletAmount:units(n.cost,n.decimals),totalQuantity:String(BigInt(n.quantity)*BigInt(count)),totalAmount:units(n.cost*BigInt(count),n.decimals),symbol:n.symbol,maximum:n.maximum,approval:n.approval}};});
+ return [...grouped.values()].map(g=>{const n=g.numbers;if(!n)return {...g,summary:null};const count=g.rows.length;return {...g,summary:{walletCount:count,perWalletQuantity:n.quantity,perWalletAmount:units(n.cost,n.decimals),totalQuantity:String(BigInt(n.quantity)*BigInt(count)),totalAmount:units(n.cost*BigInt(count),n.decimals),symbol:n.symbol,maximum:n.maximum,approval:n.approval,...(n.budgetCap!==undefined?{budgetCap:n.budgetCap}:{})}};});
 }

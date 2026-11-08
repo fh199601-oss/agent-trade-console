@@ -2,7 +2,7 @@ import {createRpcDialog} from './rpc-settings.mjs';
 import {createMintQuantityControl} from './mint-quantity.mjs';
 import {createUpdateDialog} from './app-updates.mjs';
 import {createTaskCenter} from './task-center.mjs';
-import {corlaBudget} from './corla-budget.mjs';
+import {corlaBudget,refreshMintBudget} from './corla-budget.mjs';
 import {needsRoute,statusLabel,projectLabel,reviewSummary,totalTimeLabel,compactReviewGroups} from './review-model.mjs';
 import {corlaProgress,corlaSummary} from './corla-view.mjs';
 import {executeIndependent,runInstantTrades,isReady,independentOrder,tradeResultMessage,followSubmittedOrder} from './trade-workflow.mjs';
@@ -182,7 +182,8 @@ function applyAutoBudget(){
  $('budgetHint').textContent='';if(corlaRedemption())return;
  try{const b=corlaBudget(project,[...selected],$('scope').value,mintQuantity.value());if(!b)return;
   for(const id of ['maxBnb','maxUsdt','maxQuote'])$(id).value=b[id];
-  $('budgetHint').textContent='已自动填入费用预算：'+b.costs.map(c=>c.account+' 号 '+c.lots+' 份 / '+c.cost+' '+b.symbol+(c.limited?'（单次上限 500 份）':'')).join('；')+'。合计最多 '+b.total+' '+b.symbol+'，Gas 另计；余额不足或全局额度被抢占时无法打满。';
+  $('budgetHint').textContent='已自动填入费用预算：'+b.costs.map(c=>c.account+' 号 '+c.lots+' 份 / '+c.cost+' '+b.symbol+(c.limited?'（单次上限 500 份）':'')).join('；')+'。当前合计 '+b.total+' '+b.symbol+(b.bufferBps?'；已预留 '+b.bufferBps/100+'% 报价余量，预算总上限 '+b.totalLimit+' '+b.symbol:'')+'。Gas 另计；余额不足或全局额度被抢占时无法打满。';
+  if(b.unavailable?.length)$('budgetHint').textContent+=' '+b.unavailable.map(q=>q.account+' 号报价暂不可用').join('、')+'，按各钱包预览分别核对。';
  }catch(e){for(const id of ['maxBnb','maxUsdt','maxQuote'])$(id).value='0';$('budgetHint').textContent='预算未自动填入：'+e.message;}
 }
 for(const id of ['maxBnb','maxUsdt','maxQuote'])$(id).addEventListener('input',()=>{budgetManual=true;applyAutoBudget();});
@@ -213,8 +214,8 @@ $('learnChain').addEventListener('click',()=>inspect({learn:true}));
 function setBusy(value){busy=value;for(const b of document.querySelectorAll('.buy-row button,.sell-row button,#mint'))b.disabled=value;}
 async function act(side,value){noticeTarget=side==='mint'?'mintNotice':'tradeNotice';if(busy)return note('本次操作正在准备，请等待当前预览。');if(!selected.size)return note('请选择至少一个钱包',true);let asset;try{asset=side==='mint'?normalizeAssetInput($('asset').value):checkedTradeCA();}catch(e){note(e.message,true);if(side!=='mint')$('tradeCA').focus();return;}if(side==='mint')$('asset').value=asset;else if(ca?.toLowerCase()!==asset.toLowerCase()){activateTrade(asset);}
  if(side!=='mint'&&['Erc721','ERC721','Erc1155','ERC1155'].includes(tradeKind))return note('这是 NFT，不能按 ERC20 池子比例卖出；需要 NFT 市场订单适配。',true);
- // Use the displayed fee cap. prepare() rechecks live quota and balance; a
- // second full project lookup delayed every wallet and could raise that cap.
+ // Manual caps stay fixed. A moving-price platform refreshes automatic caps
+ // once for the group BEFORE review; execution may never raise confirmed caps.
  if(side==='mint'&&!budgetManual)applyAutoBudget();
  const slip=$(side==='sell'?'sellSlippage':'slippage').value;if(!/^\d+(?:\.\d{1,2})?$/.test(slip)||Number(slip)>50)return note('滑点范围 0–50%，最多两位小数',true);const s=Math.round(Number(slip)*100);
  const base={side,asset,currency:side==='sell'?$('receive').value:$('currency').value,slippageBps:s};if(side==='buy')base.amount=value;if(side==='sell'){base.percent=value;base.slippageMode=$('sellSlippageMode').value;}if(side==='mint'){base.quantity=mintQuantity.value();base.maxBnb=$('maxBnb').value;base.maxUsdt=$('maxUsdt').value;base.scope=$('scope').value;if(!$('quoteBudgetWrap').hidden){base.maxQuote=$('maxQuote').value;base.quoteToken=$('quoteBudgetToken').textContent;}base.referral='account1';if($('mintRoute').value&&!$('mintRouteWrap').hidden)base.routeId=$('mintRoute').value;}
@@ -224,12 +225,18 @@ async function act(side,value){noticeTarget=side==='mint'?'mintNotice':'tradeNot
  setBusy(true);note('正在读取当前状态并生成预览…');try{
  const id='manual-'+crypto.randomUUID(),accounts=[...selected],quick=side!=='mint'&&boot.mode==='LIVE'&&$('quick').checked;let completed=0;
  $('reviewBody').replaceChildren(el('h3',side==='mint'?'正在准备铸造预览':'正在准备'+(side==='sell'?'卖出':'买入')+'预览'),el('p',asset,'mono'));const progress=el('p',`正在检查 ${accounts.length} 个钱包…`);$('reviewBody').append(progress);$('confirm').disabled=true;$('confirm').textContent='预览中…';if(!quick&&!$('review').open)$('review').showModal();
+ if(side==='mint'){
+  const snapshot=()=>JSON.stringify([generation,$('asset').value,[...selected],$('scope').value,mintQuantity.value(),budgetManual,$('maxBnb').value,$('maxUsdt').value,boot.wallets]);
+  const before=snapshot(),updated=await refreshMintBudget({project,asset,accounts,scope:base.scope,quantity:base.quantity,manual:budgetManual},url=>api('project?asset='+encodeURIComponent(url)));
+  if(before!==snapshot())throw Error('准备期间项目、钱包或预算已修改，请重新预览');
+  if(updated){project=updated.project;applyAutoBudget();base.maxBnb=updated.budget.maxBnb;base.maxUsdt=updated.budget.maxUsdt;}
+ }
  const requests=accounts.map(account=>({id:id+'-account'+account,intent:{...base,account},project:context}));
  const results=quick?await runInstantTrades(requests,o=>api('run',{id:o.id,intent:o.intent,execute:true,fastReturn:true,acknowledgeReview:true,authorization:`用户在本地看板开启免二次确认后点击：${JSON.stringify(o.intent)}`}),{onResult:o=>{trackSubmitted([o]);completed++;note(`${o.intent.account} 号：${statusLabel(o)}；已返回 ${completed}/${accounts.length} 个钱包`);refreshOrders().catch(()=>{});}}):await Promise.all(accounts.map(async account=>{try{const o=await api('prepare',{id:id+'-account'+account,intent:{...base,account}});if(context)o.project={...context,...o.project,name:o.project?.name||context.name};return o;}catch(e){return {id:id+'-account'+account,intent:{...base,account},project:context,status:'BLOCKED',error:{message:e.message,details:e.details,code:e.code}};}finally{completed++;progress.textContent=`已返回 ${completed}/${accounts.length} 个钱包；等待其余预览…`;}}));
  reviewOrders=results;refreshOrders().catch(e=>note('记录刷新失败：'+e.message,true));
  if(quick){showTradeFeedback(results);note('本次'+(side==='buy'?'买入':'卖出')+'已处理，请查看各钱包结果。',results.some(o=>['BLOCKED','FAILED','REJECTED','SUBMISSION_UNKNOWN'].includes(o.status)));void Promise.allSettled([refreshOrders(),refreshAsset(true)]);}
  else showReviews(results);
- }catch(e){note(e.message,true);}finally{setBusy(false);}}
+ }catch(e){note(e.message,true);if($('review').open&&$('confirm').disabled){$('reviewBody').append(el('p',e.message,'error'));$('confirm').textContent='未提交 · 请重新预览';}}finally{setBusy(false);}}
 function renderReviewDetail(o){const div=el('div',undefined,'review-item');div.append(el('h3',`${o.intent.account} 号 · ${o.intent.side==='mint'?'铸造':o.intent.side==='buy'?'买入':'卖出'}`),el('span',statusLabel(o),'review-status'));
    if(o.intent.side==='mint')div.append(el('div',`${({free:'只用免费额度',paid:'只用付费额度',all:'全部额度'})[o.intent.scope]||'核对额度'} · ${o.intent.quantity==='max'?'打满可核验额度':o.intent.quantity+' 份'} · 预算 ${o.intent.maxBnb} BNB / ${o.intent.maxUsdt||'0'} USDT${o.intent.maxQuote!==undefined?' / '+o.intent.maxQuote+' '+(o.plan?.quota?.currency||'指定付款币'):''}（Gas 另计）`,'helper'));
    if(o.intent.routeId)div.append(el('div','所选方法：'+o.intent.routeId.replace(/^auto:/,''),'mono'));
@@ -264,6 +271,7 @@ function showReviews(rows){
     const card=el('section',undefined,'review-compact');card.append(el('h3',summary.walletCount+' 个钱包'+(items.length!==group.rows.length?'（'+accounts+' 号）':'')));
     const metrics=el('div',undefined,'review-compact-metrics');
     for(const [label,value]of [['每钱包份数',summary.perWalletQuantity+' 份'],['每钱包认购',summary.perWalletAmount+' '+summary.symbol]]){const metric=el('div');metric.append(el('span',label),el('strong',value));metrics.append(metric);}card.append(metrics);
+    if(summary.budgetCap!==undefined)card.append(el('p','每钱包费用上限 '+summary.budgetCap+' '+summary.symbol+'；按最新报价支付，Gas 另计。','helper'));
     card.append(el('div',(summary.maximum?'合计最多 ':'合计 ')+summary.totalQuantity+' 份 · '+summary.totalAmount+' '+summary.symbol,'review-compact-total'));
     const follow=first.plan.afterMint,terms=['Gas 另计'];if(summary.approval)terms.push('先授权，再认购');if(follow){terms.push('开盘领取 100%');if(follow.sell)terms.push('到账后卖出当前持仓 '+follow.sell.percent+'% · 滑点 '+follow.sell.slippageBps/100+'%');}
     card.append(el('p',terms.join(' · '),'helper'));$('reviewBody').append(card);

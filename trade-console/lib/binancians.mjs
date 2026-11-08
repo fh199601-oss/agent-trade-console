@@ -92,18 +92,29 @@ export async function binanciansPlan(rpc,intent,w,resolved,{client=binanciansCli
  if(intent.quoteToken!==undefined)throw fail('MINT_ROUTE_INVALID','本平台使用 BNB / USDT 预算');
  const requested=intent.quantity==='max'?minimum(s.remaining,500n):BigInt(intent.quantity);
  if(requested>s.remaining)throw fail('NO_QUOTA','指定份数超过本钱包或项目剩余额度',{quota:s.info});
- const budget=parseUnits(row.nativePayment?intent.maxBnb:intent.maxUsdt||'0',18);let n=minimum(requested,s.perTx),q=await client.quote(s,n);
- if(q.cost>budget){if(intent.quantity!=='max')throw fail('BUDGET_LIMIT','预算不足以完成本次 Mint');let lo=0n,hi=n;while(lo<hi){const mid=(lo+hi+1n)/2n;if((await client.quote(s,mid)).cost<=budget)lo=mid;else hi=mid-1n;}n=lo;if(!n)throw fail('BUDGET_LIMIT','预算不足以 Mint 1 份；请选择付款额度并核对预算');q=await client.quote(s,n);}
- if(intent.quantity!=='max'&&await client.fullCost(s,requested)>budget)throw fail('BUDGET_LIMIT','预算不足以完成指定的全部份数');
+ const budget=parseUnits(row.nativePayment?intent.maxBnb:intent.maxUsdt||'0',18),n=minimum(requested,s.perTx);
+ const [q,totalCost]=await Promise.all([client.quote(s,n),client.fullCost(s,requested)]);
+ // A max fill is a quantity commitment, not permission to silently buy fewer
+ // shares with an old quote. The confirmed cap is never raised here.
+ if(totalCost>budget)throw fail('BUDGET_LIMIT',`当前 ${requested} 份需 ${formatUnits(totalCost,18)} ${s.info.currency}，超过预算 ${formatUnits(budget,18)}；请刷新打满报价。尚未提交本批。`,{required:String(totalCost),budget:String(budget),quantity:Number(requested)});
  let referrer=ZeroAddress;const referral=await client.referral(row,wallets);
  if(intent.referral!=='none'&&[2,3].includes(w.account)){
   if(referral.status!=='ready'||same(referral.address,w.address))throw fail('REFERRAL_UNAVAILABLE','1 号邀请身份未通过核验，请刷新或明确关闭邀请');referrer=referral.address;
  }
  const steps=[],input=row.nativePayment?BNB:USDT;
- if(row.nativePayment){if(await rpc.getBalance(w.address,s.block)<q.cost)throw fail('BUDGET_LIMIT','BNB 余额不足以支付本次 Mint（Gas 另计）');}
- else{const [[balance],[allowance]]=await Promise.all([read(rpc,USDT,ERC20,'balanceOf',[w.address],s.block),read(rpc,USDT,ERC20,'allowance',[w.address,row.mint],s.block)]);if(balance<q.cost)throw fail('BUDGET_LIMIT','USDT 余额不足以支付本次 Mint');if(allowance<q.cost)steps.push({kind:'approve',to:USDT,value:'0',spender:row.mint,allowance:String(q.cost),data:ERC20.encodeFunctionData('approve',[row.mint,q.cost])});}
+ const nativeBalance=await rpc.getBalance(w.address,s.block);
+ if(row.nativePayment){if(nativeBalance<totalCost)throw fail('BUDGET_LIMIT','BNB 余额不足以支付本次全部份数（Gas 另计），未缩减份数');}
+ else{const [[balance],[allowance]]=await Promise.all([read(rpc,USDT,ERC20,'balanceOf',[w.address],s.block),read(rpc,USDT,ERC20,'allowance',[w.address,row.mint],s.block)]);if(balance<totalCost)throw fail('BUDGET_LIMIT','USDT 余额不足以支付本次全部份数，未缩减份数');if(allowance<q.cost)steps.push({kind:'approve',to:USDT,value:'0',spender:row.mint,allowance:String(q.cost),data:ERC20.encodeFunctionData('approve',[row.mint,q.cost])});}
  const min=q.out*BigInt(10000-intent.slippageBps)/10000n;if(min<=0n)throw fail('BINANCIANS_QUOTE_INVALID','最低到账必须大于 0');
  const step={kind:'mint',to:row.mint,value:row.nativePayment?String(q.cost):'0',data:M.encodeFunctionData('mint',[n,referrer,q.cost,min])};
+ // Reserve native fees separately from the exact Mint value. This is a balance
+ // check, NOT a gas limit override. The wallet still estimates at submission.
+ // Before a USDT approval only that next step can be reliably estimated.
+ const first=steps[0]||step;
+ const [estimate,gasPrice]=await Promise.all([rpc.send('eth_estimateGas',[{from:w.address,to:first.to,data:first.data,value:'0x'+BigInt(first.value).toString(16)}]),rpc.send('eth_gasPrice',[])]);
+ const units=BigInt(estimate),price=BigInt(gasPrice);if(units<=0n||price<=0n)throw fail('GAS_ESTIMATE_UNAVAILABLE','未取得有效的 Gas 估算，请稍后重新预览');
+ const batches=(requested+s.perTx-1n)/s.perTx,gasReserve=units*price*2n*(steps.length?1n:batches);
+ if(nativeBalance<(row.nativePayment?totalCost:0n)+gasReserve)throw fail('GAS_BALANCE_LOW',`BNB 余额不足以支付认购及 Gas 预留（${formatUnits(gasReserve,18)} BNB）；未提交本批。`,{gasReserve:String(gasReserve),mintCost:String(row.nativePayment?totalCost:0n)});
  if(!officialPreview&&!steps.length)await rpc.call({to:step.to,data:step.data,from:w.address,value:BigInt(step.value)},s.block);
- return {kind:'contract',route:'binancians:mint',token:row.token,wallet:w.address,inputToken:input,outputToken:row.token,amountIn:String(q.cost),minOutput:String(min),quantity:Number(n),...proof,metaVerified:false,requireAssetCredit:true,expectedAsset:{token:row.token,kind:'Erc20',amount:String(min)},budgetCurrency:s.info.currency,budgetDecimals:18,budgetToken:input,quota:s.info,referral:{...referral,callValue:referrer},fill:{continue:n<requested&&q.cost<budget,quotaRemaining:String(s.remaining)},review:['币安人发射台付费 Mint；每笔最多 10 份，代币直接到账。后续批次重查额度和报价，累计费用不超过本次预算。','平台适配不代表项目已完成安全审计。'],steps:[...steps,step]};
+ return {kind:'contract',route:'binancians:mint',refreshQuoteBeforeExecute:true,token:row.token,wallet:w.address,inputToken:input,outputToken:row.token,amountIn:String(q.cost),minOutput:String(min),quantity:Number(n),...proof,metaVerified:false,requireAssetCredit:true,expectedAsset:{token:row.token,kind:'Erc20',amount:String(min)},budgetCurrency:s.info.currency,budgetDecimals:18,budgetToken:input,quota:s.info,referral:{...referral,callValue:referrer},fill:{continue:n<requested,targetQuantity:Number(requested),targetCost:String(totalCost),quotaRemaining:String(s.remaining)},gasReserve:{raw:String(gasReserve),coverage:steps.length?'approval-only':'estimated-batches'},review:['币安人发射台付费 Mint；每笔最多 10 份，代币直接到账。报价余量仅作费用上限，不会多付给合约；Gas 单独预留并由钱包估算。后续批次重查额度和报价，累计费用不超过本次预算。','平台适配不代表项目已完成安全审计。'],steps:[...steps,step]};
 }
