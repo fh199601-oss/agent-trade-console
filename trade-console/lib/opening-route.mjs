@@ -1,9 +1,12 @@
 import {Interface,read,ERC20,WBNB,BNB,wallet,same,formatUnits} from './common.mjs';
 import {OpeningPools,freshOpeningSnapshot} from './opening-pools.mjs';
-import {DEXES,dexFor,matchesCurrency,QUOTES,V2_ROUTER_ABI,V3_LEGACY,V3_MODERN,QUOTER} from './opening-dex.mjs';
+import {DEXES,dexFor,matchesCurrency,poolRouteKey,QUOTES,V2_ROUTER_ABI,V3_LEGACY,V3_MODERN,QUOTER} from './opening-dex.mjs';
 import {OpeningPreparation} from './opening-preparation.mjs';
 import {sellAmount} from './sell-policy.mjs';
 import {multiHopSettlement} from './opening-multihop.mjs';
+import {poolFeeProof,compareFeeRoutes,HIGH_FEE_PPM,feePercent} from './trade-fees.mjs';
+import {openingReads} from './opening-read.mjs';
+import {POOL} from './opening-pools.mjs';
 export const ROUTER=V2_ROUTER_ABI;
 function saleData(d,pool,token,owner,amount,minimum,receiveNative){
  const deadline=Math.floor(Date.now()/1000)+120;
@@ -15,17 +18,23 @@ function saleData(d,pool,token,owner,amount,minimum,receiveNative){
 export async function refreshOpeningSell(rpc,plan){
  const pool=plan.opening,d=dexFor(pool),amount=BigInt(plan.amountIn);
  if(!d||!plan.requireSellCredit||!same(plan.steps.at(-1)?.to,d.router)||!same(wallet(plan.account).address,plan.wallet))throw Error('开盘卖出刷新缺少可信路线');
- const [[balance],quoted]=await Promise.all([read(rpc,plan.token,ERC20,'balanceOf',[plan.wallet]),d.kind==='v2'?read(rpc,d.router,ROUTER,'getAmountsOut',[amount,pool.path||[plan.token,pool.quote]]):read(rpc,d.quoter,QUOTER,'quoteExactInputSingle',[[plan.token,pool.quote,amount,pool.fee,0]])]);
+ const requests=d.kind==='v2'?[...(pool.legs||[pool]).map(p=>({to:p.pool,abi:POOL,method:'getReserves'})),{to:d.router,abi:ROUTER,method:'getAmountsOut',args:[amount,pool.path||[plan.token,pool.quote]]}]:[{to:d.quoter,abi:QUOTER,method:'quoteExactInputSingle',args:[[plan.token,pool.quote,amount,pool.fee,0]]}];
+ const [[balance],batch]=await Promise.all([read(rpc,plan.token,ERC20,'balanceOf',[plan.wallet]),openingReads(rpc,requests)]);
+ if(batch.results.some(r=>r.status!=='fulfilled'))throw Error('最新池费与报价查询未完成，未提交');
+ const quoted=batch.results.at(-1).value,legs=d.kind==='v2'?(pool.legs||[pool]).map((p,i)=>({...p,block:batch.block,reserve0:String(batch.results[i].value[0]),reserve1:String(batch.results[i].value[1])})):null;
+ const freshPool=legs?{...pool,...legs[0],...(pool.legs?{quote:pool.quote,path:pool.path,legs}:{})}:pool;
  if(String(balance)!==plan.holdingBefore)throw Error('授权期间持仓已变化，请重新预览');
- const output=d.kind==='v2'?quoted[0].at(-1):quoted[0],minimum=output*BigInt(10000-plan.slippage.bps)/10000n;
+ const output=d.kind==='v2'?quoted[0].at(-1):quoted[0];let minimum=output*BigInt(10000-plan.slippage.bps)/10000n;
+ if(plan.authorizationMinOutput!==undefined&&BigInt(plan.authorizationMinOutput)>minimum)minimum=BigInt(plan.authorizationMinOutput);
+ if(output<minimum)throw Error('备用路线刷新报价不足原最低到账');
  if(minimum<=0n||d.kind==='v2'&&(quoted[0].length!==(pool.path?.length||2)||quoted[0][0]!==amount))throw Error('开盘卖出刷新报价无效');
  const step={...plan.steps.at(-1),data:saleData(d,pool,plan.token,plan.wallet,amount,minimum,same(plan.outputToken,BNB))};
- return {...plan,minOutput:String(minimum),quote:{...plan.quote,toCoinAmount:formatUnits(output,plan.outputDecimals??18)},quoteRefreshedAt:Date.now(),steps:[...plan.steps.slice(0,-1),step]};
+ return {...plan,opening:freshPool,state:freshPool,poolFees:poolFeeProof(freshPool,d.kind==='v2'?quoted[0]:null,plan.token,batch.block),minOutput:String(minimum),quote:{...plan.quote,toCoinAmount:formatUnits(output,plan.outputDecimals??18)},quoteRefreshedAt:Date.now(),steps:[...plan.steps.slice(0,-1),step]};
 }
-export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPools(rpc).scan(t,o),snapshot,preparation,identityFor,failedPreviews=[]}={}){
- const reused=freshOpeningSnapshot(snapshot,intent.asset);snapshot=reused?snapshot:await scan(intent.asset,{currency:intent.currency});
- const candidates=snapshot.pools.filter(p=>p.liquid&&matchesCurrency(p,intent.currency)&&dexFor(p));
- if(!candidates.length)throw Object.assign(Error('等待可核验的外盘卖出池子；不会提前使用内盘卖出'),{code:'OPENING_WAIT'});
+export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPools(rpc).scan(t,o),snapshot,preparation,identityFor,failedPreviews=[],excludedRoutes=[],lowFeeOnly=false,expand=false,outputToken,minimumOutput}={}){
+ const reused=freshOpeningSnapshot(snapshot,intent.asset)&&(!expand||snapshot.expanded);snapshot=reused?snapshot:await scan(intent.asset,{currency:intent.currency,expand});
+ const candidates=snapshot.pools.filter(p=>p.liquid&&matchesCurrency(p,intent.currency)&&dexFor(p)&&!excludedRoutes.includes(poolRouteKey(p))&&(!outputToken||same(p.quote,same(outputToken,BNB)?WBNB:outputToken)));
+ if(!candidates.length)throw Object.assign(Error(snapshot.routeIssue||(excludedRoutes.length?'本轮已核验的池子中，没有符合原到账币种的其他路线':'等待可核验的外盘卖出池子；不会提前使用内盘卖出')),{code:'OPENING_WAIT'});
  const w=wallet(intent.account).address,prep=preparation||new OpeningPreparation(rpc,{...(identityFor?{identityFor}:{})});
  const dexes=[...new Map(candidates.map(p=>{const d=dexFor(p);return [d.id,d];})).values()];
  // Warm data never authorizes an amount or approval. Both remain fresh reads.
@@ -33,33 +42,41 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
  const amount=sellAmount(balance,intent.percent),allowances=new Map(dexes.map((d,n)=>[d.id,allowanceRows[n].status==='fulfilled'?allowanceRows[n].value[0]:null]));
  const failed=p=>failedPreviews.some(f=>same(f.pool,p.pool)&&f.fingerprint===meta.identity?.fingerprint&&f.amountIn===String(amount)&&f.holdingBefore===String(balance));
  candidates.sort((a,b)=>{
+  const high=p=>p.kind==='v3'&&p.fee>=HIGH_FEE_PPM;
+  if(high(a)!==high(b))return high(a)?1:-1;
   if(failed(a)!==failed(b))return failed(a)?1:-1;
   const approved=p=>allowances.get(dexFor(p).id)!==null&&allowances.get(dexFor(p).id)>=amount;
-  const score=p=>{const index=QUOTES.findIndex(q=>same(q,p.quote));return (approved(p)?100:0)+(p.kind==='v2'?10:0)+(index<0?0:QUOTES.length-index);};
+  const score=p=>{const index=QUOTES.findIndex(q=>same(q,p.quote));return (p.declaredByToken?50:0)+(p.kind==='v2'?10:0)+(index<0?0:QUOTES.length-index)+(approved(p)?1:0);};
   const diff=score(b)-score(a);if(diff)return diff;
   const depth=p=>BigInt(p.kind==='v2'?(same(p.token0,intent.asset)?p.reserve1:p.reserve0)||'0':p.liquidity||'0');return depth(b)>depth(a)?1:depth(b)<depth(a)?-1:0;
  });
- // Try independent candidates only before any preview or submission. A broken
- // thin pool must not hide another verified pool; at most four quotes per plan.
+ // Try independent candidates only before any preview or submission. Keep the
+ // fast first batch, but do not hide a low-fee route behind eight bad quotes.
  const quoteCandidate=async pool=>{const d=dexFor(pool);
   const allowance=allowances.get(d.id);if(allowance===null)throw Error('无法读取当前授权额度');
-  const [venue,quoted,outputMeta]=await Promise.all([prep.venue(d),d.kind==='v2'?read(rpc,d.router,ROUTER,'getAmountsOut',[amount,pool.path||[intent.asset,pool.quote]]):read(rpc,d.quoter,QUOTER,'quoteExactInputSingle',[[intent.asset,pool.quote,amount,pool.fee,0]]),QUOTES.some(q=>same(q,pool.quote))?{decimals:18}:prep.quote(pool.quote)]);
+  const [venue,quoted,outputMeta]=await Promise.all([prep.venue(d),d.kind==='v2'?read(rpc,d.router,ROUTER,'getAmountsOut',[amount,pool.path||[intent.asset,pool.quote]],pool.block??'latest'):read(rpc,d.quoter,QUOTER,'quoteExactInputSingle',[[intent.asset,pool.quote,amount,pool.fee,0]],pool.block??'latest'),QUOTES.some(q=>same(q,pool.quote))?{decimals:18}:prep.quote(pool.quote)]);
   const output=d.kind==='v2'?quoted[0].at(-1):quoted[0];if(output<=0n||d.kind==='v2'&&(quoted[0].length!==(pool.path?.length||2)||quoted[0][0]!==amount))throw Error('开盘卖出报价无效');
-  return {pool,d,allowance,venue,output,outputDecimals:outputMeta.decimals};
+  if(minimumOutput!==undefined&&output<BigInt(minimumOutput))throw Error('备用路线报价不足原最低到账');
+  return {pool,d,allowance,venue,output,failed:failed(pool),outputDecimals:outputMeta.decimals,fees:poolFeeProof(pool,d.kind==='v2'?quoted[0]:null,intent.asset,pool.block)};
  };
- // A slow/reverting pool must not delay a healthy independent venue. Race only
- // within the same approval tier so a fast quote cannot add an avoidable approval.
- const shortlist=candidates.slice(0,4),approved=p=>allowances.get(dexFor(p).id)!==null&&allowances.get(dexFor(p).id)>=amount;
- let chosen,lastError;for(const group of [shortlist.filter(p=>!failed(p)&&approved(p)),shortlist.filter(p=>!failed(p)&&!approved(p)),shortlist.filter(p=>failed(p)&&approved(p)),shortlist.filter(p=>failed(p)&&!approved(p))]){
-  if(!group.length)continue;
-  try{chosen=await Promise.any(group.map(quoteCandidate));break;}catch(e){lastError=e.errors?.at(-1)||e;}
+ // Compare bounded parallel quotes. Fast/previously approved is not evidence
+ // of cheap. A hung quote cannot indefinitely block the remaining candidates.
+ const bounded=async pool=>{let timer;try{return await Promise.race([quoteCandidate(pool),new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('报价超时')),1200))]);}finally{clearTimeout(timer);}};
+ const results=[];let usable=[];
+ for(let start=0;start<Math.min(candidates.length,32);start+=8){
+  results.push(...await Promise.allSettled(candidates.slice(start,start+8).map(bounded)));
+  usable=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
+  if(usable.some(r=>r.fees.poolFeePpm!==null&&r.fees.poolFeePpm<HIGH_FEE_PPM&&!r.failed))break;
  }
- if(!chosen)throw Object.assign(Error('可用池子尚无有效卖出报价：'+lastError?.message),{code:'OPENING_WAIT'});
- const {pool,d,allowance,venue,output,outputDecimals}=chosen,minimum=output*BigInt(10000-intent.slippageBps)/10000n;if(minimum<=0n)throw Error('最低到账为零');
- const receiveNative=same(pool.quote,WBNB)&&intent.currency!=='WBNB',data=saleData(d,pool,intent.asset,w,amount,minimum,receiveNative);
+ if(lowFeeOnly)usable=usable.filter(r=>r.fees.poolFeePpm!==null&&r.fees.poolFeePpm<HIGH_FEE_PPM);
+ usable.sort(compareFeeRoutes);
+ const chosen=usable[0],lastError=results.find(r=>r.status==='rejected')?.reason;
+ if(!chosen)throw Object.assign(Error(lowFeeOnly?'本轮未找到池费低于 '+feePercent(HIGH_FEE_PPM)+' 且满足原到账约束的可核验路线':'可用池子尚无有效卖出报价：'+(lastError?.message||'没有可用报价')),{code:'OPENING_WAIT'});
+ const {pool,d,allowance,venue,output,outputDecimals}=chosen;let minimum=output*BigInt(10000-intent.slippageBps)/10000n;if(minimumOutput!==undefined&&BigInt(minimumOutput)>minimum)minimum=BigInt(minimumOutput);if(minimum<=0n)throw Error('最低到账为零');
+ const receiveNative=same(pool.quote,WBNB)&&(outputToken?same(outputToken,BNB):intent.currency!=='WBNB'),data=saleData(d,pool,intent.asset,w,amount,minimum,receiveNative);
  return {kind:'contract',route:d.id+'-opening',account:intent.account,token:intent.asset,wallet:w,inputToken:intent.asset,outputToken:receiveNative?BNB:pool.quote,amountIn:String(amount),holdingBefore:String(balance),decimals:meta.decimals,outputDecimals,minOutput:String(minimum),
   identity:{...meta.identity,learnedAssets:venue.assets},opening:{...pool,detectedAt:snapshot.at,reusedDetection:reused},state:pool,requireSellCredit:true,
-  slippage:{mode:'fixed',bps:intent.slippageBps,capBps:intent.slippageBps},quote:{toCoinAmount:formatUnits(output,outputDecimals)},review:[],steps:[
+  poolFees:chosen.fees,...(minimumOutput!==undefined?{authorizationMinOutput:String(minimumOutput)}:{}),routeSearch:{quoted:results.length,candidates:candidates.length,limited:results.length<candidates.length,expanded:!!snapshot.expanded},slippage:{mode:'fixed',bps:intent.slippageBps,capBps:intent.slippageBps},quote:{toCoinAmount:formatUnits(output,outputDecimals)},review:[],steps:[
    ...(allowance<amount?[{kind:'approve',to:intent.asset,value:'0',data:ERC20.encodeFunctionData('approve',[d.router,amount]),spender:d.router,allowance:String(amount)}]:[]),
    {kind:'sell',to:d.router,value:'0',data}
   ]};

@@ -37,7 +37,7 @@ export class OpeningSell{
    if(r.orderId!==o.id)continue;this.result(r,o);if(j.status==='PAUSED'&&cancelledBeforeSale(o))r.status='PAUSED';changed=true;
    // Reflect a manually reconciled original in the task card without ever
    // re-arming a cancelled/paused task or dispatching a subsequent step.
-   if(ACTIVE.has(j.status)&&j.rows.every(x=>!WATCHING.has(x.status)&&!['TRACKING','PREPARING'].includes(x.status))){j.status='COMPLETED';j.message='原单核对完成，请查看各钱包结果';}
+   if((ACTIVE.has(j.status)||j.status==='REVIEW')&&j.rows.every(x=>!WATCHING.has(x.status)&&!['TRACKING','PREPARING'].includes(x.status))){j.status=j.rows.some(x=>['SELL_FEE_REVIEW','SELL_FEES_UNVERIFIABLE'].includes(x.error?.code))?'REVIEW':'COMPLETED';j.message=j.status==='REVIEW'?'卖出费用检查未通过，尚未提交；请查看原因':'原单核对完成，请查看各钱包结果';}
   }
   if(changed)this.persist();
  }
@@ -165,6 +165,8 @@ export class OpeningSell{
   }finally{this.followBusy.delete(j.id);}
  }
  warm(j){if(!this.preparation||this.warmBusy.has(j.id)||this.now()-(j.preflight?.at||0)<5000)return;
+  // Read-only fee audit coalesces across wallets while waiting for opening.
+  void this.engine.sellAudit?.(j.config.asset).catch(()=>{});
   const revision=j.revision||0;this.warmBusy.add(j.id);void this.preparation.warm(j.config).then(p=>{
    if(j.cancelRequested||this.closed||!ACTIVE.has(j.status)||(j.revision||0)!==revision)return;
    if(j.preflight?.fingerprint&&j.preflight.fingerprint!==p.fingerprint){j.status='PAUSED';j.message='等待期间代币代码已变化，请重新检查';}else{j.preflight=p;delete j.preflightError;}this.persist();
@@ -192,7 +194,7 @@ export class OpeningSell{
     j.detectedAt??=this.now();j.detectedBlock??=s.block;j.status='FIRING';j.message='检测到流动性，按当前持仓独立准备各钱包';this.persist();
     await Promise.all(waiting.map(r=>this.fire(j,r,s)));
    }
-   if(!j.cancelRequested&&ACTIVE.has(j.status)){j.status=j.rows.some(r=>WATCHING.has(r.status))?'ARMED':j.rows.some(r=>r.status==='TRACKING')?'TRACKING':'COMPLETED';j.message=j.status==='COMPLETED'?'本次开盘任务已结束，请查看各钱包结果':j.status==='TRACKING'?'仅跟踪已提交原单':'池子已出现，等待可执行的卖出预览';}
+   if(!j.cancelRequested&&ACTIVE.has(j.status)){j.status=j.rows.some(r=>WATCHING.has(r.status))?'ARMED':j.rows.some(r=>r.status==='TRACKING')?'TRACKING':j.rows.some(r=>['SELL_FEE_REVIEW','SELL_FEES_UNVERIFIABLE'].includes(r.error?.code))?'REVIEW':'COMPLETED';j.message=j.status==='REVIEW'?'卖出费用检查未通过，尚未提交；请查看原因':j.status==='COMPLETED'?'本次开盘任务已结束，请查看各钱包结果':j.status==='TRACKING'?'仅跟踪已提交原单':'池子已出现，等待可执行的卖出预览';}
    this.persist();return j;
   }finally{this.running.delete(id);}
  }
@@ -206,6 +208,9 @@ export class OpeningSell{
    let o=await this.engine.prepare(intent,r.orderId,{openingSnapshot:snapshot,...(r.recovery?{openingRecovery:r.recovery}:{})});
    if(j.cancelRequested||this.closed||!ACTIVE.has(j.status)||this.now()>j.expiresAt){r.status=j.status==='PAUSED'?'PAUSED':'CANCELLED';return;}
    if((j.revision||0)!==revision&&editableSaleRow(r)){r.status='WAITING';r.retryAt=this.now();r.error={message:'设置已修改，按新比例重新准备'};return;}
+   // Unknown fees are a route-policy rejection, not a transient opening state.
+   // Do not create twenty more preparations or fall back to another opaque sale.
+   if(o.error?.code==='SELL_FEES_UNVERIFIABLE'){this.result(r,o);return;}
    if(o.status==='BLOCKED'&&!o.steps?.length){
     const lowGas=j.config.gasLimit!==undefined&&String(o.error?.code)==='351805'&&/out of gas|gas limit/i.test(o.error?.providerMessage||o.error?.message||'');
     const transientRecovery=r.recovery&&['RPC_UNAVAILABLE','ORIGINAL_READ_UNAVAILABLE','WALLET_BUSY','OFFICIAL_SIMULATION_FAILED','OPENING_QUOTE_UNAVAILABLE'].includes(o.error?.code);
@@ -235,9 +240,11 @@ export class OpeningSell{
   // boundary first; pending/unknown/successful originals NEVER enter this path.
   r.previousOrders=[...(r.previousOrders||[]),{id:o.id,txHash:r.txHash,status:o.status,error:o.error}];
   r.recoveryAttempts=1;r.recovery={sourceId:o.id};delete r.commitStartedAt;
-  r.status='WAITING';r.retryAt=this.now();r.error={code:'OPENING_RECOVERY',message:'原卖出已核验未成交，重新核对持仓后尝试一次'+(j.config.gasLimit===undefined?'聚合路线':'直连路线，保留所选 Gas 上限')+'；沿用原比例和滑点'};this.persist();
+  r.status='WAITING';r.retryAt=this.now();r.error={code:'OPENING_RECOVERY',message:'原卖出已核验未成交，重新检查一次可用路线；仍须核验池费，沿用原比例、滑点及所选 Gas 设置'};this.persist();
  }
  result(r,o){r.orderStatus=o.status;r.error=o.error;r.txHash=o.txHash||o.steps?.at(-1)?.txHash;r.chainOrderId=o.orderId;r.timing=o.timing;
+  if(o.needsFeeReview)r.error={code:'SELL_FEE_REVIEW',message:'未自动卖出：'+(o.feeReview?.reasons||[]).join('；')+'。请打开原单确认费用。'};
   r.status=['PENDING','READY_TO_CONTINUE'].includes(o.status)?'TRACKING':['PREPARED','SUBMISSION_UNKNOWN','SUBMITTING','RECEIPT_REVIEW','CONFIRMED_REVIEW'].includes(o.status)?'REVIEW':o.status;
+  if(o.error?.code==='SELL_FEES_UNVERIFIABLE')r.status='REVIEW';
  }
 }

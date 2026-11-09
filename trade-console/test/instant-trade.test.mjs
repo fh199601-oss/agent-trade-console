@@ -1,3 +1,4 @@
+import {executeReviewed,runReviewed} from './support/reviewed-execution.mjs';
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import {sellAmount,quotedSlippage} from '../lib/sell-policy.mjs';import {tradePlan} from '../lib/routes.mjs';
 import {bindings,ERC20,BNB,validateIntent} from '../lib/common.mjs';import {Engine} from '../lib/engine.mjs';import {Batches} from '../lib/batch.mjs';
@@ -9,13 +10,15 @@ test('receipt observation starts immediately after submission without an extra h
  assert.equal(done.status,'CONFIRMED');assert.deepEqual(events,['read:original']);
 });
 const token='0x'+'a'.repeat(40),wallets=bindings(),intent={account:1,side:'sell',asset:token,percent:'50',currency:'BNB',slippageBps:300,slippageMode:'auto'};
+const buyIntent={...intent,side:'buy',amount:'0.01',slippageMode:'fixed'};
 const temp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'instant-trade-'));
 const row=(account,status='PREPARED',review=[])=>({id:'order-'+account,intent:{...intent,account},status,review});
-function fixture(balances=[10000n,0n,10000n]){
+function fixture(balances=[10000n,0n,10000n],aggregate=false){
  const submitted=[],rpc={call:async tx=>{const a=ERC20.decodeFunctionData('balanceOf',tx.data)[0],idx=wallets.findIndex(w=>w.address.toLowerCase()===a.toLowerCase());return ERC20.encodeFunctionResult('balanceOf',[balances[idx]]);}};
- const bridge={ready:async()=>({}),call:async(account,args)=>{if(args[1]==='swap'){submitted.push(account);balances[account-1]-=BigInt(args[args.indexOf('--fromTokenQty')+1]);return {orderId:String(account)};}if(args[1]==='list')return {list:[{orderId:String(account),status:'FINISHED'}]};throw Error('Unexpected mock command');}};
- const planFn=async i=>{const amount=sellAmount(balances[i.account-1],i.percent);return {kind:'swap',wallet:wallets[i.account-1].address,token,inputToken:token,outputToken:BNB,amountIn:String(amount),holdingBefore:String(balances[i.account-1]),args:['--fromTokenQty',String(amount),'--slippage','3'],review:[],steps:[]};};
- return {balances,submitted,rpc,bridge,engine:new Engine({data:temp(),rpc,bridge,live:true,planFn})};
+ const bridge={ready:async()=>({}),call:async(account,args)=>{if(args[1]==='preview')return {requestId:String(account),simulationResult:{simulationCode:'000000000'}};if(args[1]==='swap'||args[1]==='execute'){submitted.push(account);balances[account-1]-=args[1]==='swap'?BigInt(args[args.indexOf('--fromTokenQty')+1]):balances[account-1]/2n;return args[1]==='swap'?{orderId:String(account)}:{txHash:'0x'+'ab'.repeat(32)};}if(args[1]==='list')return {list:[{orderId:String(account),status:'FINISHED'}]};throw Error('Unexpected mock command');}};
+ const planFn=async i=>{const amount=sellAmount(balances[i.account-1],i.percent);return {kind:aggregate?'swap':'contract',poolFees:{version:1,poolFeePpm:3000,pools:[{address:'0x'+'18'.repeat(20),feePpm:3000}]},audit:{available:true,taxes:{sellTax:'0'}},wallet:wallets[i.account-1].address,token,inputToken:token,outputToken:BNB,amountIn:String(amount),holdingBefore:String(balances[i.account-1]),args:['--fromTokenQty',String(amount),'--slippage','3'],review:[],steps:aggregate?[]:[{kind:'sell',to:token,value:'0',data:'0x12345678'}]};};
+ const engine=new Engine({data:temp(),rpc,bridge,live:true,planFn});engine.observeContract=async(o,e)=>{e.status='CONFIRMED';};
+ return {balances,submitted,rpc,bridge,engine};
 }
 test('zero holdings skips before route probing; failed RPC is never zero',async()=>{
  const rpc={call:async tx=>{const f=ERC20.parseTransaction({data:tx.data}).name;assert.ok(['balanceOf','decimals'].includes(f));return ERC20.encodeFunctionResult(f,[f==='decimals'?18:0]);}};
@@ -33,7 +36,7 @@ test('trade planner uses auto for quote only, numeric capped slippage for execut
  const p=await tradePlan(rpc,bridge,intent,token);assert.equal(p.args.at(-1),'3');assert.equal(p.slippage.capBps,300);assert.equal(p.amountIn,'500000000000000000');assert.equal(calls.length,1);
 });
 test('instant sell skips zero wallets and repeated 50 percent uses remaining balance',async()=>{
- const f=fixture([10000n,...wallets.slice(1).map(()=>0n)]);for(const id of ['first','second']){const rows=await Promise.all(wallets.map(w=>f.engine.prepare({...intent,account:w.account},id+w.account)));assert.deepEqual(rows.map(o=>o.status),['PREPARED',...wallets.slice(1).map(()=>'SKIPPED')]);assert.equal(reviewSummary(rows).canConfirm,true);const result=await executeIndependent(rows,o=>f.engine.execute(o.id,{authorization:'mock click'}));assert.equal(result[0].status,'CONFIRMED');assert.match(tradeResultMessage(result),/2 号：无持仓，已跳过/);}assert.equal(f.balances[0],2500n);assert.deepEqual(f.submitted,[1,1]);
+ const f=fixture([10000n,...wallets.slice(1).map(()=>0n)]);for(const id of ['first','second']){const rows=await Promise.all(wallets.map(w=>f.engine.prepare({...intent,account:w.account},id+w.account)));assert.deepEqual(rows.map(o=>o.status),['PREPARED',...wallets.slice(1).map(()=>'SKIPPED')]);assert.equal(reviewSummary(rows).canConfirm,true);const result=await executeIndependent(rows,o=>executeReviewed(f.engine,o.id,{authorization:'mock click'}),{ack:true});assert.equal(result[0].status,'CONFIRMED');assert.match(tradeResultMessage(result),/2 号：无持仓，已跳过/);}assert.equal(f.balances[0],2500n);assert.deepEqual(f.submitted,[1,1]);
 });
 test('independent wallets submit concurrently; pending/failure does not stop others',async()=>{
  const reached=[],release=[];const work=executeIndependent([row(1),row(2),row(3,'SKIPPED')],o=>new Promise(resolve=>{reached.push(o.intent.account);release.push(()=>resolve({...o,status:o.intent.account===1?'PENDING':'CONFIRMED'}));}));assert.deepEqual(reached,[1,2]);release.forEach(f=>f());assert.deepEqual((await work).map(o=>o.status),['PENDING','CONFIRMED','SKIPPED']);
@@ -75,31 +78,31 @@ test('duplicate rows submit once; all-zero wallets perform no execution calls',a
  let count=0;await executeIndependent([row(1),row(1)],async o=>{count++;return {...o,status:'CONFIRMED'};});assert.equal(count,1);const rows=[row(1,'SKIPPED'),row(2,'SKIPPED')];await executeIndependent(rows,()=>assert.fail('zero'));assert.equal(reviewSummary(rows).canConfirm,false);assert.match(reviewSummary(rows).message,/均无此代币持仓/);
 });
 test('CLI batch continues independent sells around skipped wallets and retains original IDs',async()=>{
- const f=fixture(),batch=new Batches(f.engine);const result=await batch.run({id:'batch',accounts:[1,2,3],intent,execute:true,authorization:'mock click'});assert.equal(result.status,'CONFIRMED');assert.deepEqual(f.submitted.sort(),[1,3]);assert.equal(result.orders[1].status,'SKIPPED');await batch.run({id:'batch',accounts:[1,2,3],intent,execute:true,authorization:'mock repeat'});assert.equal(f.submitted.length,2);
+ const f=fixture(),batch=new Batches({...f.engine,prepare:f.engine.prepare.bind(f.engine),run:(...args)=>runReviewed(f.engine,...args)});const result=await batch.run({id:'batch',accounts:[1,2,3],intent,execute:true,authorization:'mock click'});assert.equal(result.status,'CONFIRMED');assert.deepEqual(f.submitted.sort(),[1,3]);assert.equal(result.orders[1].status,'SKIPPED');await batch.run({id:'batch',accounts:[1,2,3],intent,execute:true,authorization:'mock repeat'});assert.equal(f.submitted.length,2);
 });
 test('receipt lookup timeout retains pending and blocks duplicate swap',async()=>{
- const f=fixture(),original=f.bridge.call;f.bridge.call=async(a,args)=>{if(args[1]==='list')throw Error('network timeout');return original(a,args);};const r=await f.engine.run(intent,'lookup-failure',{execute:true,authorization:'mock click'});assert.equal(r.status,'PENDING');assert.ok(r.orderId);assert.match(r.followError.message,/timeout/);await assert.rejects(f.engine.prepare(intent,'new-order'),e=>e.code==='ORDER_UNRESOLVED'&&e.details.requestAccepted===false);assert.equal(f.submitted.length,1);
+ const f=fixture(undefined,true),original=f.bridge.call;f.bridge.call=async(a,args)=>{if(args[1]==='list')throw Error('network timeout');return original(a,args);};const r=await runReviewed(f.engine,buyIntent,'lookup-failure',{execute:true,authorization:'mock click'});assert.equal(r.status,'PENDING');assert.ok(r.orderId);assert.match(r.followError.message,/timeout/);await assert.rejects(f.engine.prepare(buyIntent,'new-order'),e=>e.code==='ORDER_UNRESOLVED'&&e.details.requestAccepted===false);assert.equal(f.submitted.length,1);
 });
 test('slippage rejection reconciles failed original order without retrying swap',async()=>{
- const f=fixture();let swaps=0;f.bridge.call=async(a,args)=>{if(args[1]==='swap'){swaps++;throw Object.assign(Error('slippage too low'),{code:30003001,dispatched:true});}assert.equal(args[1],'list');return {total:1,list:[{orderId:'failed-original',orderType:'market',chain:'56',fromToken:token,toToken:BNB,fromTokenQty:'5000',slippage:'3.0000',status:'FAILED',txHash:null,bookTime:new Date().toISOString()}]};};const r=await f.engine.run(intent,'slippage-rejected',{execute:true,authorization:'mock click'});assert.equal(r.status,'FAILED');assert.equal(r.orderId,'failed-original');assert.match(r.error.message,/不会自动/);await f.engine.execute('slippage-rejected',{authorization:'mock retry'});assert.equal(swaps,1);
+ const f=fixture(undefined,true);let swaps=0;f.bridge.call=async(a,args)=>{if(args[1]==='swap'){swaps++;throw Object.assign(Error('slippage too low'),{code:30003001,dispatched:true});}assert.equal(args[1],'list');return {total:1,list:[{orderId:'failed-original',orderType:'market',chain:'56',fromToken:token,toToken:BNB,fromTokenQty:'5000',slippage:'3.0000',status:'FAILED',txHash:null,bookTime:new Date().toISOString()}]};};const r=await runReviewed(f.engine,buyIntent,'slippage-rejected',{execute:true,authorization:'mock click'});assert.equal(r.status,'FAILED');assert.equal(r.orderId,'failed-original');assert.match(r.error.message,/不会自动/);await executeReviewed(f.engine,'slippage-rejected',{authorization:'mock retry'});assert.equal(swaps,1);
 });
 
 test('one-request quick flow starts each ready wallet while another is still preparing',async()=>{
  const f=fixture(),original=f.engine.planFn;let release;const gate=new Promise(r=>release=r),plan=f.engine.plan.bind(f.engine);
  f.engine.plan=async i=>{if(i.account===2)await gate;return plan(i);};
- let finished;const fast=new Promise(r=>finished=r);const pending=runInstantTrades([row(1),row(2),row(3)],o=>f.engine.run(o.intent,o.id,{execute:true,authorization:'mock click'}),{onResult:o=>{if(o.intent.account===1)finished(o);}});
+ let finished;const fast=new Promise(r=>finished=r);const pending=runInstantTrades([row(1),row(2),row(3)],o=>runReviewed(f.engine,o.intent,o.id,{execute:true,authorization:'mock click'}),{onResult:o=>{if(o.intent.account===1)finished(o);}});
  assert.equal((await fast).status,'CONFIRMED');assert.ok(f.submitted.includes(1));assert.equal(f.engine.get('order-2')?.status==='CONFIRMED',false);release();const rows=await pending;assert.equal(rows[1].status,'SKIPPED');assert.equal(rows[2].status,'CONFIRMED');
 });
 test('one-request quick flow retains risk review and never retries uncertain requests',async()=>{
- const f=fixture(),plan=f.engine.plan.bind(f.engine);f.engine.plan=async i=>({...await plan(i),review:['new risk']});const rows=await runInstantTrades([row(1),row(2),row(1)],async o=>{if(o.intent.account===2)throw Error('connection lost');return f.engine.run(o.intent,o.id,{execute:true,authorization:'mock click'});});
+ const f=fixture(),plan=f.engine.plan.bind(f.engine);f.engine.plan=async i=>({...await plan(i),review:['new risk']});const rows=await runInstantTrades([row(1),row(2),row(1)],async o=>{if(o.intent.account===2)throw Error('connection lost');return runReviewed(f.engine,o.intent,o.id,{execute:true,authorization:'mock click'});});
  assert.equal(rows[0].status,'PREPARED');assert.equal(rows[0].needsReview,true);assert.equal(rows[1].status,'SUBMISSION_UNKNOWN');assert.deepEqual(f.submitted,[]);
 });
 
 test('dashboard fast return acknowledges submission without waiting for receipt and follows exactly the original order',async()=>{
- const f=fixture(),original=f.bridge.call;let reads=0;f.bridge.call=async(a,args)=>{if(args[1]==='list')reads++;return original(a,args);};
- const o=await f.engine.run(intent,'fast-return',{execute:true,authorization:'mock click',swapReceiptWaitMs:0});assert.equal(o.status,'PENDING');assert.equal(reads,0);assert.equal(f.submitted.length,1);
+ const f=fixture(undefined,true),original=f.bridge.call;let reads=0;f.bridge.call=async(a,args)=>{if(args[1]==='list')reads++;return original(a,args);};
+ const o=await runReviewed(f.engine,buyIntent,'fast-return',{execute:true,authorization:'mock click',swapReceiptWaitMs:0});assert.equal(o.status,'PENDING');assert.equal(reads,0);assert.equal(f.submitted.length,1);
  const followed=await followSubmittedOrder(o,id=>f.engine.follow(id),{wait:async()=>{}});assert.equal(followed.status,'CONFIRMED');assert.equal(reads,1);assert.equal(f.submitted.length,1);
- await f.engine.execute(o.id,{authorization:'mock repeated click',swapReceiptWaitMs:0});assert.equal(f.submitted.length,1);
+ await executeReviewed(f.engine,o.id,{authorization:'mock repeated click',swapReceiptWaitMs:0});assert.equal(f.submitted.length,1);
 });
 test('receipt tracker stays pending on read timeouts and never changes IDs or submits',async()=>{
  const o={id:'original',status:'PENDING',orderId:'42'},ids=[];const result=await followSubmittedOrder(o,async id=>{ids.push(id);throw Error('timeout');},{wait:async()=>{},attempts:3});assert.equal(result.status,'PENDING');assert.deepEqual(ids,['original','original','original']);

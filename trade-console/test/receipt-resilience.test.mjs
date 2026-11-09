@@ -1,3 +1,4 @@
+import {executeReviewed,runReviewed} from './support/reviewed-execution.mjs';
 // All RPC and wallet responses are synthetic. No credentials or network used.
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import {Engine} from '../lib/engine.mjs';import {Interface,bindings,ERC20,BNB,ZeroAddress} from '../lib/common.mjs';
@@ -17,10 +18,10 @@ for(const side of ['claim','sell'])for(const failure of ['receipt','transaction'
  const bridge={ready:async()=>{},call:async(a,args)=>{if(args[1]==='preview')return {requestId:'fixture',simulationResult:{simulationCode:'000000000',balanceChanges:f.changes}};assert.equal(args[1],'execute');sends++;return {txHash:f.hash};}};
  const engine=new Engine({rpc,bridge,data,live:true,planFn:async()=>f.plan});
  const intent={account:bound.account,asset:side==='sell'?f.token:mint,side:side==='sell'?'sell':'mint',...(side==='sell'?{percent:'50'}:{quantity:1,scope:'free',maxBnb:'0',routeId:'corla:claim',autoClaim:false})};
- await engine.prepare(intent,'original');let o=await engine.execute('original',{authorization:'synthetic test only',swapReceiptWaitMs:0});
+ await engine.prepare(intent,'original');let o=await executeReviewed(engine,'original',{authorization:'synthetic test only',swapReceiptWaitMs:0});
  assert.equal(o.status,'PENDING');assert.equal(o.steps[0].status,'PENDING');assert.equal(o.followError.code,'ORIGINAL_READ_UNAVAILABLE');assert.equal(sends,1);
  for(let i=0;i<3;i++){o=await engine.follow(o.id);assert.equal(o.status,'PENDING');}
- assert.equal((await engine.execute('original',{authorization:'synthetic test'})).duplicateSuppressed,true);assert.equal(sends,1);
+ assert.equal((await executeReviewed(engine,'original',{authorization:'synthetic test'})).duplicateSuppressed,true);assert.equal(sends,1);
  unavailable=false;o=await engine.follow(o.id);assert.equal(o.status,'CONFIRMED');assert.equal(o.followError,undefined);assert.ok(o.resolvedErrors.length);assert.equal(sends,1);
  if(side==='claim')assert.equal(o.steps[0].received,'100');
 });

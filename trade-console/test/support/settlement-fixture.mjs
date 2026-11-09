@@ -6,7 +6,7 @@ const abi=new Interface(['event Transfer(address indexed from,address indexed to
 export function settlementFixture({dex=DEXES[0],native=true,reverse=false,nested=true,taxToRouter=false,quoteTax=false}={}){
  const {token,pool,owner,tax}=addresses,quote=native?WBNB:USDT,recipient=native?dex.router:owner;
  const state={kind:dex.kind,factory:dex.factory,pool,quote,token0:reverse?quote:token,token1:reverse?token:quote};
- const plan={kind:'contract',route:dex.id+'-opening',token,wallet:owner,inputToken:token,outputToken:native?BNB:quote,amountIn:'1000',minOutput:'100',holdingBefore:'2000',state,steps:[]};
+ const plan={kind:'contract',poolFees:{version:1,poolFeePpm:3000,pools:[{address:'0x'+'18'.repeat(20),feePpm:3000}]},audit:{available:true,taxes:{sellTax:'0'}},route:dex.id+'-opening',token,wallet:owner,inputToken:token,outputToken:native?BNB:quote,amountIn:'1000',minOutput:'100',holdingBefore:'2000',state,steps:[]};
  const step={kind:'sell',to:dex.router,value:'0',data:'0x12345678'};plan.steps=[step];
  const log=(address,name,args)=>({address,...abi.encodeEventLog(abi.getEvent(name),args)});
  const transfer=(asset,from,to,value)=>log(asset,'Transfer',[from,to,value]);

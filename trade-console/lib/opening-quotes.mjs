@@ -45,6 +45,9 @@ export class OpeningQuotes{
   const values=first.results.map(r=>r.status==='fulfilled'&&valid(r.value[0])?address(r.value[0]):null);
   const quotes=values.slice(0,QUOTE_GETTERS.length).filter(Boolean),pairs=unique(values.slice(QUOTE_GETTERS.length).filter(Boolean));
   await this.readPairs(token,pairs,first.block);
+  // Keep provenance separate from index hints. Factory validation still occurs
+  // in OpeningPools; a token getter alone is not an official/safe-pool proof.
+  const key=token.toLowerCase();this.routes.set(key,this.knownRoutes(token).map(p=>({...p,declaredByToken:pairs.some(a=>same(a,p.pool))})));
   return unique(quotes.filter(q=>!same(q,token)));
  }
 }

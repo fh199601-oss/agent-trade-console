@@ -1,10 +1,12 @@
 import {providerRefusal,repairRejectedOrder} from './provider-outcome.mjs';
 import {sellGasArgs} from './sell-gas.mjs';
-import {rejectedAggregateSale,manualDirectSell} from './manual-sell-recovery.mjs';
+import {updateFeeReview,blockUnverifiableFees,assessSellFees} from './trade-fees.mjs';
+import {findLowFeeSell,searchableSellPreviewError} from './sell-fee-search.mjs';
+import {manualDirectSell} from './manual-sell-recovery.mjs';
 import {openingPlan,refreshOpeningSell} from './opening-route.mjs';
 import {tradeTarget} from './trade-target.mjs';
 import {openingRecoveryPlan} from './opening-recovery.mjs';
-import {preferProvenOpeningRoute,recentOpeningPreviewFailures} from './sell-route-history.mjs';
+import {recentOpeningPreviewFailures} from './sell-route-history.mjs';
 import {hasPreviewRisks} from './preview-risks.mjs';
 import {erc1155Received} from './erc1155-credit.mjs';
 import path from 'node:path';
@@ -55,7 +57,7 @@ export function verifyPreview(p,plan,step){
  if(step.kind==='approve'){
   const v=ERC20.decodeFunctionData('approve',step.data);if(!same(v[0],step.spender)||v[1]!==BigInt(step.allowance))throw Error('授权 calldata 不一致');
  }
- if(step.kind==='sell'&&plan.requireSellCredit&&output<BigInt(plan.minOutput))throw Error('官方卖出模拟到账不足最低到账，停止提交');
+ if(step.kind==='sell'&&plan.requireSellCredit&&output<BigInt(plan.minOutput))throw Object.assign(Error('官方卖出模拟到账不足最低到账，停止提交'),{code:'SELL_OUTPUT_BELOW_MIN'});
  if(plan.requireRefundCredit&&output<BigInt(plan.minOutput))throw Error('官方预览未证明本钱包退款足额到账');
  // Runtime-only ERC20 recognition requires proof of the promised incoming asset.
  if(step.kind==='mint'&&(!plan.metaVerified||plan.requireAssetCredit)&&plan.expectedAsset?.kind==='Erc20'&&output<BigInt(plan.minOutput||0))throw Error('模拟到账少于模板最低数量');
@@ -87,6 +89,12 @@ export class Engine{
   return {account,ready:!remaining,order:remaining||firstResult||this.get(pending[0].id)};
  }
  async exclusive(account,fn,id,{trackingOnly=false}={}){if(this.running.has(account))throw Object.assign(Error('该钱包正在处理上一笔操作，请稍后核对'),{code:'WALLET_BUSY',details:{account,requestAccepted:false}});const pending=!trackingOnly&&this.orderIndex.find(o=>o.intent.account===account&&o.id!==id&&unresolved.has(o.status));if(pending)throw Object.assign(Error('上一笔交易尚未确定结果，已保留原单供核对'),{code:'ORDER_UNRESOLVED',details:{account,orderId:pending.id,status:pending.status,requestAccepted:false}});this.running.add(account);try{return await fn();}finally{this.running.delete(account);}}
+ async sellAudit(token){
+  this.sellAudits??=new Map();const key=token.toLowerCase(),old=this.sellAudits.get(key);
+  if(old&&old.until>Date.now())return old.result;
+  let timer;const result=Promise.race([Promise.resolve().then(()=>this.auditFn(token)),new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('卖出税查询超时，按未知处理')),1200))]).catch(e=>({available:false,reason:e.message})).then(a=>({...a,checkedAt:Date.now()})).finally(()=>clearTimeout(timer));
+  this.sellAudits.set(key,{until:Date.now()+5000,result});if(this.sellAudits.size>128)this.sellAudits.delete(this.sellAudits.keys().next().value);return result;
+ }
  async plan(intent,context={}){
   if(this.planFn)return this.planFn(intent);
   const preflight=()=>Promise.all([this.rpc.verifyChain(),measure('walletReady',()=>this.bridge.ready(intent.account,{external:intent.side==='mint'}))]).then(()=>({}),error=>({error}));
@@ -112,15 +120,16 @@ export class Engine{
   // are independent reads; both still complete before preview/submission.
   let [p,audit]=await Promise.all([
    intent.side==='mint'?mintPlan(this.rpc,this.bridge,intent,resolved.address,resolved,this.experience,{officialPreview:true}):(intent.openingOnly?(context.openingRecovery?openingRecoveryPlan(this.rpc,this.bridge,intent,this.get(context.openingRecovery.sourceId),{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation}):openingPlan(this.rpc,this.bridge,intent,{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation,failedPreviews:recentOpeningPreviewFailures(this.list(),intent)})):tradePlan(this.rpc,tradeBridge,intent,resolved.address,resolved.platform,this.tradePlanOptions)),
-   intent.side==='buy'?measure('tokenAudit',()=>this.auditFn(resolved.address)).catch(e=>({available:false,reason:e.message})):null,
+   intent.side==='sell'?measure('tokenAudit',()=>this.sellAudit(resolved.address)):intent.side==='buy'?measure('tokenAudit',()=>this.auditFn(resolved.address)).catch(e=>({available:false,reason:e.message})):null,
    ensureReady()
   ]);
-  if(intent.side==='sell'&&intent.openingOnly&&!context.openingRecovery){
-   p=await preferProvenOpeningRoute(this.bridge,intent,p,this.list());
+  // A successful opaque aggregate trade does not prove its next route's fee.
+  // Manual sells prefer factory-verified direct pools before opaque execution.
+  if(intent.side==='sell'&&!intent.openingOnly&&p.kind==='swap'){
+   try{p=await manualDirectSell(this.rpc,this.bridge,intent,p,{scan:this.openingScan,preparation:this.openingPreparation});}
+   catch(e){p.directRouteUnavailable=e.message;}
   }
-  if(intent.side==='sell'&&!intent.openingOnly&&p.kind==='swap'&&this.orderIndex.find(o=>rejectedAggregateSale(o,intent))){
-   p=await manualDirectSell(this.rpc,this.bridge,intent,p,{scan:this.openingScan,preparation:this.openingPreparation});
-  }
+  if(intent.side==='sell')p.audit=audit;
   project.address=resolved.address;p.resolved=resolved;p.project=project;
   if(intent.claimSell&&p.route!=='corla:mint')throw Error('领取后联动卖出目前仅支持 Corla 认购');
   if(intent.side==='buy'){
@@ -142,14 +151,26 @@ export class Engine{
   const review=verifyPreview(p,plan,s);return {raw:p,review,at:Date.now()};
  }
  async warmCorlaClaim(mint){const client=corlaClient(this.rpc),row=await client.locate(mint,{explicit:true});if(!row)throw Error('Corla 项目登记未找到');return client.verify(row);}
+ async previewWithFeeSearch(o,index=0,{cached,minimumOutput}={}){
+  let p,error;try{p=cached||await this.preview(o.plan,o.intent,index);}catch(e){error=e;}
+  if(p)p={...p,rerouted:false};
+  const fees=o.intent.side==='sell'?assessSellFees(o.plan,o.plan.steps?.[index]?.kind==='sell'?p?.review:null):null;
+  if(o.intent.side==='sell'&&(error?o.plan.steps?.[index]?.kind==='sell'&&searchableSellPreviewError(error):fees?.required||fees?.blocked)){
+   const alternative=await findLowFeeSell(o,{rpc:this.rpc,bridge:this.bridge,scan:this.openingScan,preparation:this.openingPreparation,preview:this.preview.bind(this),...(this.feeRoutePlanner?{planFn:this.feeRoutePlanner}:{}),minimumOutput});
+   if(alternative){o.plan=JSON.parse(json(alternative.plan));p=alternative.preview;o.nextStep=0;o.needsReview=false;o.needsFeeReview=false;error=null;p={...p,rerouted:true};}
+  }
+  if(error)throw error;
+  if(p){this.previews.set(o.id,{...p,rerouted:false});o.preview=p.review;o.previewAt=p.at;}
+  return p;
+ }
  async prepare(input,id=randomUUID(),context={}){
   const intent=validateIntent(input),old=this.get(id);
   if(old){if(hash(old.intent)!==hash(intent))throw Error('同一消息 ID 不能用于不同交易');return {...old,duplicateSuppressed:true};}
   await this.reconcileAccount(intent.account,id);
   return profiled('prepare',()=>this.exclusive(intent.account,async()=>{
    const o={id,intent,status:'PREPARING',createdAt:Date.now(),timing:{receivedAt:Date.now()},steps:[],simulationOnly:!this.live};this.write(o);
-   try{const plan=await measure('plan',()=>this.plan(intent,context));o.plan=JSON.parse(json(plan));o.project=plan.project;o.timing.planReadyAt=Date.now();const p=await measure('officialPreview',()=>this.preview(plan,intent));if(p){this.previews.set(id,p);o.preview=p.review;o.previewAt=p.at;}
-    o.status='PREPARED';o.review=[...(plan.review||[]),...(hasPreviewRisks(p?.raw.risks)?['钱包预览存在风险提示，请查看详情']:[])];o.timing.preparedAt=Date.now();o.timing.prepareMs=o.timing.preparedAt-o.createdAt;
+   try{let plan=await measure('plan',()=>this.plan(intent,context));o.plan=JSON.parse(json(plan));o.project=plan.project;o.timing.planReadyAt=Date.now();const p=await measure('officialPreview',()=>this.previewWithFeeSearch(o));plan=o.plan;
+    o.status='PREPARED';o.review=[...(plan.review||[]),...(hasPreviewRisks(p?.raw.risks)?['钱包预览存在风险提示，请查看详情']:[])];updateFeeReview(o,plan.steps?.[0]?.kind==='sell'?o.preview:null);blockUnverifiableFees(o);o.timing.preparedAt=Date.now();o.timing.prepareMs=o.timing.preparedAt-o.createdAt;
    }catch(e){o.status=intent.side==='sell'&&e.code==='NO_HOLDINGS'?'SKIPPED':'BLOCKED';o.project??=e.project;o.mintContext=e.mintContext;o.error={...tradeError(e),details:e.details};o.timing.prepareMs=Date.now()-o.createdAt;}
    o.diagnostics=snapshot();o.preflight=preflightReport(o);if(intent.side==='mint'&&o.project?.platform!=='corla')o.inputExperience=this.experience.lookupInput(intent.asset);
    return this.write(o);
@@ -176,28 +197,38 @@ export class Engine{
   });this.mintSequences.set(key,task);
   try{return await task;}finally{if(this.mintSequences.get(key)===task)this.mintSequences.delete(key);}
  }
- async execute(id,{authorization,acknowledgeReview=false,swapReceiptWaitMs=10000,continueAllowed=()=>true,rejectRisks=false}={}){
+ async execute(id,{authorization,acknowledgeReview=false,feeAcknowledgement,swapReceiptWaitMs=10000,continueAllowed=()=>true,rejectRisks=false}={}){
   const o=this.get(id);if(!o)throw Error('找不到原始预览');
   if(!['PREPARED','READY_TO_CONTINUE'].includes(o.status))return {...o,duplicateSuppressed:true};
   if(!this.live){o.status='SIMULATED';o.executeCalls=0;o.message='模拟模式，未签名、未广播；多批次仅预览首批，未宣称额度已打满';return this.write(o);}
   if(o.simulationOnly)throw Error('旧模拟记录不能提交实盘，请从操作面板或使用新的操作 ID 重新预览本次真实操作');
   if(typeof authorization!=='string'||!authorization.trim())throw Error('执行须附本次用户原始交易指令');
-  if(o.review?.length&&!acknowledgeReview)return {...o,needsReview:true};
+  // Separate, per-order consent. Quick trade's acknowledgeReview=true and
+  // automatic task authorization can NEVER silently accept high/unknown fees.
+  const feeGate=(preview,beforeSell=false)=>{const fee=updateFeeReview(o,preview,{beforeSell});if(blockUnverifiableFees(o))return this.write(o);if(fee?.required&&(rejectRisks||feeAcknowledgement!==fee.id)){o.status='PREPARED';o.message='费用检查未通过，卖出未提交；可在详情中核对费用';o.needsReview=true;return this.write(o);}o.needsFeeReview=false;o.needsReview=false;if(o.message?.startsWith('费用检查未通过')||o.message==='卖出尚未提交，请确认池费与卖出税')delete o.message;return null;};
   return this.mintSequence(o,()=>this.exclusive(o.intent.account,async()=>{
    o.authorization=authorization;o.acknowledgeReview=acknowledgeReview;
    const mayContinue=()=>typeof continueAllowed!=='function'||continueAllowed();
    const cancelled=()=>{o.status='CANCELLED';o.message='任务已停止，尚未提交的步骤已取消；已完成的授权不会自动撤销';return this.write(o);};
    try{
+    const currentFees=o.intent.side==='sell'?assessSellFees(o.plan,o.plan.steps?.[o.nextStep||0]?.kind==='sell'?o.preview:null):null;
+    if((currentFees?.required||currentFees?.blocked)&&feeAcknowledgement!==o.feeReview?.id){
+     const p=await this.previewWithFeeSearch(o,o.nextStep||0,{cached:this.previews.get(id),minimumOutput:o.plan.minOutput});
+     if(p?.rerouted)o.review=[...(o.plan.review||[])];
+    }
+    const initiallyHeld=feeGate(o.plan.steps?.[o.nextStep||0]?.kind==='sell'?o.preview:null);if(initiallyHeld)return initiallyHeld;
+    if(o.review?.length&&!acknowledgeReview)return {...this.write(o),needsReview:true};
     if(['corla:mint','binancians:mint'].includes(o.plan.route))o.targetQuantity??=o.plan.fill.targetQuantity;
     if(!mayContinue())return cancelled();
-    if(o.status==='PREPARED'&&(o.plan.freshBeforeExecute||o.plan.refreshQuoteBeforeExecute||Date.now()-o.timing.preparedAt>15000)){
+    if(o.status==='PREPARED'&&!o.nextStep&&(o.plan.freshBeforeExecute||o.plan.refreshQuoteBeforeExecute||Date.now()-o.timing.preparedAt>15000)){
      const refreshIntent=o.plan.route==='binancians:mint'&&o.targetQuantity?{...o.intent,quantity:o.targetQuantity}:o.intent;
      const fresh=await this.plan(refreshIntent,o.intent.openingOnly&&o.plan.recovery?{openingRecovery:{sourceId:o.plan.recovery.originalId}}:{});
      if(!same(fresh.token,o.plan.token)||fresh.resolved?.address!==o.plan.resolved?.address)throw Error('预览期间目标资产发生变化，停止提交');
      if(o.plan.refreshQuoteBeforeExecute&&(fresh.route!==o.plan.route||!same(fresh.inputToken,o.plan.inputToken)||fresh.quantity!==o.plan.quantity||fresh.fill?.targetQuantity!==o.targetQuantity||BigInt(fresh.minOutput)<BigInt(o.plan.minOutput)))throw Error('最新报价的份数、付款币或最低到账已超出本次预览，请重新核对');
      if(o.plan.freshBeforeExecute&&(fresh.quantity!==o.plan.quantity||BigInt(fresh.amountIn)>BigInt(o.plan.amountIn)||BigInt(fresh.minOutput)<BigInt(o.plan.minOutput)))throw Error('动态 Mint 的份数、费用或最低到账已超出本次预览，请重新核对');
-     const p=await this.preview(fresh,o.intent);o.plan=JSON.parse(json(fresh));if(p){this.previews.set(id,p);o.preview=p.review;o.previewAt=p.at;}
-     o.review=[...(fresh.review||[]),...(hasPreviewRisks(p?.raw.risks)?['钱包预览包含风险提示']:[])];o.timing.preparedAt=Date.now();this.write(o);
+     o.plan=JSON.parse(json(fresh));const p=await this.previewWithFeeSearch(o,0,{minimumOutput:fresh.minOutput});
+     o.review=[...(o.plan.review||[]),...(hasPreviewRisks(p?.raw.risks)?['钱包预览包含风险提示']:[])];o.timing.preparedAt=Date.now();this.write(o);
+     const held=feeGate(o.plan.steps?.[0]?.kind==='sell'?o.preview:null);if(held)return held;
      if(o.review.length&&!acknowledgeReview)return {...o,needsReview:true};
     }
     if(o.plan.afterMint){if(!this.onAuthorized)throw Error('自动领取服务未连接，请关闭自动领取或使用交易台服务');this.onAuthorized(o);}
@@ -219,8 +250,12 @@ export class Engine{
        o.plan=await refreshOpeningSell(this.rpc,{...o.plan,account:o.intent.account});this.previews.delete(id);this.write(o);
       }
       const step=o.plan.steps[index];let p=o.steps.length===0?this.previews.get(id):null;
-      if(!p||Date.now()-p.at>(fastSale?1000:15000))p=await this.preview(o.plan,o.intent,index);
+      if(o.intent.side==='sell'&&step.kind==='sell'&&o.plan.audit?.checkedAt&&Date.now()-o.plan.audit.checkedAt>5000)o.plan.audit=await this.sellAudit(o.plan.token);
+      p=await this.previewWithFeeSearch(o,index,{cached:p&&Date.now()-p.at<=(fastSale?1000:15000)?p:null,minimumOutput:o.plan.minOutput});
+      if(p?.rerouted){this.previews.set(id,{...p,rerouted:false});o.review=[...(o.plan.review||[])];o.nextStep=0;this.write(o);index=-1;continue;}
       if(hasPreviewRisks(p.raw.risks)&&(rejectRisks||!acknowledgeReview))throw Error('新的钱包预览包含风险，需要查看并确认');
+      o.preview=p.review;o.previewAt=p.at;
+      const held=feeGate(step.kind==='sell'?p.review:null,step.kind==='sell');if(held){o.nextStep=index;return this.write({...held,nextStep:index});}
       await Promise.all([verifyIdentity(this.rpc,o.plan.identity),...(o.plan.protocolIdentities||[]).map(identity=>verifyIdentity(this.rpc,identity))]);
       if(!mayContinue())return cancelled();
       const entry={index,stage:o.stage||0,plan:o.plan,step,preview:p.review,requestId:p.raw.requestId,status:'SUBMITTING',submitStartedAt:Date.now()};
@@ -266,8 +301,12 @@ export class Engine{
   },id));
  }
  clearResolvedErrors(o){if(o.error||o.followError){o.resolvedErrors=[...(o.resolvedErrors||[]),{at:Date.now(),error:o.error,followError:o.followError}].slice(-10);delete o.error;delete o.followError;}}
- finish(o){this.clearResolvedErrors(o);o.status='CONFIRMED';o.timing.confirmedAt=Date.now();o.timing.toConfirmedMs=o.timing.confirmedAt-o.createdAt;return this.write(o);}
+ finish(o){this.clearResolvedErrors(o);o.status='CONFIRMED';o.needsReview=false;o.needsFeeReview=false;o.timing.confirmedAt=Date.now();o.timing.toConfirmedMs=o.timing.confirmedAt-o.createdAt;return this.write(o);}
  async submitSwap(o,receiptWaitMs=10000){
+  if(o.plan?.kind!=='swap')throw Error('聚合提交不能接受非聚合计划');
+  // Defense in depth at the actual provider boundary, including legacy/retry
+  // callers. An opaque sale has no route/fee bound and cannot be consented away.
+  if(o.intent?.side==='sell'){updateFeeReview(o);if(blockUnverifiableFees(o))return this.write(o);}
   o.status='SUBMITTING';o.timing.submitStartedAt=Date.now();this.write(o);let r;
   try{r=await this.bridge.call(o.intent.account,['market-order','swap',...o.plan.args,'--gasLevel','HIGH','--mev','true']);}
   catch(e){

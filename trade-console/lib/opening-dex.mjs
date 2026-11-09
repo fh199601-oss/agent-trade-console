@@ -20,3 +20,4 @@ export const V3_LEGACY=new Interface([...payment,'function exactInputSingle((add
 export const V3_MODERN=new Interface([...payment,'function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns(uint256)']);
 export function dexFor(pool){return DEXES.find(d=>same(d.factory,pool.factory)&&d.kind===pool.kind);}
 export function matchesCurrency(pool,currency){return currency==='AUTO'||same(pool.quote,currency==='USDT'?USDT:WBNB);}
+export function poolRouteKey(pool){return [pool?.factory,pool?.kind,...(pool?.legs||[pool]).map(p=>p?.pool),...(pool?.path||[]),pool?.quote,pool?.fee??''].join(':').toLowerCase();}

@@ -94,3 +94,11 @@ test('liquid scans do not perpetually postpone optional venue rediscovery',async
  let requests=0;h.detector.quoteDiscovery.discover=async()=>{requests++;return [];};h.detector.discoveryAfter.set(key,Date.now()-1);
  await h.detector.scan(T);assert.equal(requests,1);await h.detector.scan(T);assert.equal(requests,1);
 });
+test('expanded low-fee search checks intermediate paths even when a direct pool already exists',async()=>{
+ const detector=new OpeningPools({verifyChain:async()=>{}},{quotes:[WBNB,Q],quoteDiscovery:null});
+ let bridges=0,cached=0;detector.refreshPaths=async()=>{cached++;return null;};
+ detector.inspectQuotes=async(_token,currency)=>({block:100,errors:[],pools:[{...d,pool:P,quote:WBNB,liquid:true},...(currency==='AUTO'?[{...d,pool:P2,quote:Q,liquid:true}]:[])]});
+ detector.bridges=async(_t,currency,pools)=>{bridges++;assert.equal(currency,'BNB');assert.ok(pools.some(p=>p.quote===Q));return [{...d,pool:P2,quote:WBNB,liquid:true,path:[T,Q,WBNB],legs:[{pool:P2},{pool:P}]}];};
+ const normal=await detector.scan(T,{currency:'BNB'});assert.equal(normal.pools.length,1);assert.equal(bridges,0);
+ const expanded=await detector.scan(T,{currency:'BNB',expand:true});assert.equal(expanded.expanded,true);assert.equal(expanded.pools.length,2);assert.equal(bridges,1);assert.equal(cached,1);assert.equal(detector.paths.has(T.toLowerCase()+':BNB'),false);
+});

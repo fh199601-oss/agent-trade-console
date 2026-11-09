@@ -1,3 +1,5 @@
+import {POOL} from '../lib/opening-pools.mjs';
+import {MULTI,MULTICALL} from '../lib/opening-read.mjs';
 // Synthetic RPC/bridge only: these tests cannot sign or broadcast.
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import {Engine} from '../lib/engine.mjs';import {OpeningSell} from '../lib/opening-sell.mjs';
@@ -7,14 +9,14 @@ import {DEXES,V2_ROUTER_ABI} from '../lib/opening-dex.mjs';import {ERC20,BNB,WBN
 const w=bindings()[0],token='0x'+'12'.repeat(20),hash='0x'+'ab'.repeat(32),dex=DEXES[0];
 const intent={account:w.account,side:'sell',asset:token,percent:'50',currency:'AUTO',slippageBps:5000,openingOnly:true};
 const pool={...dex,pool:'0x'+'34'.repeat(20),quote:WBNB,liquid:true};
-const plan=()=>({kind:'contract',route:dex.id+'-opening',account:w.account,opening:pool,wallet:w.address,token,inputToken:token,outputToken:BNB,amountIn:'500',holdingBefore:'1000',minOutput:'100',decimals:3,identity:{fingerprint:'same-code'},slippage:{mode:'fixed',bps:5000,capBps:5000},requireSellCredit:true,review:[],steps:[{kind:'sell',to:dex.router,value:'0',data:V2_ROUTER_ABI.encodeFunctionData('swapExactTokensForETHSupportingFeeOnTransferTokens',[500n,100n,[token,WBNB],w.address,BigInt(Math.floor(Date.now()/1000)+120)])}]});
+const plan=()=>({kind:'contract',poolFees:{version:1,poolFeePpm:3000,pools:[]},audit:{available:true,taxes:{sellTax:'0'}},route:dex.id+'-opening',account:w.account,opening:pool,wallet:w.address,token,inputToken:token,outputToken:BNB,amountIn:'500',holdingBefore:'1000',minOutput:'100',decimals:3,identity:{fingerprint:'same-code'},slippage:{mode:'fixed',bps:5000,capBps:5000},requireSellCredit:true,review:[],steps:[{kind:'sell',to:dex.router,value:'0',data:V2_ROUTER_ABI.encodeFunctionData('swapExactTokensForETHSupportingFeeOnTransferTokens',[500n,100n,[token,WBNB],w.address,BigInt(Math.floor(Date.now()/1000)+120)])}]});
 function temp(t){const data=fs.mkdtempSync(path.join(os.tmpdir(),'sell-reliability-'));t.after(()=>fs.rmSync(data,{recursive:true,force:true}));return data;}
 test('multiple pending originals can be reconciled without circular wallet blocking; no trade is dispatched',async t=>{
  const calls=[],engine=new Engine({data:temp(t),live:true,rpc:{},bridge:{call:async(a,args)=>{calls.push(args);assert.equal(args[1],'list');return {list:[{orderId:args.at(-1),status:'FAILED'}]};}},planFn:async()=>({kind:'swap',review:[],steps:[]})});
  for(const id of ['one','two'])engine.write({id,intent,createdAt:1,status:'PENDING',orderId:id,plan:{kind:'swap'},steps:[]});
  assert.equal((await engine.follow('one')).status,'FAILED');assert.equal(engine.get('two').status,'PENDING');
  assert.equal((await engine.reconcileAccount(w.account)).ready,true);assert.equal(engine.get('two').status,'FAILED');assert.equal(calls.length,2);
- assert.equal((await engine.prepare(intent,'fresh')).status,'PREPARED');assert.equal(calls.length,2);
+ assert.equal((await engine.prepare(intent,'fresh')).error.code,'SELL_FEES_UNVERIFIABLE');assert.equal((await engine.reconcileAccount(w.account)).ready,true);assert.equal(calls.length,2);
 });
 test('one unknown original still forbids new orders but never prevents tracking the other original',async t=>{
  const engine=new Engine({data:temp(t),rpc:{},bridge:{call:async()=>({list:[{orderId:'known',status:'FAILED'}]})}});
@@ -53,13 +55,13 @@ test('unavailable alternate quote keeps verified direct route; app risk request 
  const p=plan(),bridge={call:async()=>{throw Error('quote unavailable');}};assert.equal((await preferProvenOpeningRoute(bridge,intent,p,history())).kind,'contract');
  bridge.call=async()=>{throw Object.assign(Error('This token has been flagged as potentially risky. Please open the Binance app to review the risk warning and decide whether to proceed.'),{code:30003001,responseReceived:true});};await assert.rejects(preferProvenOpeningRoute(bridge,intent,p,history()),/risk warning/);
 });
-test('opening sale waiting over one second refreshes quote and official preview before first dispatch, without changing wallet gas estimation',async t=>{
+test('opening sale refreshes quote and preview; ambiguous tiny-sample pool fee is hard blocked without changing gas',async t=>{
  let previews=0,sends=0,quoted=0;const p=plan();delete p.identity;
- const rpc={call:async tx=>{if(same(tx.to,token))return ERC20.encodeFunctionResult('balanceOf',[1000n]);quoted++;return V2_ROUTER_ABI.encodeFunctionResult('getAmountsOut',[[500n,100n]]);}};
+ const rpc={getBlockNumber:async()=>100,call:async tx=>{if(same(tx.to,MULTICALL))throw Error('unsupported fixture multicall');if(same(tx.to,pool.pool))return POOL.encodeFunctionResult('getReserves',[1000000n,2000000n,1]);if(same(tx.to,token))return ERC20.encodeFunctionResult('balanceOf',[1000n]);quoted++;return V2_ROUTER_ABI.encodeFunctionResult('getAmountsOut',[[500n,100n]]);}};
  const bridge={ready:async()=>({}),call:async(a,args)=>{if(args[1]==='preview'){previews++;assert.equal(args.includes('--gasLimit'),false);return {requestId:'p'+previews,simulationResult:{simulationCode:'000000000',balanceChanges:[{owner:w.address,contractAddress:BNB,change:'100'}]}};}assert.equal(args[1],'execute');assert.equal(args.at(-1),'p2');sends++;return {txHash:hash};}};
  const engine=new Engine({rpc,bridge,data:temp(t),live:true,planFn:async()=>p});engine.observeContract=async()=>{};
  await engine.prepare(intent,'fresh-preview');const o=engine.get('fresh-preview');o.previewAt=Date.now()-2000;engine.write(o);engine.previews.get(o.id).at=o.previewAt;
- const result=await engine.execute(o.id,{authorization:'fixture only',swapReceiptWaitMs:0});assert.equal(result.status,'PENDING');assert.equal(previews,2);assert.equal(sends,1);assert.equal(quoted,1);assert.equal(result.plan.minOutput,'50');
+ const result=await engine.execute(o.id,{authorization:'fixture only',swapReceiptWaitMs:0});assert.equal(result.status,'BLOCKED');assert.equal(result.error.code,'SELL_FEES_UNVERIFIABLE');assert.equal(result.needsFeeReview,false);assert.equal(previews,2);assert.equal(sends,0);assert.equal(quoted,1);assert.equal(result.plan.minOutput,'50');
 });
 test('structured official risks are detected at preparation and automatic dispatch, including after quote refresh',async t=>{
  for(const empty of [undefined,[],{},{riskDetails:[],addresses:{},riskBehaviors:[]},{addresses:{[token]:{riskLevel:0,riskDetails:[]}}}])assert.equal(hasPreviewRisks(empty),false);
@@ -67,7 +69,7 @@ test('structured official risks are detected at preparation and automatic dispat
   assert.equal(hasPreviewRisks(risks),true);
   let risky=false,sends=0;const p=plan();delete p.identity;
   const bridge={ready:async()=>({}),call:async(a,args)=>{assert.equal(args[1],'preview');return {requestId:'fixture',risks:risky?risks:{},simulationResult:{simulationCode:'000000000',balanceChanges:[{owner:w.address,contractAddress:BNB,change:'100'}]}};}};
-  const rpc={call:async tx=>same(tx.to,token)?ERC20.encodeFunctionResult('balanceOf',[1000n]):V2_ROUTER_ABI.encodeFunctionResult('getAmountsOut',[[500n,100n]])};
+  const rpc={getBlockNumber:async()=>100,call:async tx=>{if(same(tx.to,MULTICALL))throw Error('unsupported fixture multicall');if(same(tx.to,pool.pool))return POOL.encodeFunctionResult('getReserves',[1000000n,2000000n,1]);return same(tx.to,token)?ERC20.encodeFunctionResult('balanceOf',[1000n]):V2_ROUTER_ABI.encodeFunctionResult('getAmountsOut',[[500n,100n]]);}};
   const engine=new Engine({rpc,bridge,data:temp(t),live:true,planFn:async()=>p});
   const old=await engine.prepare(intent,'old');assert.equal(old.review.length,0);risky=true;engine.previews.delete('old');
   const result=await engine.execute('old',{authorization:'fixture',acknowledgeReview:true,rejectRisks:true});assert.equal(result.status,'BLOCKED');assert.match(result.error.message,/风险/);assert.equal(sends,0);

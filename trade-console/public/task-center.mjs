@@ -43,7 +43,7 @@ export function taskModel(snapshot){
  const active=rows.filter(j=>!finished.has(j.status));
  return {active,activeGroups:groupTasks(active),corlaHistory:rows.filter(j=>j.kind==='corla'&&finished.has(j.status)),openingHistory:opening.filter(j=>finished.has(j.status)&&!childIds.has(j.id)).map(j=>({...j,kind:'opening',title:j.name||'开盘自动卖出',wallets:j.config.accounts})),paused:snapshot.paused||[]};
 }
-export function createTaskCenter({api,notify,document:doc=document,storage=globalThis.sessionStorage,confirmDelete=message=>globalThis.confirm(message)}){
+export function createTaskCenter({api,notify,onFeeReview=()=>{},viewOrder=()=>{},document:doc=document,storage=globalThis.sessionStorage,confirmDelete=message=>globalThis.confirm(message)}){
  const $=id=>doc.getElementById(id),make=(tag,text,cls)=>{const e=doc.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;};
  let snapshot={corla:[],opening:[],paused:[]},request=null,resuming=false,noticeKey='',pendingNotice=false,paintKey='',expanded=new Set(),reminderRefs=[];
  const stopping=new Set();let editingSupported=false;
@@ -68,6 +68,8 @@ export function createTaskCenter({api,notify,document:doc=document,storage=globa
    const row=make('div',undefined,'task-wallet-row'),state=j.kind==='opening'?(j.rows||[]).find(r=>r.account===account):null,status=j.status==='PAUSED'?'PAUSED':state?.status||j.status;
    const info=make('div',undefined,'task-wallet-info');info.append(make('b',account+' 号钱包'),make('span',state?.submittedPercent?'已提交卖出 '+state.submittedPercent+'%':policyText(j),'helper'));
    row.append(info,make('span',labels[status]||status,'task-status '+(status==='PAUSED'?'paused':status==='REVIEW'||status==='FAILED'?'attention':'running')));
+   const linked=state||snapshot.opening.find(o=>o.id===j.sellJobId)?.rows?.find(r=>r.account===account);
+   if(['SELL_FEE_REVIEW','SELL_FEES_UNVERIFIABLE'].includes(linked?.error?.code)&&linked.orderId){const review=make('button',linked.error.code==='SELL_FEES_UNVERIFIABLE'?'查看拦截原因':'确认卖出费用','secondary');review.addEventListener('click',()=>viewOrder(linked.orderId));row.append(review);}
    // A standalone opening task can own several wallets; do not present its
    // all-wallet stop endpoint as a single-wallet action.
    if(j.wallets.length===1)row.append(actionsFor([j],account+' 号钱包任务'));
@@ -86,6 +88,7 @@ export function createTaskCenter({api,notify,document:doc=document,storage=globa
   box.append(body);return box;
  }
  function render(){
+  onFeeReview(snapshot.opening.flatMap(j=>(j.rows||[]).filter(r=>['SELL_FEE_REVIEW','SELL_FEES_UNVERIFIABLE'].includes(r.error?.code)&&r.orderId).map(r=>r.orderId)));
   const keyFields=j=>[j.id,j.kind,j.status,j.title,j.wallets,j.mint,j.message,j.config,j.policy,j.revision,j.pauseReason,j.rows?.map(r=>[r.account,r.status,r.error?.message])];
   const nextModel=taskModel(snapshot),nextPaint=JSON.stringify([snapshot.instance,resuming,[...stopping],nextModel.paused,...nextModel.active.map(keyFields),...nextModel.corlaHistory.map(keyFields),...nextModel.openingHistory.map(keyFields)]);
   if(nextPaint===paintKey){showReminder();return;}paintKey=nextPaint;

@@ -44,7 +44,7 @@ const client=createConsoleClient({onSession:applySession}),api=client.request;
 createUpdateDialog({api});
 createRpcDialog({api});
 const mintQuantity=createMintQuantityControl({onChange:()=>{budgetManual=false;applyAutoBudget();}});
-const taskCenter=createTaskCenter({api,notify:(message,error)=>{noticeTarget='appNotice';note(message,error);}});
+const taskCenter=createTaskCenter({api,viewOrder,onFeeReview:showPendingFeeReviews,notify:(message,error)=>{noticeTarget='appNotice';note(message,error);}});
 function renderOpeningSupport(){taskCenter.setFeatures(boot?.capabilities);const version=boot?.capabilities?.openingVersion||0;$('openingCoverage').textContent=(version>=4?'Pancake / Uniswap V2、V3 · Biswap / Sushi / ApeSwap V2；自动发现配对币，BNB / USDT 支持 V2 两跳。':version>=3?'Pancake / Uniswap V2、V3 · 自动识别链上配对币；AUTO 到账为池子原币种。':version>=2?'Pancake / Uniswap V2、V3 · BNB、USDT、USDC、USD1 池（自动到账）。':'当前后端：Pancake V2 / V3 · BNB、USDT 池；本轮加速更新尚未应用。')+'已有流动性会立即检查卖出；首次授权增加耗时，50% 滑点允许较大价差。';}
 function renderMode(){
  renderOpeningSupport();
@@ -67,7 +67,7 @@ function updateTradePreferences(save=false){
  const auto=$('sellSlippageMode').value==='auto';$('sellSlippageLabel').textContent=auto?'上限 %':'固定 %';
  $('sellSlippageHint').textContent=auto?'聚合卖出采用官方建议，超过上限即停止；内盘使用此上限。':'本次卖出严格使用固定滑点；不足时停止，不会自动放宽。';
  $('quickState').textContent=$('quick').checked?'已开启 · 点击即交易':'已关闭 · 弹窗确认';
- $('quickHint').textContent=(boot?.mode==='SIMULATION'?'当前为模拟模式，不会签名或提交。':$('quick').checked?'点击买卖按钮后自动检查并提交，无持仓钱包跳过。本地提示直接展示，不再自动弹窗；币安 App 核对仍由 App 决定。':'点击买卖按钮后先显示数量、到账币种和滑点，确认后提交。')+' Mint 保留单独确认。';
+ $('quickHint').textContent=(boot?.mode==='SIMULATION'?'当前为模拟模式，不会签名或提交。':$('quick').checked?'买卖点击即执行，不弹本地确认窗；费用异常在下方显示，不自动放行。币安 App 核对由 App 决定。':'点击买卖按钮后先显示数量、到账币种和滑点，确认后提交。')+' Mint 保留单独确认。';
  if(save)try{localStorage.setItem(preferenceKey,JSON.stringify({quick:$('quick').checked,sellSlippageMode:$('sellSlippageMode').value,sellSlippage:$('sellSlippage').value,buySlippage:$('slippage').value,openingPercent:$('openingPercent').value,openingSlippage:$('openingSlippage').value}));}catch{}
 }
 function loadTradePreferences(){try{const p=JSON.parse(localStorage.getItem(preferenceKey)||'null');if(p){if(typeof p.quick==='boolean')$('quick').checked=p.quick;if(['auto','fixed'].includes(p.sellSlippageMode))$('sellSlippageMode').value=p.sellSlippageMode;for(const [key,id]of [['sellSlippage','sellSlippage'],['buySlippage','slippage'],['openingSlippage','openingSlippage']])if(/^\d+(?:\.\d{1,2})?$/.test(String(p[key]))&&Number(p[key])<=50)$(id).value=p[key];if(/^\d+(?:\.\d{1,6})?$/.test(String(p.openingPercent))&&Number(p.openingPercent)>0&&Number(p.openingPercent)<=100)$('openingPercent').value=p.openingPercent;}}catch{}updateTradePreferences();}
@@ -234,10 +234,18 @@ async function act(side,value){noticeTarget=side==='mint'?'mintNotice':'tradeNot
  const requests=accounts.map(account=>({id:id+'-account'+account,intent:{...base,account},project:context}));
  const results=quick?await runInstantTrades(requests,o=>api('run',{id:o.id,intent:o.intent,execute:true,fastReturn:true,acknowledgeReview:true,authorization:`用户在本地看板开启免二次确认后点击：${JSON.stringify(o.intent)}`}),{onResult:o=>{trackSubmitted([o]);completed++;note(`${o.intent.account} 号：${statusLabel(o)}；已返回 ${completed}/${accounts.length} 个钱包`);refreshOrders().catch(()=>{});}}):await Promise.all(accounts.map(async account=>{try{const o=await api('prepare',{id:id+'-account'+account,intent:{...base,account}});if(context)o.project={...context,...o.project,name:o.project?.name||context.name};return o;}catch(e){return {id:id+'-account'+account,intent:{...base,account},project:context,status:'BLOCKED',error:{message:e.message,details:e.details,code:e.code}};}finally{completed++;progress.textContent=`已返回 ${completed}/${accounts.length} 个钱包；等待其余预览…`;}}));
  reviewOrders=results;refreshOrders().catch(e=>note('记录刷新失败：'+e.message,true));
- if(quick){showTradeFeedback(results);note('本次'+(side==='buy'?'买入':'卖出')+'已处理，请查看各钱包结果。',results.some(o=>['BLOCKED','FAILED','REJECTED','SUBMISSION_UNKNOWN'].includes(o.status)));void Promise.allSettled([refreshOrders(),refreshAsset(true)]);}
+ if(quick){showTradeFeedback(results);note(tradeResultMessage(results),results.some(o=>o.needsFeeReview||['BLOCKED','FAILED','REJECTED','SUBMISSION_UNKNOWN'].includes(o.status)));void Promise.allSettled([refreshOrders(),refreshAsset(true)]);}
  else showReviews(results);
  }catch(e){note(e.message,true);if($('review').open&&$('confirm').disabled){$('reviewBody').append(el('p',e.message,'error'));$('confirm').textContent='未提交 · 请重新预览';}}finally{setBusy(false);}}
 function renderReviewDetail(o){const div=el('div',undefined,'review-item');div.append(el('h3',`${o.intent.account} 号 · ${o.intent.side==='mint'?'铸造':o.intent.side==='buy'?'买入':'卖出'}`),el('span',statusLabel(o),'review-status'));
+   if(o.feeRouteSearch){const s=o.feeRouteSearch,details=el('details');details.append(el('summary',s.status==='selected'?'已自动切换低费路线 · 查看检查结果':'已自动寻找其他低费路线 · 查看结果'));for(const row of s.checks||[])details.append(el('p',row.result==='selected'?'已选用池费 '+Number((row.poolFeePpm/10000).toFixed(4))+'% 的路线':(row.reasons||[]).join('；')||row.message||'该路线未通过检查'));if(s.status!=='selected')details.append(el('p','本轮未找到符合原交易约束、且通过模拟的低费路线；不代表所有市场都没有其他池子。','helper'));div.append(details);}
+   if(o.feeReview){const f=o.feeReview,box=el('section',undefined,f.required?'fee-review fee-review-required':'fee-review');const percent=n=>n===null||n===undefined?'未知':Number((n/10000).toFixed(4))+'%';
+    box.append(el('b',f.blocked?'已阻止卖出：无法核验路线费用':f.required?'卖出费用需要单独确认':'卖出费用'),el('p','池手续费 '+percent(f.poolFeePpm)+' · 代币卖出税 '+percent(f.taxPpm)));
+    if(f.additionalLossPpm>0)box.append(el('p','模拟到账相对报价减少 '+percent(f.additionalLossPpm)));
+    for(const pool of f.pools||[])box.append(el('p',pool.address+' · 池费 '+percent(pool.feePpm),'mono'));
+    for(const reason of f.reasons||[])box.append(el('p',reason));
+    box.append(el('p',f.blocked?'此路线不能通过确认放行。请重新检查已适配的固定池；不会自动改走聚合器。':f.required?'高费用需要单独确认；滑点不能阻止报价中已扣除的费用。':f.pendingSellPreview?'授权后自动检查模拟净到账，通过后立即卖出，无需再次确认。':f.taxPpm==null?'税率接口未返回数据，已检查本钱包模拟净到账；Gas 另计。':'税率为当前检测值；Gas 另计。','helper'));div.append(box);
+   }
    if(o.intent.side==='mint')div.append(el('div',`${({free:'只用免费额度',paid:'只用付费额度',all:'全部额度'})[o.intent.scope]||'核对额度'} · ${o.intent.quantity==='max'?'打满可核验额度':o.intent.quantity+' 份'} · 预算 ${o.intent.maxBnb} BNB / ${o.intent.maxUsdt||'0'} USDT${o.intent.maxQuote!==undefined?' / '+o.intent.maxQuote+' '+(o.plan?.quota?.currency||'指定付款币'):''}（Gas 另计）`,'helper'));
    if(o.intent.routeId)div.append(el('div','所选方法：'+o.intent.routeId.replace(/^auto:/,''),'mono'));
    if(o.error){div.append(el('p',needsRoute(o)?'请使用上方选择框，然后点击重新预览。':o.error.message));if(o.error.providerMessage){const original=el('details');original.append(el('summary','币安原始返回'),el('p',o.error.providerMessage));div.append(original);}}
@@ -282,26 +290,26 @@ function showReviews(rows){
   if(details.children.length>2)$('reviewBody').append(details);
 
  }
- const state=reviewSummary(rows),historic=boot.mode==='LIVE'&&rows.some(o=>o.simulationOnly&&['PREPARED','READY_TO_CONTINUE'].includes(o.status));$('confirm').textContent=historic?'旧模拟记录 · 请重新发起预览':state.waiting?'请先选择方式并重新预览':state.completed===rows.length?'已完成 · 无需再次提交':!state.ready?(state.skipped===rows.length?'无持仓 · 无需提交':'无待执行操作 · 请查看状态'):boot.mode==='SIMULATION'?'完成模拟 · 不提交':'确认执行';$('confirm').disabled=historic||!state.canConfirm;if(!$('review').open)$('review').showModal();note(historic?'这是切换实盘前的模拟记录。请从操作面板重新预览本次真实操作。':state.message,historic||!state.canConfirm);
+ const state=reviewSummary(rows),historic=boot.mode==='LIVE'&&rows.some(o=>o.simulationOnly&&['PREPARED','READY_TO_CONTINUE'].includes(o.status));$('confirm').textContent=historic?'旧模拟记录 · 请重新发起预览':state.waiting?'请先选择方式并重新预览':state.completed===rows.length?'已完成 · 无需再次提交':!state.ready?(state.skipped===rows.length?'无持仓 · 无需提交':rows.some(o=>o.feeReview?.blocked)?'费用无法核验 · 禁止提交':'无待执行操作 · 请查看状态'):boot.mode==='SIMULATION'?'完成模拟 · 不提交':rows.some(o=>o.feeReview?.required)?'确认承担上述费用并执行':'确认执行';$('confirm').disabled=historic||!state.canConfirm;if(!$('review').open)$('review').showModal();note(historic?'这是切换实盘前的模拟记录。请从操作面板重新预览本次真实操作。':state.message,historic||!state.canConfirm);
 }
 async function executeReviews(ack,{instant=false}={}){
  const snapshot=[...reviewOrders],pending=snapshot.filter(isReady),independent=pending.every(independentOrder);
  if(snapshot.some(needsRoute))return;
  if(busy||$('confirm').disabled)return;
  $('confirm').disabled=true;setBusy(true);note('正在提交本次操作；请勿重复点击…');
- const submit=(o,ack)=>api('execute',{id:o.id,fastReturn:true,acknowledgeReview:ack,authorization:`用户在本地看板${instant?'开启免二次确认后点击':'点击并确认'}：${JSON.stringify(o.intent)}`});
+ const submit=(o,ack)=>api('execute',{id:o.id,fastReturn:true,acknowledgeReview:ack,...(!instant&&o.feeReview?.required?{feeAcknowledgement:o.feeReview.id}:{}),authorization:`用户在本地看板${instant?'开启免二次确认后点击':'点击并确认'}：${JSON.stringify(o.intent)}`});
  try{
   if(independent){reviewOrders=await executeIndependent(snapshot,submit,{ack:ack||boot.mode==='SIMULATION',onResult:r=>{trackSubmitted([r]);note(`${r.intent.account} 号：${statusLabel(r)}；其余钱包独立处理…`);refreshOrders().catch(()=>{});}});}
   else{
    const results=new Map();for(const o of pending.sort((a,b)=>a.intent.account-b.intent.account)){const r=await submit(o,ack);results.set(o.id,r);if(boot.mode==='LIVE'&&r.status!=='CONFIRMED')break;}reviewOrders=snapshot.map(o=>results.get(o.id)||o);
   }
-  if(instant&&reviewOrders.some(o=>isReady(o)&&o.review?.length))showReviews(reviewOrders);
+  if(!instant&&reviewOrders.some(o=>o.needsFeeReview||o.feeReview?.blocked))showReviews(reviewOrders);
   else{$('review').close();showTradeFeedback(independent?reviewOrders:[]);note(tradeResultMessage(reviewOrders),reviewOrders.some(o=>['BLOCKED','FAILED','REJECTED','SUBMISSION_UNKNOWN'].includes(o.status)));}
   void Promise.allSettled([refreshOrders(),refreshAsset(true)]);
  }catch(e){note(e.message,true);}finally{setBusy(false);$('confirm').disabled=!reviewOrders.some(isReady);}
 }
 const trackedSubmitted=new Set(),tradeUpdates=new Map();let feedbackRows=[];
-function trackSubmitted(rows){for(const o of rows){if(o.status!=='PENDING'||!o.orderId&&!o.txHash||trackedSubmitted.has(o.id))continue;trackedSubmitted.add(o.id);void followSubmittedOrder(o,id=>api('follow',{id}),{onUpdate:current=>{tradeUpdates.set(current.id,current);if(tradeUpdates.size>100)tradeUpdates.delete(tradeUpdates.keys().next().value);if(feedbackRows.some(r=>r.id===current.id))showTradeFeedback(feedbackRows);void refreshOrders().catch(()=>{});if(['CONFIRMED','CONFIRMED_REVIEW'].includes(current.status)&&!busy)void refreshAsset(true).catch(()=>{});}});}}
+function trackSubmitted(rows){for(const o of rows){if(o.status!=='PENDING'||!o.orderId&&!o.txHash&&!o.steps?.at(-1)?.txHash||trackedSubmitted.has(o.id))continue;trackedSubmitted.add(o.id);void followSubmittedOrder(o,id=>api('follow',{id}),{onUpdate:current=>{tradeUpdates.set(current.id,current);if(tradeUpdates.size>100)tradeUpdates.delete(tradeUpdates.keys().next().value);if(feedbackRows.some(r=>r.id===current.id))showTradeFeedback(feedbackRows);void refreshOrders().catch(()=>{});if(['CONFIRMED','CONFIRMED_REVIEW'].includes(current.status)&&!busy)void refreshAsset(true).catch(()=>{});}}).finally(()=>trackedSubmitted.delete(o.id));}}
 let ordersRefresh=null,ordersDirty=false;
 function refreshOrders(){ordersDirty=true;if(ordersRefresh)return ordersRefresh;ordersRefresh=(async()=>{do{ordersDirty=false;await renderOrders();}while(ordersDirty);})().finally(()=>{ordersRefresh=null;});return ordersRefresh;}
 async function viewOrder(id,{follow=false}={}){
@@ -309,9 +317,10 @@ async function viewOrder(id,{follow=false}={}){
 }
 function showTradeFeedback(rows){
  rows=rows.map(o=>tradeUpdates.get(o.id)||o);feedbackRows=rows;
- const box=$('tradeFeedback');box.replaceChildren();const reasons=[...new Set(rows.map(o=>o.error?.message).filter(Boolean))];
+ const box=$('tradeFeedback');box.replaceChildren();const reasons=[...new Set(rows.flatMap(o=>[o.error?.message,...(o.needsFeeReview?o.feeReview?.reasons||[]:[])]).filter(Boolean))];
  for(const o of rows){const r=el('div',undefined,'feedback-row');r.dataset.status=o.status;const text=el('span');text.append(el('b',`${o.intent.account} 号 · ${statusLabel(o)}`));r.append(text);
   const id=o.error?.details?.orderId||o.id,btn=el('button',o.error?.code==='ORDER_UNRESOLVED'?'核对原单':'详情','text-button');btn.addEventListener('click',()=>viewOrder(id,{follow:o.error?.code==='ORDER_UNRESOLVED'}));r.append(btn);box.append(r);
+  if(o.feeRouteSearch)text.append(el('small',o.feeRouteSearch.status==='selected'?'已自动切换低费路线':'已自动寻找低费路线，本轮未找到符合条件的替代路线'));
  }
  for(const reason of reasons){const p=el('p',reason,'helper');box.append(p);}
 }
@@ -320,7 +329,7 @@ async function retryOrder(id){
  try{const old=await api('order?id='+encodeURIComponent(id));if(!['FAILED','REJECTED','BLOCKED'].includes(old.status)||!['buy','sell'].includes(old.intent.side))throw Error('原单尚未明确结束，请先核对原单');
   const intent=old.intent,newId='manual-'+crypto.randomUUID()+'-account'+intent.account,quick=boot.mode==='LIVE'&&$('quick').checked;
   const o=quick?await api('run',{id:newId,intent,execute:true,fastReturn:true,acknowledgeReview:true,authorization:'用户点击重新发起，免二次确认已开启：'+JSON.stringify(intent)}):await api('prepare',{id:newId,intent});
-  reviewOrders=[o];trackSubmitted([o]);if(quick){showTradeFeedback([o]);note(`${intent.account} 号：${statusLabel(o)}`,['BLOCKED','FAILED','REJECTED'].includes(o.status));}else showReviews([o]);
+  reviewOrders=[o];trackSubmitted([o]);if(quick){showTradeFeedback([o]);note(tradeResultMessage([o]),o.needsFeeReview||['BLOCKED','FAILED','REJECTED'].includes(o.status));}else showReviews([o]);
   await refreshOrders();
  }catch(e){note(e.message,true);}finally{setBusy(false);}
 }
@@ -351,6 +360,12 @@ function openingInput(){const slip=$('openingSlippage').value;if(!/^\d+(?:\.\d{1
 function openingPreflight(p){if(!p?.rows?.length)return '';return '预检 '+new Date(p.at).toLocaleTimeString()+' · '+p.rows.map(r=>{const ok=r.routes.filter(x=>x.ready),approved=ok.filter(x=>x.approvalNeeded===false);return r.account+' 号 '+ok.length+'/'+r.routes.length+' 条路线已核验，'+(approved.length?approved.length+' 条无需首次授权':'需首次授权')+(Number(r.bnb)===0?'，无 BNB 支付 Gas':'');}).join('；');}
 function openingNote(text){$('openingNotice').textContent=text;}
 $('openingEnabled').addEventListener('change',()=>{$('openingControls').hidden=!$('openingEnabled').checked;if(!$('openingEnabled').checked)$('claimSell').checked=false;renderClaimLink();});
+const shownFeeReviews=new Set();let feeDialogLoading=false;
+async function showPendingFeeReviews(ids){
+ if($('quick').checked||busy||feeDialogLoading||document.querySelector('dialog[open]'))return;
+ const pending=[...new Set(ids)].filter(id=>!shownFeeReviews.has(id));if(!pending.length)return;feeDialogLoading=true;
+ try{const rows=(await Promise.all(pending.map(id=>api('order?id='+encodeURIComponent(id)).catch(()=>null)))).filter(o=>o?.feeReview?.blocked||o?.needsFeeReview&&isReady(o));if($('quick').checked||busy||document.querySelector('dialog[open]'))return;for(const o of rows)shownFeeReviews.add(o.id);if(rows.length)showReviews(rows);}finally{feeDialogLoading=false;}
+}
 function refreshCorlaJobs(){return taskCenter.refresh();}
 async function refreshOpening(){return (await taskCenter.refresh()).opening;}
 async function armOpening(){if(!openingCheck||openingBusy)return;openingBusy=true;$('confirmOpening').disabled=true;$('startOpening').disabled=true;
@@ -367,7 +382,7 @@ setInterval(()=>{if(boot&&!document.hidden){refreshOpening().catch(()=>{});refre
 let starting=null,resuming=null,lastResumeAt=0;
 function startApp(){
  if(boot)return Promise.resolve();if(starting)return starting;
- starting=(async()=>{boot=await client.refreshSession();settings=boot.settings;$('openingGasSettings').hidden=!boot.capabilities?.sellGasVersion;selected=new Set(boot.wallets.map(w=>w.account));loadTradePreferences();renderMode();note(boot.mode==='LIVE'?($('quick').checked?'真实交易 · 免二次确认已开启，点击买卖按钮即可提交本次操作。':'真实交易 · 二次确认已开启，点击按钮后弹窗核对。'):'模拟模式下所有按钮只检查和预览，不签名、不广播。');buildButtons();renderWallets();await Promise.all([refreshCorlaJobs(),refreshOpening(),refreshOrders(),refreshWallets().catch(e=>{$('walletState').textContent='BNB 读取失败：'+e.message;})]);})();
+ starting=(async()=>{boot=await client.refreshSession();settings=boot.settings;$('openingGasSettings').hidden=!boot.capabilities?.sellGasVersion;selected=new Set(boot.wallets.map(w=>w.account));loadTradePreferences();renderMode();note(boot.mode==='LIVE'?($('quick').checked?'免二次确认已开启；高费卖出需核对，池费未知则拦截。':'真实交易 · 二次确认已开启，点击按钮后弹窗核对。'):'模拟模式下所有按钮只检查和预览，不签名、不广播。');buildButtons();renderWallets();await Promise.all([refreshCorlaJobs(),refreshOpening(),refreshOrders(),refreshWallets().catch(e=>{$('walletState').textContent='BNB 读取失败：'+e.message;})]);})();
  starting.finally(()=>{starting=null;}).catch(()=>{});return starting;
 }
 function resumePage(){

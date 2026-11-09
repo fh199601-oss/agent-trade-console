@@ -4,6 +4,7 @@
 export function orderSummary(o){
  const project=o.project||o.plan?.project||o.plan?.resolved;
  return {summary:true,id:o.id,status:o.status,createdAt:o.createdAt,updatedAt:o.updatedAt,timing:o.timing,simulationOnly:o.simulationOnly,orderId:o.orderId,txHash:o.txHash||o.steps?.at(-1)?.txHash,
+  tracking:o.tracking,needsFeeReview:o.needsFeeReview,feeReview:o.feeReview,feeRouteSearch:o.feeRouteSearch,followError:o.followError?{code:o.followError.code,message:o.followError.message}:undefined,
   intent:Object.fromEntries(['account','side','asset','percent','amount','currency','quantity','scope'].filter(k=>o.intent?.[k]!==undefined).map(k=>[k,o.intent[k]])),
   project:project?{name:project.name,address:project.address,source:project.source}:undefined,
   plan:o.plan?{route:o.plan.route,slippage:o.plan.slippage,steps:o.plan.steps?.map(s=>({kind:s.kind}))}:undefined,

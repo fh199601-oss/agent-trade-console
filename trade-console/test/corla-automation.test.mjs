@@ -16,6 +16,16 @@ function harness(t,{sell=true}={}){
  const options={engine,rpc:{},opening,data,autoSchedule:false,now:()=>now,binding:()=>({account:1,address:w}),client:{get:async()=>{probes++;return [2n,phase];}}},m=new CorlaAutomation(options);t.after(()=>{m.close();fs.rmSync(data,{recursive:true,force:true});});
  return {m,options,engine,opening,parent,orders,advance:n=>now+=n,open:()=>phase=3n,end:()=>phase=4n,calls:()=>({execs,follows,prepares,probes,handoffs}),confirm:j=>{const o=orders.get(j.claimId);o.status='CONFIRMED';o.steps=[{status:'CONFIRMED',received:'1000',txHash:'fake-claim-hash'}];return o;}};
 }
+for(const code of ['SELL_FEE_REVIEW','SELL_FEES_UNVERIFIABLE'])test(code+': claim-linked high-fee sale waits for explicit review and reconciles only the original without restarting tasks',async t=>{
+ const h=harness(t),j=h.m.enroll(h.parent);h.open();await h.m.tick(j.id);h.confirm(j);await h.m.tick(j.id);
+ const sale=h.opening.jobs.get(j.sellJobId);sale.status='REVIEW';Object.assign(sale.rows[0],{orderId:'held-sale',status:'REVIEW',error:{code}});
+ await h.m.tick(j.id);assert.equal(j.status,'REVIEW');assert.equal(j.feeReviewPending,true);assert.equal(h.m.active(),false);
+ const before=h.calls();await h.m.tick(j.id);assert.deepEqual(h.calls(),before);
+ sale.status='COMPLETED';sale.rows[0].status='CONFIRMED';delete sale.rows[0].error;
+ h.m.reconcileOrder({id:'different-sale',status:'CONFIRMED'});assert.equal(j.status,'REVIEW');
+ h.m.reconcileOrder({id:'held-sale',status:'CONFIRMED'});assert.equal(j.status,'DONE');assert.equal(j.feeReviewPending,undefined);assert.deepEqual(h.calls(),before);
+ for(const status of ['PAUSED','STOPPED','DELETED']){j.status=status;j.feeReviewPending=true;h.m.reconcileOrder({id:'held-sale',status:'CONFIRMED'});assert.equal(j.status,status);}
+});
 test('claim verified failures retry twice with new IDs and fresh preview, then stop or hand off once',async t=>{
  for(const failure of ['reverted','not-dispatched'])for(const succeeds of [true,false]){
   const h=harness(t),j=h.m.enroll(h.parent);h.open();let submissions=0;

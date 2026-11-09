@@ -1,7 +1,7 @@
 import {failureKind,failureLabels} from './failure-kind.mjs';
 export const statuses={SKIPPED:'无持仓 · 已跳过',PARTIAL:'部分完成 · 未打满',READY_TO_CONTINUE:'上一笔已确认 · 可继续原单',PREPARING:'准备中',PREPARED:'预览通过 · 待确认',SIMULATED:'已模拟 · 未提交',BLOCKED:'预览未通过',CONFIRMED:'链上确认',CONFIRMED_REVIEW:'已上链 · 金额待核验',FAILED:'失败 · 可重试',REJECTED:'币安未接受',PENDING:'等待上链',SUBMISSION_UNKNOWN:'提交待核对',SUBMITTING:'正在提交',APPROVAL_CONFIRMED:'授权已确认 · 后续未完成',RECEIPT_REVIEW:'回执待核对',CANCELLED:'已取消'};
 export const needsRoute=o=>o.intent?.side==='mint'&&o.status==='BLOCKED'&&Array.isArray(o.error?.details?.routes)&&o.error.details.routes.length>0;
-export const statusLabel=o=>o.status==='CONFIRMED'&&o.plan?.route==='corla:mint'?'认购成功 · 代币需领取':needsRoute(o)?'待选择铸造方式':o.status==='PREPARED'&&o.intent?.side==='mint'&&o.plan?.steps?.[0]?.kind==='approve'?'授权预览通过 · Mint 待模拟':o.status==='BLOCKED'?failureLabels[failureKind(o.error)]:statuses[o.status]||'状态待核对';
+export const statusLabel=o=>o.feeReview?.blocked||o.error?.code==='SELL_FEES_UNVERIFIABLE'?'池费无法核验 · 已拦截':o.needsFeeReview?'待确认卖出费用':o.status==='CONFIRMED'&&o.plan?.route==='corla:mint'?'认购成功 · 代币需领取':needsRoute(o)?'待选择铸造方式':o.status==='PREPARED'&&o.intent?.side==='mint'&&o.plan?.steps?.[0]?.kind==='approve'?'授权预览通过 · Mint 待模拟':o.status==='BLOCKED'?failureLabels[failureKind(o.error)]:statuses[o.status]||'状态待核对';
 export function totalTimeLabel(o,now=Date.now()){
  const t=o.timing||{},valid=v=>typeof v==='number'&&Number.isFinite(v)&&v>=0;
  const elapsed=end=>valid(end)&&valid(o.createdAt)&&end>=o.createdAt?end-o.createdAt:undefined;

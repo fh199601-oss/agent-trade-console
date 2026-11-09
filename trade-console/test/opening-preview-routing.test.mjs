@@ -13,7 +13,7 @@ test('pool with a usable quote but failed official simulation gives another veri
  const first=await openingPlan(rpc,bridge,intent,options);assert.equal(first.opening.pool,pools[0].pool);
  assert.throws(()=>verifyPreview({requestId:'failed-official-preview',simulationResult:{simulationCode:'351805'}},first,first.steps[0]),{code:'OFFICIAL_SIMULATION_FAILED'});
  quoteCalls=[];const next=await openingPlan(rpc,bridge,intent,{...options,failedPreviews:recentOpeningPreviewFailures([failure()],intent)});
- assert.equal(next.opening.pool,pools[1].pool);assert.deepEqual(quoteCalls,[pools[1].router]);assert.equal(next.amountIn,first.amountIn);assert.equal(next.outputToken,first.outputToken);assert.deepEqual(next.slippage,first.slippage);
+ assert.equal(next.opening.pool,pools[1].pool);assert.equal(quoteCalls.length,2);assert.ok(quoteCalls.includes(pools[1].router));assert.equal(next.amountIn,first.amountIn);assert.equal(next.outputToken,first.outputToken);assert.deepEqual(next.slippage,first.slippage);
  assert.doesNotThrow(()=>verifyPreview({requestId:'new-official-preview',simulationResult:{simulationCode:'000000000',balanceChanges:[{owner:bound.address,contractAddress:BNB,change:'200'}]}},next,next.steps[0]));
 });
 test('route preference excludes signing ambiguity, risk blocks, approvals, other wallets and stale evidence',()=>{

@@ -19,6 +19,23 @@ export class CorlaAutomation{
  list(){return [...this.jobs.values()].filter(j=>!j.deletedAt).sort((a,b)=>b.createdAt-a.createdAt);}
  active(){return this.list().some(j=>ACTIVE.has(j.status));}
  allowed(j){return !this.closed&&ACTIVE.has(j.status)&&!j.cancelled&&!j.deletedAt;}
+ reconcileSale(j,sale){
+  if(!sale||j.cancelled||j.deletedAt||!(j.status==='SELLING'||j.status==='REVIEW'&&j.feeReviewPending))return;
+  if(sale.status==='REVIEW'&&sale.rows.some(r=>['SELL_FEE_REVIEW','SELL_FEES_UNVERIFIABLE'].includes(r.error?.code))){
+   j.feeReviewPending=true;j.status='REVIEW';j.message=sale.rows.some(r=>r.error?.code==='SELL_FEES_UNVERIFIABLE')?'领取已到账；无法核验卖出路线费用，已拦截，请查看原因':'领取已到账；卖出费用需要单独确认，尚未提交卖出';this.persist();
+  }else if(['COMPLETED','CANCELLED','EXPIRED'].includes(sale.status)){
+   delete j.feeReviewPending;j.status=sale.rows.every(r=>r.status==='CONFIRMED')?'DONE':'REVIEW';j.message=j.status==='DONE'?'全部领取和联动卖出均已确认':'领取已完成；卖出结果请查看开盘卖出记录';this.persist();
+  }
+ }
+ reconcileOrder(o){
+  if(!o?.id)return;
+  // Only reflect a manually resolved ORIGINAL sale. This never resumes a
+  // paused task, prepares another order, or signs a transaction.
+  for(const j of this.jobs.values()){
+   const sale=this.opening.jobs.get(j.sellJobId);
+   if(sale?.rows.some(r=>r.orderId===o?.id))this.reconcileSale(j,sale);
+  }
+ }
  enroll(o){
   const p=o.plan,policy=p?.afterMint;if(!policy||p.route!=='corla:mint'||!this.engine.live||o.simulationOnly||!o.authorization)return;
   const id='corla-'+hash(o.id).slice(0,32);if(this.jobs.has(id))return this.jobs.get(id);
@@ -156,7 +173,7 @@ export class CorlaAutomation{
     // Reuse the exact handoff ID and the already verified original claim.
     if(!sale){const claim=this.engine.get(j.claimId);if(claim?.status!=='CONFIRMED')return this.review(j,'领取原单缺失或未确认，不能恢复卖出');return await this.claimResult(j,claim);}
     if(sale.status==='PAUSED'){j.resumeStatus='SELLING';j.status='PAUSED';j.message='联动卖出已暂停；点击恢复将核验并继续原任务';this.persist();return j;}
-    if(['COMPLETED','CANCELLED','EXPIRED'].includes(sale.status)){j.status=sale.rows.every(r=>r.status==='CONFIRMED')?'DONE':'REVIEW';j.message=j.status==='DONE'?'全部领取和联动卖出均已确认':'领取已完成；卖出结果请查看开盘卖出记录';this.persist();}
+    this.reconcileSale(j,sale);
    }
   }catch(e){if(this.allowed(j)){
    this.rememberError(j,e);

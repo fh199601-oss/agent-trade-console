@@ -4,7 +4,7 @@ export const independentOrder=o=>['buy','sell'].includes(o.intent.side)||o.inten
 
 // Receipt tracking has no submit callback, new ID, or trade construction path.
 export async function followSubmittedOrder(order,follow,{onUpdate=()=>{},wait=ms=>new Promise(r=>setTimeout(r,ms)),attempts=30}={}){
- const deadline=Date.now()+30000;let current=order;if(order.status!=='PENDING'||!order.orderId&&!order.txHash)return current;
+ const deadline=Date.now()+30000;let current=order;if(order.status!=='PENDING'||!order.orderId&&!order.txHash&&!order.steps?.at(-1)?.txHash)return current;
  for(let n=0;n<attempts&&Date.now()<deadline&&current.status==='PENDING';n++){
   if(n>0)await wait(n<5?300:1000);
   try{const next=await follow(order.id);if(next.id!==order.id)throw Error('原单跟踪返回了不同订单');current=next;await onUpdate(current);}catch{/* A failed receipt read is not a failed trade. Never resubmit. */}
@@ -37,5 +37,5 @@ export async function executeIndependent(rows,submit,{ack=false,onResult=()=>{}}
 
 export function tradeResultMessage(rows){
  const labels={CONFIRMED:'已确认成交',CONFIRMED_REVIEW:'已上链，金额待核验',PARTIAL:'部分完成，剩余未提交',PENDING:'已提交，等待确认',SUBMISSION_UNKNOWN:'提交状态待核对',SUBMITTING:'正在提交',SKIPPED:'无持仓，已跳过',PREPARED:'待确认',READY_TO_CONTINUE:'待继续确认',SIMULATED:'模拟完成，未提交',BLOCKED:'检查未通过',FAILED:'交易失败，可重新点击',REJECTED:'币安未接受，可重新发起'};
- return rows.map(o=>`${o.intent.account} 号：${labels[o.status]||'需核对'}${o.error?.message&&o.status!=='SKIPPED'?'（'+o.error.message+'）':''}`).join('；');
+ return rows.map(o=>`${o.intent.account} 号：${o.needsFeeReview?'费用异常，未卖出（查看详情）':labels[o.status]||'需核对'}${o.error?.message&&o.status!=='SKIPPED'?'（'+o.error.message+'）':''}`).join('；');
 }

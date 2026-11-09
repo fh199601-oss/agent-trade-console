@@ -15,6 +15,7 @@ import {Rpc} from './lib/network.mjs';
 import {RpcEndpoints} from './lib/rpc-endpoints.mjs';
 import {Wallets} from './lib/wallet.mjs';
 import {Engine} from './lib/engine.mjs';
+import {HIGH_FEE_PPM} from './lib/trade-fees.mjs';
 import {Batches} from './lib/batch.mjs';
 import {market,holdings} from './lib/market.mjs';
 import {discover} from './lib/discovery.mjs';
@@ -40,6 +41,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
  const detector=new OpeningPools(openingRpc),preparation=new OpeningPreparation(prepRpc);engine.openingScan=(t,o)=>detector.scan(t,o);engine.openingPreparation=preparation;
  const opening=providedOpening||new OpeningSell({engine,rpc:openingRpc,bridge,detector,data,preparation});
  const corla=providedCorla||new CorlaAutomation({engine,rpc:openingRpc,opening,data});engine.onAuthorized=o=>corla.enroll(o);
+ const reconcileOrder=o=>{opening.reconcileOrder?.(o);corla.reconcileOrder?.(o);return o;};
  const enrollment=new TaskEnrollment({engine,corla,opening,rpc:readRpc});
  const instance=randomBytes(12).toString('hex'),updates=providedUpdates||new AppUpdates();
  const readiness=new Map();const settings=()=>load(configFile,{buy:['0.005','0.01','0.02','0.05','0.1'],sell:['10','25','50','75','100']});
@@ -58,7 +60,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
   const send=(code,v,type='application/json')=>{res.writeHead(code,{'content-type':type+'; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer','content-security-policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"});res.end(type==='application/json'?json(v):v);};
   try{
    guard(req);const u=new URL(req.url,'http://'+req.headers.host),p=u.pathname;
-   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,instance,capabilities:{sellGasVersion:1,openingVersion:4,recoveryVersion:1,instantReview:true,corlaVersion:3,corlaAutomationVersion:2,taskCenterVersion:2},token,mode:live?'LIVE':'SIMULATION',wallets:bindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list(),corla:corla.list()});
+   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,instance,capabilities:{sellFeeGuardVersion:3,sellFeeThresholdPpm:HIGH_FEE_PPM,feeRouteSearchVersion:1,sellGasVersion:1,openingVersion:4,recoveryVersion:1,instantReview:true,corlaVersion:3,corlaAutomationVersion:2,taskCenterVersion:2},token,mode:live?'LIVE':'SIMULATION',wallets:bindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list(),corla:corla.list()});
    if(p.startsWith('/api/'))auth(req);
    if(req.method==='GET'&&p==='/api/rpc')return send(200,rpcSettings?.status()||{available:false});
    if(req.method==='POST'&&p==='/api/rpc'){
@@ -96,10 +98,10 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
    if(req.method==='POST'&&p==='/api/settings'){const s=validateSettings(await body(req));save(configFile,s);return send(200,s);}
    if(req.method==='POST'&&p==='/api/prepare'){const b=await body(req);return send(200,await engine.prepare(b.intent,b.id));}
    if(req.method==='POST'&&p==='/api/select-mint-route'){const b=await body(req);return send(200,await engine.selectMintRoute(b.id,b.routeId));}
-   if(req.method==='POST'&&p==='/api/execute'){const b=await body(req);return send(200,await engine.execute(b.id,{...b,swapReceiptWaitMs:b.fastReturn===true?0:10000}));}
+   if(req.method==='POST'&&p==='/api/execute'){const b=await body(req);return send(200,reconcileOrder(await engine.execute(b.id,{...b,swapReceiptWaitMs:b.fastReturn===true?0:10000})));}
    if(req.method==='POST'&&p==='/api/batch')return send(200,await batches.run(await body(req)));
-   if(req.method==='POST'&&p==='/api/run'){const b=await body(req);return send(200,await engine.run(b.intent,b.id,{...b,swapReceiptWaitMs:b.fastReturn===true?0:10000}));}
-   if(req.method==='POST'&&p==='/api/follow'){const b=await body(req),o=await engine.follow(b.id);opening.reconcileOrder?.(o);return send(200,o);}
+   if(req.method==='POST'&&p==='/api/run'){const b=await body(req);return send(200,reconcileOrder(await engine.run(b.intent,b.id,{...b,swapReceiptWaitMs:b.fastReturn===true?0:10000})));}
+   if(req.method==='POST'&&p==='/api/follow'){const b=await body(req),o=await engine.follow(b.id);return send(200,reconcileOrder(o));}
    if(req.method==='GET'&&['/','/app.js','/task-center.mjs','/app-updates.mjs','/rpc-settings.mjs','/mint-quantity.mjs','/binancians-input.mjs','/corla-input.mjs','/corla-view.mjs','/corla-budget.mjs','/review-model.mjs','/failure-kind.mjs','/trade-workflow.mjs','/asset-input.mjs','/session-client.mjs','/style.css','/favicon.svg'].includes(p)){const file=path.join(HERE,'public',p==='/'?'index.html':p.slice(1));return send(200,fs.readFileSync(file,'utf8'),/\.m?js$/.test(p)?'text/javascript':p.endsWith('.css')?'text/css':p.endsWith('.svg')?'image/svg+xml':'text/html');}
    return send(404,{error:'未找到接口'});
   }catch(e){return send(e.code==='LOCAL_SESSION_EXPIRED'&&e.statusCode===401?401:400,{error:publicError(e),details:e.details,diagnostics:e.diagnostics});}
