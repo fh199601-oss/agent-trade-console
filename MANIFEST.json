@@ -55,7 +55,7 @@
     "tests/test_release_scope.py": "b1a300deac3fd4006875990ddcbb240a371a6f0a31e7d930477848619598f949",
     "tests/test_startup.py": "0a6007c222c8a4f2986dc3f78c6273a82713bc502cd870cf87bb545e20f6705a",
     "tests/test_wallet_safety.py": "ac912c754db4097c3a02c8cfbe72321cb6ab9425bc0d5dd827afcf8b349809b6",
-    "tests/test_wallet_sources.py": "e21587743f3293a200d45e958535f7db5601b33c6cb1ac9802af8e02b5a9eca7",
+    "tests/test_wallet_sources.py": "97964c247f54403393bbbd6818bd856006dfeef50c3ae4b0d06e1b559692c155",
     "tools/build_portable.py": "eadf89e53012788d0b5070bf4452f81c244a6d442970a554cdd952a90b55f266",
     "tools/runtime-lock.json": "bc0298c993654d7472414c91011d25395a37bffee1572e4f7db776587a4c2dd7",
     "tools/smoke_install.py": "a9cb24cf071c4772e77f75d4ac7bba4caef44f57541d8be7ce49dbecd65c633d",

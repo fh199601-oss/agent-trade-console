@@ -1,6 +1,7 @@
 """Synthetic entrypoints only; tests never discover the developer's wallets."""
 import json,os,sys,tempfile,time,unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import setup, wallet_bridge as bridge, wallet_sources as sources
@@ -58,11 +59,25 @@ class WalletSources(unittest.TestCase):
         for rows in [[self.row(),self.row()],[self.row(),dict(self.row(),account=2)],[dict(self.row(),command=[sys.executable,'-c','print(1)'])]]:
             with self.assertRaises(ValueError):sources.read_entrypoints(self.manifest(rows))
     def test_deadline_is_shared_not_repeated_per_wallet(self):
-        rows=[sources.normalize_entry(self.row(n),self.root) for n in [99,1,2,3]]
-        start=time.monotonic();verified,issues=setup.verify_entries(rows,timeout=1,workers=2)
-        self.assertLess(time.monotonic()-start,3)
-        self.assertEqual([r['account'] for r in verified],[1,2,3]);self.assertEqual(issues[0]['account'],99)
-        self.assertEqual(issues[0]['code'],'WALLET_ENTRY_TIMEOUT')
+        # A shared deadline must not depend on CI process startup speed. Advance
+        # only setup's clock, preserving the real thread/lock clocks.
+        rows=[sources.normalize_entry(self.row(n),self.root) for n in [1,2,99,3]]
+        clock=[100.0];calls=[]
+        def invoke(entry,args,*,timeout):
+            calls.append((entry['account'],args[1],timeout))
+            if entry['account']==99:
+                clock[0]+=timeout
+                error=bridge.BridgeError('synthetic timeout');error.code='WALLET_ENTRY_TIMEOUT';raise error
+            clock[0]+=.1
+            data={'status':'CONNECTED'} if args[1]=='status' else {'addresses':[{'binanceChainId':'56','address':'0x'+format(entry['account'],'040x')}]}
+            return {'success':True,'data':data}
+        with patch.object(setup,'time',SimpleNamespace(monotonic=lambda:clock[0])),patch.object(setup,'invoke',side_effect=invoke):
+            verified,issues=setup.verify_entries(rows,timeout=1,workers=1)
+        self.assertEqual([r['account'] for r in verified],[1,2])
+        self.assertEqual([(r['account'],r['code']) for r in issues],[(3,'WALLET_CHECK_BUDGET'),(99,'WALLET_ENTRY_TIMEOUT')])
+        self.assertEqual([(n,op) for n,op,_ in calls],[(1,'status'),(1,'address'),(2,'status'),(2,'address'),(99,'status')])
+        self.assertAlmostEqual(calls[-1][2],.6)
+        self.assertAlmostEqual(clock[0],101.0)
     def test_lock_groups_preserve_shared_session_serialization(self):
         first=dict(self.row(),lockGroup='shared-pool');other=dict(self.row(2),lockGroup='shared-pool')
         with bridge.account_lock(first):
