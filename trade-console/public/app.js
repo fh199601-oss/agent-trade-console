@@ -45,7 +45,7 @@ createUpdateDialog({api});
 createRpcDialog({api});
 const mintQuantity=createMintQuantityControl({onChange:()=>{budgetManual=false;applyAutoBudget();}});
 const taskCenter=createTaskCenter({api,notify:(message,error)=>{noticeTarget='appNotice';note(message,error);}});
-function renderOpeningSupport(){taskCenter.setFeatures(boot?.capabilities);const updated=boot?.capabilities?.openingVersion>=2;$('openingCoverage').textContent=(updated?'Pancake / Uniswap V2、V3 · BNB、USDT、USDC、USD1 池（自动到账）。':'当前后端：Pancake V2 / V3 · BNB、USDT 池；本轮加速更新尚未应用。')+'已有流动性会立即检查卖出；首次授权增加耗时，50% 滑点允许较大价差。';}
+function renderOpeningSupport(){taskCenter.setFeatures(boot?.capabilities);const version=boot?.capabilities?.openingVersion||0;$('openingCoverage').textContent=(version>=4?'Pancake / Uniswap V2、V3 · Biswap / Sushi / ApeSwap V2；自动发现配对币，BNB / USDT 支持 V2 两跳。':version>=3?'Pancake / Uniswap V2、V3 · 自动识别链上配对币；AUTO 到账为池子原币种。':version>=2?'Pancake / Uniswap V2、V3 · BNB、USDT、USDC、USD1 池（自动到账）。':'当前后端：Pancake V2 / V3 · BNB、USDT 池；本轮加速更新尚未应用。')+'已有流动性会立即检查卖出；首次授权增加耗时，50% 滑点允许较大价差。';}
 function renderMode(){
  renderOpeningSupport();
  document.body.dataset.verification=boot.verification?'isolated':'';

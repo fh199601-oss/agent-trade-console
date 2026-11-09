@@ -117,8 +117,11 @@ jobs:
           import os,subprocess
           from pathlib import Path
           notes=Path('release-notes.md')
-          notes.write_text('新增币安人 LaunchPad 专用入口，支持项目网址、Mint CA、代币 CA、链上额度、BNB / USDT 打满预算和邀请参数。修复自动粘贴后重复网址及快捷交易 CA 同步。验证范围见 BINANCIANS.md。\n\nMac / Windows 四个平台均通过源码及便携包安装测试；测试仅使用合成钱包、零真实交易。每个发行文件均核验清单和哈希。\n',encoding='utf-8')
-          subprocess.run(['gh','release','create',os.environ['RELEASE_TAG'],'--repo',os.environ['GH_REPO'],'--target',os.environ['SOURCE_SHA'],'--draft','--title',os.environ['RELEASE_TAG']+' · 币安人 LaunchPad 适配','--notes-file',str(notes),*[str(p) for p in sorted(Path('packages').iterdir())]],check=True)
+          changelog=Path('tested/CHANGELOG.md').read_text(encoding='utf-8')
+          version=os.environ['RELEASE_TAG'][1:]
+          section=changelog.split('## '+version+'\n',1)[1].split('\n## ',1)[0].strip()
+          notes.write_text(section+'\n\nMac / Windows 四个平台均通过源码及便携包安装测试；测试仅使用合成钱包、零真实交易。每个发行文件均核验清单和哈希。\n',encoding='utf-8')
+          subprocess.run(['gh','release','create',os.environ['RELEASE_TAG'],'--repo',os.environ['GH_REPO'],'--target',os.environ['SOURCE_SHA'],'--draft','--title',os.environ['RELEASE_TAG']+' · Agent Trade Console','--notes-file',str(notes),*[str(p) for p in sorted(Path('packages').iterdir())]],check=True)
       - uses: actions/upload-artifact@v4
         with:
           name: release-audit

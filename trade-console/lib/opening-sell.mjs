@@ -123,7 +123,7 @@ export class OpeningSell{
   if(active.some(j=>same(j.config.asset,c.config.asset)&&j.config.accounts.some(a=>c.config.accounts.includes(a))))throw Error('这些钱包已有该代币开盘卖出任务，请勿重复启动');
   const job={id,...(late?{lateRequestHash:late.requestHash,name:late.name,sourceMint:late.parent}:{}),config:c.config,bindings:c.rows.map(({account,address})=>({account,address})),recoveryVersion:1,status:'ARMED',mode:c.mode,createdAt:this.now(),expiresAt:this.now()+86400000,
    preflight:c.preflight,authorization:'用户在本地看板点击启动开盘卖出：'+JSON.stringify(c.config)+'；检测到支持的外盘流动性后按实时持仓卖出一次，必要时仅授权本次数量。',
-   rows:c.rows.map(r=>({account:r.account,status:'WAITING',attempts:0})),message:c.snapshot.open?'已检测到流动性，正在检查可卖出路线':'等待链上加池开盘'};
+   rows:c.rows.map(r=>({account:r.account,status:'WAITING',attempts:0})),message:c.snapshot.open?'已检测到流动性，正在检查可卖出路线':c.snapshot.routeIssue||'等待链上加池开盘'};
   this.jobs.set(id,job);try{this.persist();}catch(e){this.jobs.delete(id);throw e;}this.schedule(job,0);this.scheduleFollow(job);return job;
  }
  schedule(job,ms=this.pollMs){if(!this.autoSchedule||this.closed||!ACTIVE.has(job.status)||this.timers.has(job.id))return;
@@ -188,7 +188,7 @@ export class OpeningSell{
     if(j.cancelRequested||this.closed||!ACTIVE.has(j.status))return j;
     if(this.now()>j.expiresAt){j.status='EXPIRED';j.message='监测已到期';this.persist();return j;}
     j.lastScanAt=this.now();j.lastBlock=s.block;j.scanMs=this.now()-started;j.partial=s.partial;
-    if(!s.open){this.warm(j);j.message=s.partial?'部分池子查询失败，继续监测':'等待链上加池开盘';return j;}
+    if(!s.open){this.warm(j);j.message=s.routeIssue||(s.partial?'部分池子查询失败，继续监测':'等待链上加池开盘');return j;}
     j.detectedAt??=this.now();j.detectedBlock??=s.block;j.status='FIRING';j.message='检测到流动性，按当前持仓独立准备各钱包';this.persist();
     await Promise.all(waiting.map(r=>this.fire(j,r,s)));
    }

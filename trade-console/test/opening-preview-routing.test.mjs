@@ -3,7 +3,7 @@ import {recentOpeningPreviewFailures} from '../lib/sell-route-history.mjs';
 import {openingPlan} from '../lib/opening-route.mjs';import {Engine,verifyPreview} from '../lib/engine.mjs';
 import {DEXES,V2_ROUTER_ABI} from '../lib/opening-dex.mjs';import {ERC20,BNB,WBNB,bindings,same} from '../lib/common.mjs';
 const token='0x'+'56'.repeat(20),bound=bindings()[0],intent={account:bound.account,side:'sell',asset:token,percent:'50',currency:'AUTO',slippageBps:5000,openingOnly:true};
-const pools=DEXES.filter(d=>d.kind==='v2').map((d,i)=>({...d,quote:WBNB,pool:'0x'+String(i+1).repeat(40),liquid:true,token0:token,token1:WBNB,reserve0:'1000',reserve1:String(2000-i*100)}));
+const pools=DEXES.filter(d=>d.kind==='v2').slice(0,2).map((d,i)=>({...d,quote:WBNB,pool:'0x'+String(i+1).repeat(40),liquid:true,token0:token,token1:WBNB,reserve0:'1000',reserve1:String(2000-i*100)}));
 const meta={decimals:18,identity:{fingerprint:'current-code'}};
 const failure=(now=Date.now())=>({status:'BLOCKED',createdAt:now,intent,error:{code:'OFFICIAL_SIMULATION_FAILED'},steps:[],plan:{requireSellCredit:true,identity:meta.identity,opening:pools[0],amountIn:'500',holdingBefore:'1000',steps:[{kind:'sell'}]}});
 test('pool with a usable quote but failed official simulation gives another verified pool its next preview before any send',async()=>{

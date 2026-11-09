@@ -1,4 +1,5 @@
 import {openingSettlement} from './opening-route.mjs';
+import {DEXES} from './opening-dex.mjs';
 import {findOpenFourHelper} from './optional-tools.mjs';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
@@ -111,4 +112,4 @@ export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=
  const approval=allowance<amountIn?[{kind:'approve',to:input,value:'0',data:ERC20.encodeFunctionData('approve',[s.spender,amountIn]),spender:s.spender,allowance:String(amountIn)}]:[];
  return {kind:'contract',route:a.id,wallet:w,token,amountIn:String(amountIn),inputToken:input,outputToken:intent.side==='buy'?token:s.quoteToken,holdingBefore:String(balance),decimals,minOutput:String(min),quote:q,review:[],state:s,steps:[...approval,{kind:intent.side,...tx,value:String(tx.value)}]};
 }
-export const settlements={'pancake-v2-opening':openingSettlement,'pancake-v3-opening':openingSettlement,'uniswap-v2-opening':openingSettlement,'uniswap-v3-opening':openingSettlement,flap:flap.settlement,gang:gang.settlement};
+export const settlements={...Object.fromEntries(DEXES.map(d=>[d.id+'-opening',openingSettlement])),flap:flap.settlement,gang:gang.settlement};

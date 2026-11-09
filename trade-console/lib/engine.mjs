@@ -2,6 +2,7 @@ import {providerRefusal,repairRejectedOrder} from './provider-outcome.mjs';
 import {sellGasArgs} from './sell-gas.mjs';
 import {rejectedAggregateSale,manualDirectSell} from './manual-sell-recovery.mjs';
 import {openingPlan,refreshOpeningSell} from './opening-route.mjs';
+import {tradeTarget} from './trade-target.mjs';
 import {openingRecoveryPlan} from './opening-recovery.mjs';
 import {preferProvenOpeningRoute,recentOpeningPreviewFailures} from './sell-route-history.mjs';
 import {hasPreviewRisks} from './preview-risks.mjs';
@@ -94,7 +95,7 @@ export class Engine{
   // planner still verifies its factory/implementation and fresh claim state;
   // fetching website/title/creation terms again adds no claim authorization.
   const directClaim=intent.side==='mint'&&intent.routeId==='corla:claim'&&/^0x[\da-f]{40}$/i.test(intent.asset);
-  const resolved=directClaim?{address:intent.asset,platform:'corla',source:'Corla 领取合约'}:await measure('projectDiscovery',()=>discover(intent.asset,{rpc:this.rpc,chainFallback:intent.side==='mint',corlaRouting:intent.side==='mint'}));
+  const resolved=intent.side!=='mint'?tradeTarget(intent.asset):directClaim?{address:intent.asset,platform:'corla',source:'Corla 领取合约'}:await measure('projectDiscovery',()=>discover(intent.asset,{rpc:this.rpc,chainFallback:true,corlaRouting:true}));
   const project={name:resolved.name||resolved.addresses?.find(r=>r.primary)?.name||null,source:resolved.source,address:resolved.address,platform:resolved.platform};
   try{
   if(!resolved.address)throw Object.assign(Error(resolved.failure?.message||resolved.reason||'尚未核验项目 Mint 入口，请提供完整合约地址'),{code:resolved.failure?.code||'MINT_NOT_VERIFIED',details:resolved});

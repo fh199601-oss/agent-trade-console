@@ -7,6 +7,7 @@ export class OpeningPreparation{
  async cached(key,ttl,fetcher){const old=this.entries.get(key);if(old&&old.until>this.now())return old.value;if(this.pending.has(key))return this.pending.get(key);
   const p=(async()=>{const value=await fetcher();this.entries.set(key,{value,until:this.now()+ttl});if(this.entries.size>128)this.entries.delete(this.entries.keys().next().value);return value;})();this.pending.set(key,p);try{return await p;}finally{this.pending.delete(key);}}
  async token(input){const token=address(input);return this.cached('token:'+token,15000,async()=>{const [identity,[decimals]]=await Promise.all([this.identityFor(this.rpc,token),read(this.rpc,token,ERC20,'decimals')]);if(Number(decimals)>36)throw Error('代币精度不支持');return {identity,decimals:Number(decimals)};});}
+ async quote(input){const token=address(input);return this.cached('quote:'+token,15000,async()=>{const [decimals]=await read(this.rpc,token,ERC20,'decimals');if(Number(decimals)>36)throw Error('计价币精度不支持');return {decimals:Number(decimals)};});}
  async venue(d){return this.cached('dex:'+d.id,60000,async()=>{
   const abi=d.kind==='v2'?V2_ROUTER_ABI:V3_IMMUTABLE,method='factory',wrapped=d.kind==='v2'?'WETH':'WETH9';
   const [[factory],[weth],code]=await Promise.all([read(this.rpc,d.router,abi,method),read(this.rpc,d.router,abi,wrapped),this.rpc.getCode(d.router)]);

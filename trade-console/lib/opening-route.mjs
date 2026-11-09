@@ -3,10 +3,11 @@ import {OpeningPools,freshOpeningSnapshot} from './opening-pools.mjs';
 import {DEXES,dexFor,matchesCurrency,QUOTES,V2_ROUTER_ABI,V3_LEGACY,V3_MODERN,QUOTER} from './opening-dex.mjs';
 import {OpeningPreparation} from './opening-preparation.mjs';
 import {sellAmount} from './sell-policy.mjs';
+import {multiHopSettlement} from './opening-multihop.mjs';
 export const ROUTER=V2_ROUTER_ABI;
 function saleData(d,pool,token,owner,amount,minimum,receiveNative){
  const deadline=Math.floor(Date.now()/1000)+120;
- if(d.kind==='v2')return ROUTER.encodeFunctionData(receiveNative?'swapExactTokensForETHSupportingFeeOnTransferTokens':'swapExactTokensForTokensSupportingFeeOnTransferTokens',[amount,minimum,[token,pool.quote],owner,deadline]);
+ if(d.kind==='v2')return ROUTER.encodeFunctionData(receiveNative?'swapExactTokensForETHSupportingFeeOnTransferTokens':'swapExactTokensForTokensSupportingFeeOnTransferTokens',[amount,minimum,pool.path||[token,pool.quote],owner,deadline]);
  const abi=d.legacy?V3_LEGACY:V3_MODERN,params=[token,pool.quote,pool.fee,receiveNative?d.router:owner,...(d.legacy?[deadline]:[]),amount,minimum,0];
  const calls=[abi.encodeFunctionData('exactInputSingle',[params]),...(receiveNative?[abi.encodeFunctionData('unwrapWETH9',[minimum,owner])]:[])];
  return d.legacy?(calls.length===1?calls[0]:abi.encodeFunctionData('multicall(bytes[])',[calls])):abi.encodeFunctionData('multicall(uint256,bytes[])',[deadline,calls]);
@@ -14,12 +15,12 @@ function saleData(d,pool,token,owner,amount,minimum,receiveNative){
 export async function refreshOpeningSell(rpc,plan){
  const pool=plan.opening,d=dexFor(pool),amount=BigInt(plan.amountIn);
  if(!d||!plan.requireSellCredit||!same(plan.steps.at(-1)?.to,d.router)||!same(wallet(plan.account).address,plan.wallet))throw Error('开盘卖出刷新缺少可信路线');
- const [[balance],quoted]=await Promise.all([read(rpc,plan.token,ERC20,'balanceOf',[plan.wallet]),d.kind==='v2'?read(rpc,d.router,ROUTER,'getAmountsOut',[amount,[plan.token,pool.quote]]):read(rpc,d.quoter,QUOTER,'quoteExactInputSingle',[[plan.token,pool.quote,amount,pool.fee,0]])]);
+ const [[balance],quoted]=await Promise.all([read(rpc,plan.token,ERC20,'balanceOf',[plan.wallet]),d.kind==='v2'?read(rpc,d.router,ROUTER,'getAmountsOut',[amount,pool.path||[plan.token,pool.quote]]):read(rpc,d.quoter,QUOTER,'quoteExactInputSingle',[[plan.token,pool.quote,amount,pool.fee,0]])]);
  if(String(balance)!==plan.holdingBefore)throw Error('授权期间持仓已变化，请重新预览');
- const output=d.kind==='v2'?quoted[0][1]:quoted[0],minimum=output*BigInt(10000-plan.slippage.bps)/10000n;
- if(minimum<=0n||d.kind==='v2'&&(quoted[0].length!==2||quoted[0][0]!==amount))throw Error('开盘卖出刷新报价无效');
+ const output=d.kind==='v2'?quoted[0].at(-1):quoted[0],minimum=output*BigInt(10000-plan.slippage.bps)/10000n;
+ if(minimum<=0n||d.kind==='v2'&&(quoted[0].length!==(pool.path?.length||2)||quoted[0][0]!==amount))throw Error('开盘卖出刷新报价无效');
  const step={...plan.steps.at(-1),data:saleData(d,pool,plan.token,plan.wallet,amount,minimum,same(plan.outputToken,BNB))};
- return {...plan,minOutput:String(minimum),quote:{...plan.quote,toCoinAmount:formatUnits(output,18)},quoteRefreshedAt:Date.now(),steps:[...plan.steps.slice(0,-1),step]};
+ return {...plan,minOutput:String(minimum),quote:{...plan.quote,toCoinAmount:formatUnits(output,plan.outputDecimals??18)},quoteRefreshedAt:Date.now(),steps:[...plan.steps.slice(0,-1),step]};
 }
 export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPools(rpc).scan(t,o),snapshot,preparation,identityFor,failedPreviews=[]}={}){
  const reused=freshOpeningSnapshot(snapshot,intent.asset);snapshot=reused?snapshot:await scan(intent.asset,{currency:intent.currency});
@@ -34,7 +35,7 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
  candidates.sort((a,b)=>{
   if(failed(a)!==failed(b))return failed(a)?1:-1;
   const approved=p=>allowances.get(dexFor(p).id)!==null&&allowances.get(dexFor(p).id)>=amount;
-  const score=p=>(approved(p)?100:0)+(p.kind==='v2'?10:0)+(QUOTES.length-QUOTES.findIndex(q=>same(q,p.quote)));
+  const score=p=>{const index=QUOTES.findIndex(q=>same(q,p.quote));return (approved(p)?100:0)+(p.kind==='v2'?10:0)+(index<0?0:QUOTES.length-index);};
   const diff=score(b)-score(a);if(diff)return diff;
   const depth=p=>BigInt(p.kind==='v2'?(same(p.token0,intent.asset)?p.reserve1:p.reserve0)||'0':p.liquidity||'0');return depth(b)>depth(a)?1:depth(b)<depth(a)?-1:0;
  });
@@ -42,9 +43,9 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
  // thin pool must not hide another verified pool; at most four quotes per plan.
  const quoteCandidate=async pool=>{const d=dexFor(pool);
   const allowance=allowances.get(d.id);if(allowance===null)throw Error('无法读取当前授权额度');
-  const [venue,quoted]=await Promise.all([prep.venue(d),d.kind==='v2'?read(rpc,d.router,ROUTER,'getAmountsOut',[amount,[intent.asset,pool.quote]]):read(rpc,d.quoter,QUOTER,'quoteExactInputSingle',[[intent.asset,pool.quote,amount,pool.fee,0]])]);
-  const output=d.kind==='v2'?quoted[0][1]:quoted[0];if(output<=0n||d.kind==='v2'&&(quoted[0].length!==2||quoted[0][0]!==amount))throw Error('开盘卖出报价无效');
-  return {pool,d,allowance,venue,output};
+  const [venue,quoted,outputMeta]=await Promise.all([prep.venue(d),d.kind==='v2'?read(rpc,d.router,ROUTER,'getAmountsOut',[amount,pool.path||[intent.asset,pool.quote]]):read(rpc,d.quoter,QUOTER,'quoteExactInputSingle',[[intent.asset,pool.quote,amount,pool.fee,0]]),QUOTES.some(q=>same(q,pool.quote))?{decimals:18}:prep.quote(pool.quote)]);
+  const output=d.kind==='v2'?quoted[0].at(-1):quoted[0];if(output<=0n||d.kind==='v2'&&(quoted[0].length!==(pool.path?.length||2)||quoted[0][0]!==amount))throw Error('开盘卖出报价无效');
+  return {pool,d,allowance,venue,output,outputDecimals:outputMeta.decimals};
  };
  // A slow/reverting pool must not delay a healthy independent venue. Race only
  // within the same approval tier so a fast quote cannot add an avoidable approval.
@@ -54,11 +55,11 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
   try{chosen=await Promise.any(group.map(quoteCandidate));break;}catch(e){lastError=e.errors?.at(-1)||e;}
  }
  if(!chosen)throw Object.assign(Error('可用池子尚无有效卖出报价：'+lastError?.message),{code:'OPENING_WAIT'});
- const {pool,d,allowance,venue,output}=chosen,minimum=output*BigInt(10000-intent.slippageBps)/10000n;if(minimum<=0n)throw Error('最低到账为零');
+ const {pool,d,allowance,venue,output,outputDecimals}=chosen,minimum=output*BigInt(10000-intent.slippageBps)/10000n;if(minimum<=0n)throw Error('最低到账为零');
  const receiveNative=same(pool.quote,WBNB)&&intent.currency!=='WBNB',data=saleData(d,pool,intent.asset,w,amount,minimum,receiveNative);
- return {kind:'contract',route:d.id+'-opening',account:intent.account,token:intent.asset,wallet:w,inputToken:intent.asset,outputToken:receiveNative?BNB:pool.quote,amountIn:String(amount),holdingBefore:String(balance),decimals:meta.decimals,minOutput:String(minimum),
+ return {kind:'contract',route:d.id+'-opening',account:intent.account,token:intent.asset,wallet:w,inputToken:intent.asset,outputToken:receiveNative?BNB:pool.quote,amountIn:String(amount),holdingBefore:String(balance),decimals:meta.decimals,outputDecimals,minOutput:String(minimum),
   identity:{...meta.identity,learnedAssets:venue.assets},opening:{...pool,detectedAt:snapshot.at,reusedDetection:reused},state:pool,requireSellCredit:true,
-  slippage:{mode:'fixed',bps:intent.slippageBps,capBps:intent.slippageBps},quote:{toCoinAmount:formatUnits(output,18)},review:[],steps:[
+  slippage:{mode:'fixed',bps:intent.slippageBps,capBps:intent.slippageBps},quote:{toCoinAmount:formatUnits(output,outputDecimals)},review:[],steps:[
    ...(allowance<amount?[{kind:'approve',to:intent.asset,value:'0',data:ERC20.encodeFunctionData('approve',[d.router,amount]),spender:d.router,allowance:String(amount)}]:[]),
    {kind:'sell',to:d.router,value:'0',data}
   ]};
@@ -70,6 +71,7 @@ export function openingSettlement({receipt,token,state,wallet:owner,plan,step}){
  // A fee token can swap its own accrued taxes in the SAME pool/receipt before
  // crediting the user's input. Summing all Swap events attributes that unrelated
  // sale to the wallet. Select the wallet-funded leg and prove its output instead.
+ if(state?.legs)return multiHopSettlement({receipt,token,state,wallet:owner,plan,step});
  const d=dexFor(state),nativeOut=same(plan?.outputToken,BNB);
  if(!d||!owner||!plan||!same(step?.to,d.router)||!same(plan.inputToken,token)||
   !(same(token,state.token0)||same(token,state.token1))||
