@@ -322,8 +322,8 @@ export class Engine{
   o.result=r;o.orderId=r.orderId;o.txHash=r.txHash||null;o.status=o.orderId?'PENDING':'SUBMISSION_UNKNOWN';o.timing.submittedAt=Date.now();o.timing.toSubmitMs=o.timing.submittedAt-o.createdAt;this.write(o);
   if(o.orderId&&receiptWaitMs>0)await this.observeSwap(o,receiptWaitMs);return this.write(o);
  }
- async observeSwap(o,timeout=0){
-  const end=Date.now()+timeout;do{const r=await this.bridge.call(o.intent.account,['market-order','list','--orderId',String(o.orderId)]);const row=r.list?.find(x=>String(x.orderId)===String(o.orderId))||(String(r.orderId)===String(o.orderId)?r:null);
+ async observeSwap(o,timeout=0,readOptions={}){
+  const end=Date.now()+timeout;do{const r=await this.bridge.call(o.intent.account,['market-order','list','--orderId',String(o.orderId)],readOptions);const row=r.list?.find(x=>String(x.orderId)===String(o.orderId))||(String(r.orderId)===String(o.orderId)?r:null);
    if(row){o.receipt=row;o.txHash=row.txHash||o.txHash;if(row.status==='FAILED'){o.status='FAILED';break;}if(row.status==='FINISHED'){o.status='CONFIRMED';o.actualReceived=row.toTokenActualQty??null;o.refund=row.refund??null;o.timing.confirmedAt=Date.now();o.timing.toConfirmedMs=o.timing.confirmedAt-o.createdAt;break;}}
    if(Date.now()>=end)break;await sleep(300);
   }while(true);
@@ -372,10 +372,14 @@ export class Engine{
    if(Date.now()>=end)break;await sleep(200);
   }while(true);
  }
- async follow(id){let o=this.get(id);if(!o)throw Error('找不到订单');o=this.repairRefusal(o)||o;if(terminal.has(o.status)||['PREPARED','READY_TO_CONTINUE'].includes(o.status))return o;
-  return this.exclusive(o.intent.account,async()=>{try{
-   const query=rejectedSwapQuery(o);if(query){const result=await this.bridge.call(o.intent.account,query.args),failed=uniqueFailedSwap(o,result,this.list());if(failed)return this.write(applyFailedSwap(o,failed));}
-   if(o.orderId)await this.observeSwap(o,0);else{
+ follow(id,options={}){
+  this.following??=new Map();if(this.following.has(id))return this.following.get(id);
+  const promise=this.followOriginal(id,options).finally(()=>this.following.delete(id));this.following.set(id,promise);return promise;
+ }
+ async followOriginal(id,{background=false}={}){let o=this.get(id);if(!o)throw Error('找不到订单');o=this.repairRefusal(o)||o;if(terminal.has(o.status)||['PREPARED','READY_TO_CONTINUE'].includes(o.status))return o;
+  return this.exclusive(o.intent.account,async()=>{const previousFollowError=o.followError;try{
+   const query=rejectedSwapQuery(o);if(query){const result=await this.bridge.call(o.intent.account,query.args,{readOnlyTimeoutMs:1000,...(background?{background:true}:{})}),failed=uniqueFailedSwap(o,result,this.list());if(failed)return this.write(applyFailedSwap(o,failed));}
+   if(o.orderId)await this.observeSwap(o,0,{readOnlyTimeoutMs:1000,...(background?{background:true}:{})});else{
     const e=o.steps.at(-1);if(e?.txHash){await this.observeContract(o,e,0);if(e.status==='CONFIRMED'){
      o.nextStep=e.index+1;
      if(o.nextStep<o.plan.steps.length||o.intent.side==='mint'&&o.plan.fill?.continue)o.status='READY_TO_CONTINUE';else{
@@ -384,6 +388,7 @@ export class Engine{
      }
     }}
    }
+   if(previousFollowError&&o.followError===previousFollowError)delete o.followError;
   }catch(e){if(e.code==='ORIGINAL_READ_UNAVAILABLE'||o.status==='SUBMISSION_UNKNOWN'&&o.error)o.followError=publicError(e);else o.error=publicError(e);}return this.write(o);},id,{trackingOnly:true});
  }
  async run(input,id,options={}){const o=await this.prepare(input,id);return ['PREPARED','READY_TO_CONTINUE'].includes(o.status)&&options.execute?this.execute(id,options):o;}

@@ -11,6 +11,11 @@ test('连接异常不隐藏可读余额，一个钱包余额失败不影响其�
 });
 test('自动 BNB 刷新复用连接状态，区块查询失败明确返回未知余额',async()=>{
  const readiness=new Map(bindings().map(w=>[w.account,{status:'CONNECTED',checkedAt:3}]));let calls=0;
- const r=await walletOverview({getBlockNumber:async()=>{throw Error('链上不可用');},getBalance:async()=>{throw Error('unexpected');}},{ready:async()=>{calls++;}},readiness);
+ const r=await walletOverview({getBlockNumber:async()=>{throw Error('链上不可用');},getBalance:async()=>{throw Error('链上不可用');}},{ready:async()=>{calls++;}},readiness);
  assert.equal(calls,0);assert.ok(r.wallets.every(w=>w.bnb===null&&w.status==='CONNECTED'&&w.balanceError==='链上不可用'));
+});
+test('区块高度接口故障不遮掉可独立读取的 BNB 余额，也不修改钱包连接状态',async()=>{
+ const readiness=new Map(bindings().map(w=>[w.account,{status:'CONNECTED',checkedAt:3}]));
+ const r=await walletOverview({getBlockNumber:async()=>{throw Error('height limited');},getBalance:async(a,b)=>{assert.equal(b,'latest');return 10n**18n;}},{},readiness);
+ assert.equal(r.block,null);assert.equal(r.blockError,'height limited');assert.ok(r.wallets.every(w=>w.bnb==='1.0'&&w.status==='CONNECTED'&&!w.balanceError));
 });

@@ -16,6 +16,7 @@ import {Rpc} from './lib/network.mjs';
 import {RpcEndpoints} from './lib/rpc-endpoints.mjs';
 import {Wallets} from './lib/wallet.mjs';
 import {Engine} from './lib/engine.mjs';
+import {OriginalTracker} from './lib/original-tracker.mjs';
 import {HIGH_FEE_PPM} from './lib/trade-fees.mjs';
 import {Batches} from './lib/batch.mjs';
 import {market,holdings} from './lib/market.mjs';
@@ -44,6 +45,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
  const corla=providedCorla||new CorlaAutomation({engine,rpc:openingRpc,opening,data});engine.onAuthorized=o=>corla.enroll(o);
  const sellWarmup=new ManualSellWarmup({scan:engine.openingScan,preparation,busy:()=>engine.running.size>0||!!opening.active?.()||!!corla.active?.()});
  const reconcileOrder=o=>{opening.reconcileOrder?.(o);corla.reconcileOrder?.(o);return o;};
+ const tracker=new OriginalTracker({engine,onUpdate:reconcileOrder});
  const enrollment=new TaskEnrollment({engine,corla,opening,rpc:readRpc});
  const instance=randomBytes(12).toString('hex'),updates=providedUpdates||new AppUpdates();
  const readiness=new Map();const settings=()=>load(configFile,{buy:['0.005','0.01','0.02','0.05','0.1'],sell:['10','25','50','75','100']});
@@ -62,7 +64,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
   const send=(code,v,type='application/json')=>{res.writeHead(code,{'content-type':type+'; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer','content-security-policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"});res.end(type==='application/json'?json(v):v);};
   try{
    guard(req);const u=new URL(req.url,'http://'+req.headers.host),p=u.pathname;
-   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,instance,capabilities:{sellFeeGuardVersion:3,sellFeeThresholdPpm:HIGH_FEE_PPM,feeRouteSearchVersion:1,sellGasVersion:1,openingVersion:4,recoveryVersion:1,instantReview:true,corlaVersion:3,corlaAutomationVersion:2,taskCenterVersion:2},token,mode:live?'LIVE':'SIMULATION',wallets:bindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list(),corla:corla.list()});
+   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,instance,capabilities:{rpcRecoveryVersion:1,sellFeeGuardVersion:3,sellFeeThresholdPpm:HIGH_FEE_PPM,feeRouteSearchVersion:1,sellGasVersion:1,openingVersion:4,recoveryVersion:1,instantReview:true,corlaVersion:3,corlaAutomationVersion:2,taskCenterVersion:2},token,mode:live?'LIVE':'SIMULATION',wallets:bindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list(),corla:corla.list()});
    if(p.startsWith('/api/'))auth(req);
    if(req.method==='GET'&&p==='/api/rpc')return send(200,rpcSettings?.status()||{available:false});
    if(req.method==='POST'&&p==='/api/rpc'){
@@ -98,7 +100,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
    if(req.method==='GET'&&p==='/api/orders')return send(200,u.searchParams.get('summary')==='1'?engine.history(50):engine.list(50));
    if(req.method==='POST'&&p==='/api/shutdown'){
     if(corla.active()||opening.active()||engine.running.size||engine.list().some(o=>['PENDING','SUBMITTING','SUBMISSION_UNKNOWN','APPROVAL_CONFIRMED','READY_TO_CONTINUE','RECEIPT_REVIEW'].includes(o.status)))throw Error('存在运行中或待核对原单，暂不能切换模式');
-    send(200,{stopping:true});setTimeout(()=>{corla.close();opening.close();server.close();bridge.close();server.closeIdleConnections();},100);return;
+    send(200,{stopping:true});setTimeout(()=>{tracker.close();corla.close();opening.close();server.close();bridge.close();server.closeIdleConnections();},100);return;
    }
    if(req.method==='POST'&&p==='/api/ready'){const b=await body(req);const result=await Promise.all(bindings().filter(w=>!b.account||w.account===b.account).map(async w=>{try{const r=await bridge.ready(w.account,{force:true});readiness.set(w.account,r);return r;}catch(e){const r={...w,status:'ERROR',error:e.message};readiness.set(w.account,r);return r;}}));return send(200,result);}
    if(req.method==='POST'&&p==='/api/settings'){const s=validateSettings(await body(req));save(configFile,s);return send(200,s);}
@@ -124,8 +126,9 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
    }
   })).finally(()=>{warming=null;});return warming;
  }
- server.on('close',()=>{sellWarmup.close();corla.close();opening.close();});
- return {server,engine,bridge,token,warm,rpc,readRpc,opening,corla,rpcSettings,enrollment};
+ server.on('listening',()=>{tracker.start();if(rpcSettings)void rpc.verifyChain().catch(()=>{});});
+ server.on('close',()=>{tracker.close();sellWarmup.close();corla.close();opening.close();void rpcSettings?.close()?.catch(()=>{});});
+ return {server,engine,bridge,token,warm,rpc,readRpc,opening,corla,rpcSettings,enrollment,tracker};
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  const install=load(path.join(LOCAL,'install.json'));if(!install?.installationId)throw Error('请先运行 python3 setup.py');const live=true;if(install.liveEnabled!==true)throw Error('请重新运行安装器更新配置；用户入口仅提供真实交易模式');const port=0;
@@ -136,5 +139,5 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
  const app=createServer({live});let timer;app.server.on('close',()=>{clearInterval(timer);release();});app.server.on('error',()=>release());
  app.server.listen(port,'127.0.0.1',()=>{const port=app.server.address().port;save(path.join(DATA,'service.json'),{installationId:install.installationId,pid:process.pid,port,mode:live?'LIVE':'SIMULATION',startedAt:Date.now()});console.log(`Agent 交易台 http://127.0.0.1:${port} · ${live?'真实交易模式':'模拟模式（不签名、不广播）'}`);});
  app.warm().catch(()=>{});timer=setInterval(()=>app.warm().catch(()=>{}),15000);timer.unref();
- const close=()=>{app.corla.close();app.opening.close();app.server.close();app.bridge.close();setTimeout(()=>process.exit(0),12000).unref();};process.on('SIGINT',close);process.on('SIGTERM',close);
+ const close=()=>{app.tracker.close();app.corla.close();app.opening.close();app.server.close();app.bridge.close();setTimeout(()=>process.exit(0),12000).unref();};process.on('SIGINT',close);process.on('SIGTERM',close);
 }
