@@ -3,6 +3,7 @@ import {editTasks} from './lib/task-edit.mjs';
 import {AppUpdates} from './lib/app-updates.mjs';
 import {CorlaAutomation} from './lib/corla-automation.mjs';
 import {OpeningPreparation} from './lib/opening-preparation.mjs';
+import {ManualSellWarmup} from './lib/manual-sell-warmup.mjs';
 import {OpeningSell} from './lib/opening-sell.mjs';
 import {OpeningPools} from './lib/opening-pools.mjs';
 import http from 'node:http';
@@ -41,6 +42,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
  const detector=new OpeningPools(openingRpc),preparation=new OpeningPreparation(prepRpc);engine.openingScan=(t,o)=>detector.scan(t,o);engine.openingPreparation=preparation;
  const opening=providedOpening||new OpeningSell({engine,rpc:openingRpc,bridge,detector,data,preparation});
  const corla=providedCorla||new CorlaAutomation({engine,rpc:openingRpc,opening,data});engine.onAuthorized=o=>corla.enroll(o);
+ const sellWarmup=new ManualSellWarmup({scan:engine.openingScan,preparation,busy:()=>engine.running.size>0||!!opening.active?.()||!!corla.active?.()});
  const reconcileOrder=o=>{opening.reconcileOrder?.(o);corla.reconcileOrder?.(o);return o;};
  const enrollment=new TaskEnrollment({engine,corla,opening,rpc:readRpc});
  const instance=randomBytes(12).toString('hex'),updates=providedUpdates||new AppUpdates();
@@ -84,7 +86,11 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
    if(req.method==='POST'&&p==='/api/opening/arm'){const b=await body(req);return send(200,opening.arm(b.id,{confirmed:b.confirmed}));}
    if(req.method==='POST'&&p==='/api/opening/stop'){const b=await body(req);return send(200,opening.pause(b.id));}
    if(req.method==='GET'&&p==='/api/market')return send(200,await market(readRpc,u.searchParams.get('ca')));
-   if(req.method==='GET'&&p==='/api/holdings')return send(200,await holdings(readRpc,u.searchParams.get('ca')));
+   if(req.method==='GET'&&p==='/api/holdings'){
+    const result=await holdings(readRpc,u.searchParams.get('ca'));send(200,result);
+    if(result.assetType==='ERC20'&&result.wallets.some(w=>/^\d+$/.test(w.raw||'')&&BigInt(w.raw)>0n))sellWarmup.request(result.token);
+    return;
+   }
    if(req.method==='GET'&&p==='/api/wallets')return send(200,await walletOverview(readRpc,bridge,readiness));
    if(req.method==='POST'&&p==='/api/refresh-wallets'){await body(req);return send(200,await walletOverview(readRpc,bridge,readiness,{checkConnection:true}));}
    if(req.method==='GET'&&p==='/api/discover')return send(200,await discover(u.searchParams.get('asset'),{rpc:readRpc,chainFallback:true,learn:u.searchParams.get('learn')==='1'}));
@@ -118,7 +124,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
    }
   })).finally(()=>{warming=null;});return warming;
  }
- server.on('close',()=>{corla.close();opening.close();});
+ server.on('close',()=>{sellWarmup.close();corla.close();opening.close();});
  return {server,engine,bridge,token,warm,rpc,readRpc,opening,corla,rpcSettings,enrollment};
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){

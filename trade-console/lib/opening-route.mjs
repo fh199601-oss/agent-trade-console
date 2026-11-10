@@ -31,14 +31,22 @@ export async function refreshOpeningSell(rpc,plan){
  const step={...plan.steps.at(-1),data:saleData(d,pool,plan.token,plan.wallet,amount,minimum,same(plan.outputToken,BNB))};
  return {...plan,opening:freshPool,state:freshPool,poolFees:poolFeeProof(freshPool,d.kind==='v2'?quoted[0]:null,plan.token,batch.block),minOutput:String(minimum),quote:{...plan.quote,toCoinAmount:formatUnits(output,plan.outputDecimals??18)},quoteRefreshedAt:Date.now(),steps:[...plan.steps.slice(0,-1),step]};
 }
-export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPools(rpc).scan(t,o),snapshot,preparation,identityFor,failedPreviews=[],excludedRoutes=[],lowFeeOnly=false,expand=false,outputToken,minimumOutput}={}){
- const reused=freshOpeningSnapshot(snapshot,intent.asset)&&(!expand||snapshot.expanded);snapshot=reused?snapshot:await scan(intent.asset,{currency:intent.currency,expand});
+export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPools(rpc).scan(t,o),snapshot,preparation,identityFor,failedPreviews=[],excludedRoutes=[],lowFeeOnly=false,expand=false,outputToken,minimumOutput,slippagePromise}={}){
+ // Pool discovery and token/holding reads are independent. Only metadata is
+ // cached: the balance and every allowance are read afresh for this operation.
+ // Box a concurrently requested policy now, including on an early scan error.
+ const policy=slippagePromise?Promise.resolve(slippagePromise).then(value=>({value}),error=>({error})):null;
+ const w=wallet(intent.account).address,prep=preparation||new OpeningPreparation(rpc,{...(identityFor?{identityFor}:{})});
+ const reused=freshOpeningSnapshot(snapshot,intent.asset)&&(!expand||snapshot.expanded);
+ // An opening/claim-linked task may receive its tokens during detection. Keep
+ // that holding read AFTER detection so pre-opening zero cannot skip a sale.
+ const tokenReads=Promise.all([prep.token(intent.asset),...(intent.openingOnly?[]:[read(rpc,intent.asset,ERC20,'balanceOf',[w])])]).then(value=>({value}),error=>({error}));
+ snapshot=reused?snapshot:await scan(intent.asset,{currency:intent.currency,expand});
  const candidates=snapshot.pools.filter(p=>p.liquid&&matchesCurrency(p,intent.currency)&&dexFor(p)&&!excludedRoutes.includes(poolRouteKey(p))&&(!outputToken||same(p.quote,same(outputToken,BNB)?WBNB:outputToken)));
  if(!candidates.length)throw Object.assign(Error(snapshot.routeIssue||(excludedRoutes.length?'本轮已核验的池子中，没有符合原到账币种的其他路线':'等待可核验的外盘卖出池子；不会提前使用内盘卖出')),{code:'OPENING_WAIT'});
- const w=wallet(intent.account).address,prep=preparation||new OpeningPreparation(rpc,{...(identityFor?{identityFor}:{})});
  const dexes=[...new Map(candidates.map(p=>{const d=dexFor(p);return [d.id,d];})).values()];
  // Warm data never authorizes an amount or approval. Both remain fresh reads.
- const [meta,[balance],allowanceRows]=await Promise.all([prep.token(intent.asset),read(rpc,intent.asset,ERC20,'balanceOf',[w]),Promise.allSettled(dexes.map(d=>read(rpc,intent.asset,ERC20,'allowance',[w,d.router])))]);
+ const [tokenResult,allowanceRows,openingBalance]=await Promise.all([tokenReads,Promise.allSettled(dexes.map(d=>read(rpc,intent.asset,ERC20,'allowance',[w,d.router]))),intent.openingOnly?read(rpc,intent.asset,ERC20,'balanceOf',[w]):null]);if(tokenResult.error)throw tokenResult.error;const [meta,earlyBalance]=tokenResult.value,[balance]=openingBalance||earlyBalance;
  const amount=sellAmount(balance,intent.percent),allowances=new Map(dexes.map((d,n)=>[d.id,allowanceRows[n].status==='fulfilled'?allowanceRows[n].value[0]:null]));
  const failed=p=>failedPreviews.some(f=>same(f.pool,p.pool)&&f.fingerprint===meta.identity?.fingerprint&&f.amountIn===String(amount)&&f.holdingBefore===String(balance));
  candidates.sort((a,b)=>{
@@ -72,11 +80,13 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
  usable.sort(compareFeeRoutes);
  const chosen=usable[0],lastError=results.find(r=>r.status==='rejected')?.reason;
  if(!chosen)throw Object.assign(Error(lowFeeOnly?'本轮未找到池费低于 '+feePercent(HIGH_FEE_PPM)+' 且满足原到账约束的可核验路线':'可用池子尚无有效卖出报价：'+(lastError?.message||'没有可用报价')),{code:'OPENING_WAIT'});
- const {pool,d,allowance,venue,output,outputDecimals}=chosen;let minimum=output*BigInt(10000-intent.slippageBps)/10000n;if(minimumOutput!==undefined&&BigInt(minimumOutput)>minimum)minimum=BigInt(minimumOutput);if(minimum<=0n)throw Error('最低到账为零');
+ const resolvedPolicy=policy?await policy:{value:{mode:'fixed',bps:intent.slippageBps,capBps:intent.slippageBps}};if(resolvedPolicy.error)throw resolvedPolicy.error;
+ const slippage=resolvedPolicy.value;if(!Number.isInteger(slippage?.bps)||slippage.bps<0||slippage.bps>intent.slippageBps)throw Error('卖出滑点超出本次上限');
+ const {pool,d,allowance,venue,output,outputDecimals}=chosen;let minimum=output*BigInt(10000-slippage.bps)/10000n;if(minimumOutput!==undefined&&BigInt(minimumOutput)>minimum)minimum=BigInt(minimumOutput);if(minimum<=0n)throw Error('最低到账为零');
  const receiveNative=same(pool.quote,WBNB)&&(outputToken?same(outputToken,BNB):intent.currency!=='WBNB'),data=saleData(d,pool,intent.asset,w,amount,minimum,receiveNative);
  return {kind:'contract',route:d.id+'-opening',account:intent.account,token:intent.asset,wallet:w,inputToken:intent.asset,outputToken:receiveNative?BNB:pool.quote,amountIn:String(amount),holdingBefore:String(balance),decimals:meta.decimals,outputDecimals,minOutput:String(minimum),
   identity:{...meta.identity,learnedAssets:venue.assets},opening:{...pool,detectedAt:snapshot.at,reusedDetection:reused},state:pool,requireSellCredit:true,
-  poolFees:chosen.fees,...(minimumOutput!==undefined?{authorizationMinOutput:String(minimumOutput)}:{}),routeSearch:{quoted:results.length,candidates:candidates.length,limited:results.length<candidates.length,expanded:!!snapshot.expanded},slippage:{mode:'fixed',bps:intent.slippageBps,capBps:intent.slippageBps},quote:{toCoinAmount:formatUnits(output,outputDecimals)},review:[],steps:[
+  poolFees:chosen.fees,...(minimumOutput!==undefined?{authorizationMinOutput:String(minimumOutput)}:{}),routeSearch:{quoted:results.length,candidates:candidates.length,limited:results.length<candidates.length,expanded:!!snapshot.expanded},slippage,quote:{toCoinAmount:formatUnits(output,outputDecimals)},review:[],steps:[
    ...(allowance<amount?[{kind:'approve',to:intent.asset,value:'0',data:ERC20.encodeFunctionData('approve',[d.router,amount]),spender:d.router,allowance:String(amount)}]:[]),
    {kind:'sell',to:d.router,value:'0',data}
   ]};

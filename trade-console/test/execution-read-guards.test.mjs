@@ -3,6 +3,17 @@ import {executeReviewed,runReviewed} from './support/reviewed-execution.mjs';
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import {Engine} from '../lib/engine.mjs';import {codeIdentity} from '../lib/discovery.mjs';import {bindings,BNB,ERC20} from '../lib/common.mjs';
 const w=bindings()[0],token='0x'+'67'.repeat(20),mint={account:w.account,side:'mint',asset:token,quantity:1,maxBnb:'0'};
+test('fresh identity and official preview overlap, but neither can authorize dispatch without the other',async()=>{
+ for(const changed of [false,true]){
+  let checking=false,identityStarted=false,previewStarted=false,submits=0,releaseIdentity,releasePreview;
+  const identityGate=new Promise(r=>releaseIdentity=r),previewGate=new Promise(r=>releasePreview=r);
+  const rpc={getCode:async()=>{if(checking){identityStarted=true;await identityGate;}return checking&&changed?'0x6001':'0x6000';},send:async()=> '0x'+'00'.repeat(32)};
+  const identity=await codeIdentity(rpc,token),plan={kind:'contract',wallet:w.address,identity,token,inputToken:BNB,outputToken:token,amountIn:'0',quantity:1,metaVerified:true,review:[],steps:[{kind:'mint',to:token,data:'0x12345678',value:'0'}]};
+  const bridge={ready:async()=>({}),call:async(a,args)=>{if(args[1]==='preview'){if(checking){previewStarted=true;await previewGate;}return {requestId:'mock',simulationResult:{simulationCode:'000000000',balanceChanges:[]}};}assert.equal(args[1],'execute');submits++;return {txHash:'mock'};}};
+  const data=fs.mkdtempSync(path.join(os.tmpdir(),'parallel-execution-')),engine=new Engine({data,rpc,bridge,live:true,planFn:async()=>plan});engine.observeContract=async(o,e)=>{e.status='CONFIRMED';};
+  try{await engine.prepare(mint,'overlap');engine.previews.clear();checking=true;const pending=executeReviewed(engine,'overlap',{authorization:'mock only'});await new Promise(r=>setImmediate(r));assert.ok(identityStarted&&previewStarted);releasePreview();await new Promise(r=>setImmediate(r));assert.equal(submits,0);releaseIdentity();const result=await pending;assert.equal(submits,changed?0:1);assert.equal(result.status,changed?'BLOCKED':'CONFIRMED');}finally{releaseIdentity();releasePreview();fs.rmSync(data,{recursive:true,force:true});}
+ }
+});
 test('each contract step gets one final identity check; changed runtime still blocks submission',async()=>{
  for(const changed of [false,true]){
   let code='0x6000',identityReads=0,submits=0;const rpc={getCode:async()=>{identityReads++;return code;},send:async()=> '0x'+'00'.repeat(32)},identity=await codeIdentity(rpc,token);

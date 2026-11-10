@@ -46,7 +46,7 @@ export async function detectRoute(rpc,token,w,platform){
  if(platform)throw Error(`未能核验 ${platform} 代币注册；不猜测交易入口`);
  return {route:'aggregate',diagnostics:checks.filter(r=>r.status==='rejected').map(r=>r.reason.message)};
 }
-export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=true,overlapRouteReads=false,coldQuoteOverlap=true,earlyBuyQuote=true}={}){
+export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=true,overlapRouteReads=false,coldQuoteOverlap=true,earlyBuyQuote=true,directSellPlan}={}){
  const w=wallet(intent.account).address,hints=hintMap(rpc),hintKey=token.toLowerCase();
  // Opt-in benchmark only: on the current RPC, putting registry and balance
  // reads in the same batch increased latency. Production starts the balance
@@ -70,12 +70,25 @@ export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=
  // Quote and registry are independent READS, including a first visit. Any
  // curve registration wins and discards this quote; its error is also isolated.
  // Holdings are always current and a zero holding never requests a quote.
- const speculative=early||(canSpeculate?quoteOnly().then(value=>({value}),error=>({error})):null);
+ const directEnabled=intent.side==='sell'&&typeof directSellPlan==='function';
+ // A direct fixed-slippage sell does not need an opaque aggregator quote.
+ // Auto mode still obtains and pins the official recommendation under its cap.
+ const speculative=early||(canSpeculate&&(!directEnabled||intent.slippageMode==='auto')?quoteOnly().then(value=>({value}),error=>({error})):null);
+ const checkedQuote=result=>{if(result.error)throw result.error;const quote=result.value;if(!quote.toCoinAmount||Number(quote.toCoinAmount)<=0)throw Error('聚合器没有返回有效报价');return quote;};
+ const startDirect=()=>{
+  const policy=intent.slippageMode==='auto'?(speculative||quoteOnly().then(value=>({value}),error=>({error}))).then(result=>quotedSlippage(intent,checkedQuote(result))):Promise.resolve(quotedSlippage(intent,{}));
+  // All work here is read-only speculation. A registered curve still wins;
+  // a rejected speculative plan never escapes as an unhandled rejection.
+  const seed={kind:'swap',wallet:w,token,inputToken:aggregateInput,outputToken:aggregateOutput,amountIn:String(aggregateAmount),holdingBefore:String(balance),slippage:{mode:'fixed',bps:intent.slippageBps,capBps:intent.slippageBps}};
+  return Promise.all([directSellPlan(seed,policy),policy]).then(([plan])=>({plan}),error=>({error}));
+ };
+ const speculativeDirect=directEnabled&&canSpeculate?startDirect():null;
  const routed=pendingRoute?await pendingRoute:{route:await measure('tradeRoute',()=>detectRoute(rpc,token,w,platform))};if(routed.error)throw routed.error;const route=routed.route;
  if(route.route!=='aggregate')hints.delete(hintKey);
  if(route.route==='aggregate'){
   if(intent.currency==='QUOTE')throw Error('聚合兑换没有唯一曲线计价币，请明确选择 BNB、USDT 或 WBNB');
   if(!route.diagnostics?.length){if(hints.size>256)hints.clear();hints.set(hintKey,Date.now()+30000);}
+  if(directEnabled){const direct=await (speculativeDirect||startDirect());if(direct.error)throw direct.error;return direct.plan;}
   const input=aggregateInput,output=aggregateOutput,amountIn=aggregateAmount,args=aggregateArgs;
   const result=speculative?await speculative:{value:await quoteOnly()};if(result.error)throw result.error;const quote=result.value;
   if(!quote.toCoinAmount||Number(quote.toCoinAmount)<=0)throw Error('聚合器没有返回有效报价');

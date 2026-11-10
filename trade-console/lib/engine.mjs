@@ -116,19 +116,16 @@ export class Engine{
   const overlap=intent.side==='mint'?['corla','binancians'].includes(resolved.platform):!intent.openingOnly&&this.tradePlanOptions.overlapTradePreflight!==false;
   if(!overlap)await ensureReady();
   const tradeBridge=overlap?{call:async(...args)=>{await ensureReady();return this.bridge.call(...args);},ready:async(...args)=>{await ensureReady();return this.bridge.ready(...args);}}:this.bridge;
+  const directSellPlan=(seed,slippagePromise)=>manualDirectSell(this.rpc,tradeBridge,intent,seed,{scan:this.openingScan,preparation:this.openingPreparation,slippagePromise});
   // Buying always targets the explicitly supplied token CA. Audit and quote
   // are independent reads; both still complete before preview/submission.
   let [p,audit]=await Promise.all([
-   intent.side==='mint'?mintPlan(this.rpc,this.bridge,intent,resolved.address,resolved,this.experience,{officialPreview:true}):(intent.openingOnly?(context.openingRecovery?openingRecoveryPlan(this.rpc,this.bridge,intent,this.get(context.openingRecovery.sourceId),{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation}):openingPlan(this.rpc,this.bridge,intent,{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation,failedPreviews:recentOpeningPreviewFailures(this.list(),intent)})):tradePlan(this.rpc,tradeBridge,intent,resolved.address,resolved.platform,this.tradePlanOptions)),
+   intent.side==='mint'?mintPlan(this.rpc,this.bridge,intent,resolved.address,resolved,this.experience,{officialPreview:true}):(intent.openingOnly?(context.openingRecovery?openingRecoveryPlan(this.rpc,this.bridge,intent,this.get(context.openingRecovery.sourceId),{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation}):openingPlan(this.rpc,this.bridge,intent,{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation,failedPreviews:recentOpeningPreviewFailures(this.list(),intent)})):tradePlan(this.rpc,tradeBridge,intent,resolved.address,resolved.platform,{...this.tradePlanOptions,directSellPlan})),
    intent.side==='sell'?measure('tokenAudit',()=>this.sellAudit(resolved.address)):intent.side==='buy'?measure('tokenAudit',()=>this.auditFn(resolved.address)).catch(e=>({available:false,reason:e.message})):null,
    ensureReady()
   ]);
-  // A successful opaque aggregate trade does not prove its next route's fee.
-  // Manual sells prefer factory-verified direct pools before opaque execution.
-  if(intent.side==='sell'&&!intent.openingOnly&&p.kind==='swap'){
-   try{p=await manualDirectSell(this.rpc,this.bridge,intent,p,{scan:this.openingScan,preparation:this.openingPreparation});}
-   catch(e){p.directRouteUnavailable=e.message;}
-  }
+  // Manual external sells already built their verified direct pool while the
+  // independent quote/registry reads ran. Never rebuild the same plan here.
   if(intent.side==='sell')p.audit=audit;
   project.address=resolved.address;p.resolved=resolved;p.project=project;
   if(intent.claimSell&&p.route!=='corla:mint')throw Error('领取后联动卖出目前仅支持 Corla 认购');
@@ -232,16 +229,23 @@ export class Engine{
      if(o.review.length&&!acknowledgeReview)return {...o,needsReview:true};
     }
     if(o.plan.afterMint){if(!this.onAuthorized)throw Error('自动领取服务未连接，请关闭自动领取或使用交易台服务');this.onAuthorized(o);}
-    // Independent read-only guards; both must finish before any submission.
-    await Promise.all([this.bridge.ready(o.intent.account,{external:o.plan.kind==='contract'}),(async()=>{
-     if(o.intent.side==='sell'){const [now]=await read(this.rpc,o.plan.token,ERC20,'balanceOf',[o.plan.wallet]);if(String(now)!==o.plan.holdingBefore)throw Error('当前持仓已变化，请重新预览，按最新余额计算');}
-    })()]);
-    if(o.plan.kind==='swap'){await verifyIdentity(this.rpc,o.plan.identity);if(!mayContinue())return cancelled();return await this.submitSwap(o,swapReceiptWaitMs===0?0:10000);}
+    // Start all independent read-only guards together with identity/preview.
+    // Capture the reviewed amount; a later reroute must not rewrite this guard.
+    const guardedPlan=o.plan;
+    const executionReady=Promise.all([this.bridge.ready(o.intent.account,{external:guardedPlan.kind==='contract'}),(async()=>{
+     if(o.intent.side==='sell'){const [now]=await read(this.rpc,guardedPlan.token,ERC20,'balanceOf',[guardedPlan.wallet]);if(String(now)!==guardedPlan.holdingBefore)throw Error('当前持仓已变化，请重新预览，按最新余额计算');}
+    })()]).then(()=>({}),error=>({error}));
+    if(o.plan.kind==='swap'){const ready=await executionReady;if(ready.error)throw ready.error;await verifyIdentity(this.rpc,o.plan.identity);if(!mayContinue())return cancelled();return await this.submitSwap(o,swapReceiptWaitMs===0?0:10000);}
     // Contract identity is checked below, immediately before EACH step. Avoid
     // the redundant identical check here and retain approval -> swap ordering.
     while(true){
      for(let index=o.nextStep||0;index<o.plan.steps.length;index++){
       if(!mayContinue())return cancelled();
+      // Fresh identity checks and quote/official preview reads are independent.
+      // Capture THIS plan: a fee-search reroute restarts the loop and checks the
+      // new target again. Every guard must finish before execute can be called.
+      const identityPlan=o.plan;
+      const identityCheck=measure('executionIdentity',()=>Promise.all([verifyIdentity(this.rpc,identityPlan.identity),...(identityPlan.protocolIdentities||[]).map(identity=>verifyIdentity(this.rpc,identity))])).then(()=>({}),error=>({error}));
       // Authorization can take several blocks. Refresh the automatic sale's
       // quote and deadline AFTER approval, then obtain a new official preview.
       // Preserve the original amount, venue, recipient and slippage percentage.
@@ -256,7 +260,7 @@ export class Engine{
       if(hasPreviewRisks(p.raw.risks)&&(rejectRisks||!acknowledgeReview))throw Error('新的钱包预览包含风险，需要查看并确认');
       o.preview=p.review;o.previewAt=p.at;
       const held=feeGate(step.kind==='sell'?p.review:null,step.kind==='sell');if(held){o.nextStep=index;return this.write({...held,nextStep:index});}
-      await Promise.all([verifyIdentity(this.rpc,o.plan.identity),...(o.plan.protocolIdentities||[]).map(identity=>verifyIdentity(this.rpc,identity))]);
+      const [identityResult,readyResult]=await Promise.all([identityCheck,executionReady]);if(readyResult.error)throw readyResult.error;if(identityResult.error)throw identityResult.error;
       if(!mayContinue())return cancelled();
       const entry={index,stage:o.stage||0,plan:o.plan,step,preview:p.review,requestId:p.raw.requestId,status:'SUBMITTING',submitStartedAt:Date.now()};
       o.steps.push(entry);o.status='SUBMITTING';this.write(o);
