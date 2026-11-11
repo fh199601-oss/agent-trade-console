@@ -1,6 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import {recoverableOpeningSale,openingRecoveryPlan} from '../lib/opening-recovery.mjs';
+import {contractRefusal} from '../lib/provider-outcome.mjs';
 import {OpeningSell} from '../lib/opening-sell.mjs';
 import {DEXES,V2_ROUTER_ABI} from '../lib/opening-dex.mjs';
 import {BNB,WBNB,ERC20,bindings} from '../lib/common.mjs';
@@ -14,6 +15,12 @@ function original(id='original'){
 test('wallet-confirmed non-dispatch allows recovery, but unknown acceptance never does',()=>{
  const o=original(),e=o.steps[1];delete e.receipt;delete e.txHash;delete e.revertVerified;o.error={code:'WORKER_OFFLINE'};e.submissionOutcome={source:'local-wallet',accepted:false};assert.equal(recoverableOpeningSale(o),true);
  for(const extra of [{result:{}},{txHash:hash},{receipt:{status:'0x1'}},{submissionOutcome:{source:'provider',accepted:false}}]){const x=structuredClone(o);Object.assign(x.steps[1],extra);assert.equal(recoverableOpeningSale(x),false);}
+});
+test('explicit execute simulation rejection permits bounded opening recovery after confirmed approval',()=>{
+ const o=original(),e=o.steps[1];delete e.receipt;delete e.txHash;delete e.revertVerified;
+ e.error=o.error={code:953401,message:'simulation error',responseReceived:true};e.submissionOutcome=contractRefusal(e.error);
+ assert.equal(recoverableOpeningSale(o),true);
+ for(const mutate of [r=>r.steps[1].error.responseReceived=false,r=>r.steps[1].result={},r=>r.steps[0].status='PENDING',r=>r.result={},r=>r.steps[1].submittedAt=1]){const r=structuredClone(o);mutate(r);assert.equal(recoverableOpeningSale(r),false);}
 });
 test('alternate route requires exact proven revert, never ambiguous dispatch, successful receipt or approval failure',()=>{
  assert.equal(recoverableOpeningSale(original()),true);

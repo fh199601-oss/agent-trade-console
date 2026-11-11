@@ -1,4 +1,5 @@
 import {percentOf,parseUnits} from './common.mjs';
+import {providerRefusal,providerRefusalMessage} from './provider-outcome.mjs';
 
 export function sellAmount(balance,percent){
  if(BigInt(balance)===0n)throw Object.assign(Error('当前钱包无此代币持仓，已跳过；其他有持仓钱包继续执行'),{code:'NO_HOLDINGS',details:{holdingRaw:'0',percent:String(percent)}});
@@ -19,10 +20,27 @@ export function quotedSlippage(intent,quote){
  return {mode:'auto',bps,capBps:intent.slippageBps};
 }
 
+// Only the fixed, independently quoted direct-pool planner uses this fallback.
+// "No liquidity" from the aggregator is not proof that a singleton pool is
+// closed. Use a conservative 1% (or the user's smaller cap), never their full
+// cap by default. Invalid recommendations, auth failures and timeouts still fail.
+export function directSlippage(intent,result){
+ if(result.error){
+  const e=result.error;
+  if(intent.slippageMode==='auto'&&e.responseReceived===true&&String(e.code)==='100'&&/^No liquidity available(?:, please try again later\.)?$/i.test(e.message||'')&&Number.isInteger(intent.slippageBps)&&intent.slippageBps>=0&&intent.slippageBps<=5000)
+   return {mode:'auto',bps:Math.min(100,intent.slippageBps),capBps:intent.slippageBps,source:'verified-direct-fallback'};
+  throw e;
+ }
+ const quote=result.value;
+ if(!quote?.toCoinAmount||Number(quote.toCoinAmount)<=0)throw Error('聚合器没有返回有效报价');
+ return quotedSlippage(intent,quote);
+}
+
 export function tradeError(e){
  if(Number(e?.code)===30003001){
   const raw=String(e.providerMessage||e.message||'未知原因');
-  const message=/potentially risky|risk warning|风险提示/i.test(raw)?'币安要求在 App 查看该代币的风险提示；不会自动重试或提高滑点。':/slippage|滑点/i.test(raw)?'官方返回滑点条件未满足；本次不会自动放宽滑点或重新下单。':'官方返回错误：'+raw;
+  const refusal=providerRefusal(e);
+  const message=refusal?.kind==='INSUFFICIENT_BNB'?providerRefusalMessage(refusal):/potentially risky|risk warning|风险提示/i.test(raw)?'币安要求在 App 查看该代币的风险提示；不会自动重试或提高滑点。':/slippage|滑点/i.test(raw)?'官方返回滑点条件未满足；本次不会自动放宽滑点或重新下单。':'官方返回错误：'+raw;
   return {message,code:e.code,providerMessage:raw};
  }
  return {message:e.message,code:e.code||'ERROR'};

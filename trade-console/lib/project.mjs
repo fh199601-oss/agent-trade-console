@@ -1,3 +1,4 @@
+import {recognizeStagedQuoteMint,stagedQuoteState} from './staged-quote-mint.mjs';
 import {recognizeRuntimeAnswerMint,runtimeAnswerState} from './runtime-answer-mint.mjs';
 import {recognizeQuotaTokenSale,quotaTokenSaleState} from './quota-token-sale.mjs';
 import {recognizeChallengePow,challengePowState} from './challenge-pow.mjs';
@@ -27,6 +28,7 @@ import {recognizeSourceSale,sourceSaleState} from './source-sale.mjs';
 import {recognizeProtectedSale,protectedSaleState} from './protected-sale.mjs';
 import {inspectCorla} from './corla.mjs';
 import {inspectBinancians} from './binancians.mjs';
+import {inspectBagent} from './bagent.mjs';
 let defaultExperience;
 export async function inspectProject(rpc,bridge,asset,{experience=defaultExperience??=new ExperienceStore(),learn=false}={}){
  return profiled('inspect',async()=>{try{const result=await inspectImpl(rpc,bridge,asset,experience,learn);return {...result,diagnostics:snapshot()};}catch(e){e.diagnostics=snapshot();throw e;}});
@@ -35,17 +37,19 @@ async function inspectImpl(rpc,bridge,asset,experience,learn,resolvedOverride=nu
  if(!resolvedOverride){const resolved=await measure('projectDiscovery',()=>discover(asset,{rpc,chainFallback:true,learn}));
   if(resolved.platform==='corla')return resolved.address?inspectCorla(rpc,resolved,bindings()):resolved;
   if(resolved.platform==='binancians')return inspectBinancians(rpc,resolved,bindings());
+  if(resolved.platform==='bagent')return inspectBagent(rpc,resolved,bindings());
   resolvedOverride=resolved;
  }
  const resolved=resolvedOverride||await measure('projectDiscovery',()=>discover(asset,{rpc,chainFallback:true,learn}));if(!resolved.address)return {...resolved,quotas:[],inputExperience:experience.lookupInput(resolved.source||asset),needAiDeep:failureKind(resolved.failure)==='adapter_needed',referral:await resolveReferral(rpc,bridge,resolved,{})};
- await rpc.verifyChain();const meta={...await sourceFor(rpc,resolved.address),abiHints:resolved.abiHints};
+ await rpc.verifyChain();const meta={...await sourceFor(rpc,resolved.address),abiHints:resolved.abiHints,frontendCalls:resolved.frontendCalls};
  const assetRoles=resolved.addresses?.find(r=>same(r.address,resolved.token))?.verifiedRoles||[];
  let token=resolved.token||null,assetKind=assetRoles.includes('token')?'Erc20':assetRoles.includes('nft')?'Erc721':null,referral=null;
- const answerType=recognizeRuntimeAnswerMint(meta,resolved),quotaType=recognizeQuotaTokenSale(meta),protectedType=recognizeProtectedSale(meta),sourceType=recognizeSourceSale(meta),socialType=recognizeSocialSale(meta),challengeType=recognizeChallengePow(meta),specialType=recognizeSpecialMint(meta),powType=recognizePowMint(meta),saleType=recognizeVerifiedSale(meta),directType=recognizeDirectTokenMint(meta),guardedType=recognizeGuardedIdMint(meta),primaryType=recognizePrimaryHandleMint(meta),fairType=recognizeFairMint(meta),nftType=recognizeNftMint(meta),handleType=recognizeHandleMint(meta),recognition=samples[meta.hash]||answerType||quotaType||protectedType||sourceType||socialType||challengeType||specialType||powType||saleType||directType||guardedType||primaryType||handleType||nftType||fairType?null:await assistMint(rpc,meta,resolved,sourceFor),mintRoutes=recognition?mintRouteOptions(recognition.routes):[];
+ const stagedType=recognizeStagedQuoteMint(meta),answerType=recognizeRuntimeAnswerMint(meta,resolved),quotaType=recognizeQuotaTokenSale(meta),protectedType=recognizeProtectedSale(meta),sourceType=recognizeSourceSale(meta),socialType=recognizeSocialSale(meta),challengeType=recognizeChallengePow(meta),specialType=recognizeSpecialMint(meta),powType=recognizePowMint(meta),saleType=recognizeVerifiedSale(meta),directType=recognizeDirectTokenMint(meta),guardedType=recognizeGuardedIdMint(meta),primaryType=recognizePrimaryHandleMint(meta),fairType=recognizeFairMint(meta)&&!recognizeMint(meta).routes.some(r=>r.frontend),nftType=recognizeNftMint(meta),handleType=recognizeHandleMint(meta),recognition=samples[meta.hash]||stagedType||answerType||quotaType||protectedType||sourceType||socialType||challengeType||specialType||powType||saleType||directType||guardedType||primaryType||handleType||nftType||fairType?null:await assistMint(rpc,meta,resolved,sourceFor),mintRoutes=stagedType?[{id:'staged:'+stagedType.freeMethod,method:stagedType.freeMethod,lane:'free',title:'免费阶段领取',description:'免费阶段内领取当前钱包额度；无邀请参数'},{id:'staged:'+stagedType.method,method:stagedType.method,lane:'paid',title:'付费份额认购',description:'按链上报价付款；开盘前按 Agent ID 额度，邀请仅用于付费入口'}]:recognition?mintRouteOptions(recognition.routes):[];
  if(recognition&&!recognition.routes.length&&resolved.chainLearning&&!resolved.chainRedirected){const next=applyChainEvidence(resolved,resolved.chainLearning);if(next.address&&!same(next.address,meta.address))return inspectImpl(rpc,bridge,asset,experience,false,{...next,chainRedirected:true});}
  const result=await measure('walletEligibility',()=>Promise.all(bindings().map(async w=>{
   const learned=experience.lookup(meta.identity,{account:w.account,wallet:w.address,scope:'free',referral:'account1'});
   try{
+   if(stagedType){const s=await stagedQuoteState(rpc,{account:w.account,scope:'all',referral:'account1'},meta,w,stagedType,{includeBudget:true});token=s.token;assetKind=s.assetKind;if(w.account===1)referral=s.referral;return {...w,...s.info,adapter:s.name,...(s.blocked?{error:s.blocked.message,errorCode:s.blocked.code,failureKind:failureKind(s.blocked)}:{})};}
    if(answerType){const s=await runtimeAnswerState(rpc,{account:w.account,scope:'free'},meta,w,resolved,answerType);token=s.token;assetKind=s.assetKind;return {...w,...s.info,adapter:s.name};}
    if(socialType){const s=await socialSaleState(rpc,{account:w.account,scope:'free'},meta,w,socialType);token=s.token;assetKind=s.assetKind;if(w.account===1)referral=socialSaleReferral(s);return {...w,...s.info,adapter:s.name,failureKind:s.blocked?failureKind({code:s.blockedCode,message:s.blocked}):null};}
    if(challengeType){const s=await challengePowState(rpc,meta,w,challengeType);token=s.token;assetKind=s.assetKind;return {...w,...s.info,adapter:s.name};}
@@ -88,12 +92,18 @@ async function inspectImpl(rpc,bridge,asset,experience,learn,resolvedOverride=nu
     return {...w,available:ready.length>0,error:ready.length?null:states.map(s=>s.error).filter(Boolean).join('；'),freeRemaining:free?.available&&free.quote.total.raw==='0'?knownRemaining(free)||'至少 1（未证明全部免费上限）':free?.code==='NO_QUOTA'?'0':null,paidRemaining:paid?.available?knownRemaining(paid)||'至少 1（请指定份数）':paid?.code==='NO_QUOTA'?'0':null,unitPrice:paid?.quote?.total||q?.total,adapter:recognition.routes.map(r=>r.method).join(' / '),routes:states.map(({quote,...s})=>s),experience:learned,notes:states.filter(s=>s.error).map(s=>s.method+'：'+s.error)};
    }
    const ref=addressReferral(m,route,{account:w.account,referral:'account1'});referral??=ref;
-   const q=await adaptiveQuoteWithLearning(rpc,m,resolved,route,w,1,{tag:'0x'+bn.toString(16),number:bn,timestamp:Number(BigInt(b.timestamp))},sourceFor,{referrer:ref?.callValue});
+   const block={tag:'0x'+bn.toString(16),number:bn,timestamp:Number(BigInt(b.timestamp))},readCache=new Map();
+   const quote=n=>adaptiveQuoteWithLearning(rpc,m,resolved,route,w,n,block,sourceFor,{referrer:ref?.callValue,readCache});
+   const q=await quote(1);
    if(q.expectedAsset){token=q.expectedAsset.token;assetKind=q.expectedAsset.kind;}
-   return {...w,available:q.available,error:q.reason,freeRemaining:q.total.raw==='0'?'至少 1（未证明全部免费上限）':'0 或未知',paidRemaining:null,limits:q.limits,unitPrice:q.total,adapter:q.routeMethod,experience:learned,notes:['通用入口仅显示已核验数据，未识别额度不会猜测']};
+   let full=null,budgetError=null;
+   // A public inventory count is not a per-wallet spending limit. Auto budgets
+   // require a bounded wallet allowance and an exact current-wallet full call.
+   if(q.available&&q.limits.max>0&&(q.limits.walletRemaining!==null||q.limits.callRemaining!==null))try{const f=q.limits.max===1?q:await quote(q.limits.max);if(f.available&&f.simulated)full=f;}catch(e){budgetError=e.message;}
+   return {...w,available:q.available,error:q.reason,freeRemaining:full?.freeUnits!==null&&full?.freeUnits!==undefined?String(full.freeUnits):q.total.raw==='0'?'至少 1（未证明全部免费上限）':'0 或未知',paidRemaining:full?.paidUnits!==null&&full?.paidUnits!==undefined?String(full.paidUnits):null,limits:q.limits,unitPrice:q.total,adapter:q.routeMethod,experience:learned,...(full?{budgetCurrency:'BNB',fullBudget:{quantity:full.quantity,raw:full.total.raw,scope:full.freeUnits===0?'paid':'all',block:full.block,method:full.routeMethod},singleBudget:{quantity:1,raw:q.total.raw,scope:q.freeUnits===0?'paid':'all'}}:{}),...(budgetError?{budgetError}:{}),notes:['报价使用当前钱包及链上额度，并核对准确付款和到账资产；Gas 另计']};
   }catch(e){const error=mintError(e,meta.verified?meta.abi:null);return {...w,error:error.message,errorCode:error.code,failureKind:failureKind(error),needAiDeep:failureKind(error)==='adapter_needed'};}
  })));
  if(resolved.addresses&&assetKind&&token){const role=['Erc721','Erc1155'].includes(assetKind)?'nft':'token';let row=resolved.addresses.find(r=>same(r.address,token));if(!row){row={address:token,field:'已核验到账资产',roles:[],verifiedRoles:[],evidence:[],primary:false};resolved.addresses.push(row);}row.roles=row.roles.filter(r=>r!=='unknown');if(!row.roles.includes(role))row.roles.push(role);if(!row.verifiedRoles.includes(role)){row.verifiedRoles.push(role);row.evidence.push({role,kind:'mint-asset',label:'当前合约适配器核验的到账资产'});}row.roleLabels=row.roles.map(r=>ROLE_LABELS[r]);}
  referral=await measure('referral',()=>resolveReferral(rpc,bridge,resolved,meta,referral));
- return {...resolved,mintRoutes,mintContract:resolved.addresses&&!resolved.addresses.find(r=>r.primary)?.verifiedRoles.includes('mint')?null:meta.address,token,assetKind,quotas:result,referral,verifiedSource:meta.verified,runtimeFingerprint:meta.hash,experience:experience.lookup(meta.identity),needAiDeep:result.some(r=>r.needAiDeep),at:Date.now()};
+ return {...resolved,...(stagedType?{budgetPolicy:'verified-staged-quote'}:result.some(r=>r.singleBudget&&r.fullBudget)?{budgetPolicy:'current-wallet-quote'}:{}),mintRoutes,mintContract:resolved.addresses&&!resolved.addresses.find(r=>r.primary)?.verifiedRoles.includes('mint')?null:meta.address,token,assetKind,quotas:result,referral,verifiedSource:meta.verified,runtimeFingerprint:meta.hash,experience:experience.lookup(meta.identity),needAiDeep:result.some(r=>r.needAiDeep),at:Date.now()};
 }

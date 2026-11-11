@@ -30,7 +30,7 @@ function fixture({mode='auto',quoteCurrency=WBNB,holding=1000n}={}){
 test('first manual sell overlaps scan, metadata, fresh holdings, official policy and registration; all gates must finish',async()=>{
  const f=fixture();f.gates.quote=deferred();f.gates.registry=deferred();f.gates.scan=deferred();f.gates.meta=deferred();let done=false;
  const result=f.run().then(p=>{done=true;return p;});await tick();
- assert.equal(f.seen.quote,1);assert.equal(f.seen.scan,1);assert.equal(f.seen.meta,1);assert.equal(f.seen.balance,2);assert.equal(f.seen.registry,6);
+ assert.equal(f.seen.quote,1);assert.equal(f.seen.scan,1);assert.equal(f.seen.meta,1);assert.equal(f.seen.balance,2);assert.equal(f.seen.registry,7);
  f.gates.scan.resolve();f.gates.meta.resolve();await tick();assert.equal(f.seen.venue,1);assert.equal(done,false);
  f.gates.quote.resolve();await tick();assert.equal(done,false);f.gates.registry.resolve();
  const p=await result;assert.equal(p.manualRouteRecovery,true);assert.equal(p.outputToken,BNB);assert.equal(p.amountIn,'500');assert.equal(p.minOutput,'897');assert.deepEqual(p.slippage,{mode:'auto',bps:1000,capBps:2000});
@@ -42,12 +42,21 @@ test('fixed-slippage direct sale omits unused aggregator quote and retains exact
 test('auto recommendation failure or excess cap cannot produce a direct sale despite a healthy pool',async()=>{
  for(const [slippage,code]of [['0.21','SLIPPAGE_LIMIT'],['unknown','SLIPPAGE_UNKNOWN']]){const f=fixture();f.gates.slippage=slippage;await assert.rejects(f.run(),e=>e.code===code);assert.equal(f.seen.quote,1);}
 });
+test('aggregator no-liquidity may use a verified direct quote at 1% or smaller cap; auth and transport errors never bypass',async()=>{
+ for(const cap of [2000,50]){
+  const f=fixture();f.intent.slippageBps=cap;f.bridge.call=async()=>{throw Object.assign(Error('No liquidity available, please try again later.'),{code:100,responseReceived:true});};
+  const p=await f.run();assert.equal(p.slippage.bps,Math.min(100,cap));assert.equal(p.slippage.source,'verified-direct-fallback');assert.equal(p.minOutput,String(997n*BigInt(10000-Math.min(100,cap))/10000n));
+ }
+ for(const error of [Object.assign(Error('No liquidity available, please try again later.'),{code:100}),Object.assign(Error('wallet session expired'),{code:100,responseReceived:true}),Object.assign(Error('timeout'),{code:100,responseReceived:true})]){
+  const f=fixture();f.bridge.call=async()=>{throw error;};await assert.rejects(f.run(),e=>e===error);
+ }
+});
 test('zero holdings start neither a quote nor pool scan; requested output is never silently changed',async()=>{
  const empty=fixture({holding:0n});await assert.rejects(empty.run(),e=>e.code==='NO_HOLDINGS');assert.equal(empty.seen.scan+empty.seen.quote,0);
- const f=fixture();f.intent.currency='USDT';await assert.rejects(f.run(),e=>e.code==='OPENING_WAIT');
+ const f=fixture();f.intent.currency='USDT';await assert.rejects(f.run(),e=>e.code==='SELL_ROUTE_UNAVAILABLE');
 });
 test('no-pool and token read failures retain handled promises and never synthesize a plan',async()=>{
- const f=fixture();await assert.rejects(openingPlan(f.rpc,f.bridge,f.intent,{scan:async()=>({pools:[]}),preparation:{token:async()=>{throw Error('metadata failed');}},slippagePromise:Promise.reject(Error('policy failed'))}),e=>e.code==='OPENING_WAIT');await tick();
+ const f=fixture();await assert.rejects(openingPlan(f.rpc,f.bridge,f.intent,{scan:async()=>({pools:[]}),preparation:{token:async()=>{throw Error('metadata failed');}},slippagePromise:Promise.reject(Error('policy failed'))}),e=>e.code==='SELL_ROUTE_UNAVAILABLE');await tick();
 });
 test('opening tasks read holdings after discovery so tokens arriving during detection are not skipped',async()=>{
  const f=fixture({mode:'fixed'}),gate=deferred();let detected=false;

@@ -3,7 +3,7 @@ import {createMintQuantityControl} from './mint-quantity.mjs';
 import {createUpdateDialog} from './app-updates.mjs';
 import {createTaskCenter} from './task-center.mjs';
 import {corlaBudget,refreshMintBudget} from './corla-budget.mjs';
-import {needsRoute,statusLabel,projectLabel,reviewSummary,totalTimeLabel,compactReviewGroups} from './review-model.mjs';
+import {needsRoute,statusLabel,projectLabel,reviewSummary,totalTimeLabel,compactReviewGroups,trackingLabel} from './review-model.mjs';
 import {corlaProgress,corlaSummary} from './corla-view.mjs';
 import {executeIndependent,runInstantTrades,isReady,independentOrder,tradeResultMessage,followSubmittedOrder} from './trade-workflow.mjs';
 import {normalizeAssetInput,mintTradeCA,pasteAsset,resolvedTradeAsset} from './asset-input.mjs';
@@ -65,7 +65,7 @@ function el(tag,text,className){const e=document.createElement(tag);if(text!==un
 const preferenceKey='agent-trade-console:manual-trades:v1';
 function updateTradePreferences(save=false){
  const auto=$('sellSlippageMode').value==='auto';$('sellSlippageLabel').textContent=auto?'上限 %':'固定 %';
- $('sellSlippageHint').textContent=auto?'聚合卖出采用官方建议，超过上限即停止；内盘使用此上限。':'本次卖出严格使用固定滑点；不足时停止，不会自动放宽。';
+ $('sellSlippageHint').textContent=auto?'优先官方建议；聚合器无流动性但直连池可用时取 1%，均不超过上限。':'本次卖出严格使用固定滑点；不足时停止，不会自动放宽。';
  $('quickState').textContent=$('quick').checked?'已开启 · 点击即交易':'已关闭 · 弹窗确认';
  $('quickHint').textContent=(boot?.mode==='SIMULATION'?'当前为模拟模式，不会签名或提交。':$('quick').checked?'买卖点击即执行，不弹本地确认窗；费用异常在下方显示，不自动放行。币安 App 核对由 App 决定。':'点击买卖按钮后先显示数量、到账币种和滑点，确认后提交。')+' Mint 保留单独确认。';
  if(save)try{localStorage.setItem(preferenceKey,JSON.stringify({quick:$('quick').checked,sellSlippageMode:$('sellSlippageMode').value,sellSlippage:$('sellSlippage').value,buySlippage:$('slippage').value,openingPercent:$('openingPercent').value,openingSlippage:$('openingSlippage').value}));}catch{}
@@ -249,7 +249,7 @@ function renderReviewDetail(o){const div=el('div',undefined,'review-item');div.a
    if(o.intent.side==='mint')div.append(el('div',`${({free:'只用免费额度',paid:'只用付费额度',all:'全部额度'})[o.intent.scope]||'核对额度'} · ${o.intent.quantity==='max'?'打满可核验额度':o.intent.quantity+' 份'} · 预算 ${o.intent.maxBnb} BNB / ${o.intent.maxUsdt||'0'} USDT${o.intent.maxQuote!==undefined?' / '+o.intent.maxQuote+' '+(o.plan?.quota?.currency||'指定付款币'):''}（Gas 另计）`,'helper'));
    if(o.intent.routeId)div.append(el('div','所选方法：'+o.intent.routeId.replace(/^auto:/,''),'mono'));
    if(o.error){div.append(el('p',needsRoute(o)?'请使用上方选择框，然后点击重新预览。':o.error.message));if(o.error.providerMessage){const original=el('details');original.append(el('summary','币安原始返回'),el('p',o.error.providerMessage));div.append(original);}}
-   if(o.plan&&o.intent.side!=='mint'){const p=o.plan;div.append(el('p',`${o.intent.side==='sell'?'卖出当前持仓 '+o.intent.percent+'%':'买入'} · 支出 ${p.quote?.fromCoinAmount||p.amountIn+' 最小单位'} ${p.quote?.fromCoinSymbol||''}`,'review-trade-amount'),el('p',`预计到账 ${p.quote?.toCoinAmount||'见详情'} ${p.quote?.toCoinSymbol||o.intent.currency} · 滑点 ${(p.slippage?.bps??o.intent.slippageBps)/100}%${p.slippage?.mode==='auto'?'（自动建议，上限 '+p.slippage.capBps/100+'%）':''}`));}if(o.plan){div.append(el('p',`${o.plan.route==='corla:mint'?'首笔 1 份 · 本次最多 '+o.plan.fill.targetQuantity+' 份 · ':o.plan.fill?.probe?'免费试算 '+o.plan.quantity+' 份 · 确认后逐批检查剩余额度 · ':o.plan.quantity?o.plan.quantity+' 份 · ':''}准备 ${((o.timing?.prepareMs||0)/1000).toFixed(2)} 秒`),el('div',o.plan.token,'mono'));for(const r of o.review||[])div.append(el('p',r));const details=el('details');details.append(el('summary','查看金额、模拟资产变化与风险详情'),el('pre',JSON.stringify({route:o.plan.route,inputToken:o.plan.inputToken,amountRaw:o.plan.amountIn,minimumOutputRaw:o.plan.minOutput,quota:o.plan.quota,referral:o.plan.referral,fill:o.plan.fill,quote:o.plan.quote,preview:o.preview},null,2)));div.append(details);}
+   if(o.plan&&o.intent.side!=='mint'){const p=o.plan;if(p.gang)div.append(el('p','Gang · '+(p.route==='gang-pool'?'外盘':({curve:'曲线内盘',fair:'Fair 按份认购',fly:'Fly 飞轮内盘'}[p.state?.mode]||'内盘'))+' · 计价 '+(p.quote?.quoteSymbol||'链上原币')+(p.quote?.conversion?' · 含兑换步骤':''),'helper'));div.append(el('p',`${o.intent.side==='sell'?'卖出当前持仓 '+o.intent.percent+'%':'买入'} · 支出 ${p.quote?.fromCoinAmount||p.amountIn+' 最小单位'} ${p.quote?.fromCoinSymbol||''}`,'review-trade-amount'),el('p',`预计到账 ${p.quote?.toCoinAmount||'见详情'} ${p.quote?.toCoinSymbol||o.intent.currency} · 滑点 ${(p.slippage?.bps??o.intent.slippageBps)/100}%${p.slippage?.mode==='auto'?'（'+(p.slippage.source==='verified-direct-fallback'?'直连保守值':'自动建议')+'，上限 '+p.slippage.capBps/100+'%）':''}`));}if(o.plan){div.append(el('p',`${o.plan.route==='corla:mint'?'首笔 1 份 · 本次最多 '+o.plan.fill.targetQuantity+' 份 · ':o.plan.fill?.probe?'免费试算 '+o.plan.quantity+' 份 · 确认后逐批检查剩余额度 · ':o.plan.quantity?o.plan.quantity+' 份 · ':''}准备 ${((o.timing?.prepareMs||0)/1000).toFixed(2)} 秒`),el('div',o.plan.token,'mono'));for(const r of o.review||[])div.append(el('p',r));const details=el('details');details.append(el('summary','查看金额、模拟资产变化与风险详情'),el('pre',JSON.stringify({route:o.plan.route,inputToken:o.plan.inputToken,amountRaw:o.plan.amountIn,minimumOutputRaw:o.plan.minOutput,quota:o.plan.quota,referral:o.plan.referral,fill:o.plan.fill,quote:o.plan.quote,preview:o.preview},null,2)));div.append(details);}
    if(o.diagnostics){const details=el('details'),experience=o.plan?.experience||o.mintContext?.experience,labels={corlaDiscovery:'Corla 工厂直查',corlaMintPlan:'Corla 价格与额度预检',projectDiscovery:'网站与合约识别',codeIdentity:'合约版本检查',verifiedSource:'源码读取',walletReady:'钱包连接检查',mintPlan:'铸造参数与额度',officialPreview:'官方钱包模拟',chainLearning:'链上成功记录回查'};details.append(el('summary','预检耗时与历史经验'));for(const [key,label]of Object.entries(labels)){const stage=o.diagnostics.stages?.[key];if(stage)details.append(el('p',`${label}：${(stage.totalMs/1000).toFixed(2)} 秒${stage.calls>1?'（'+stage.calls+' 次）':''}`));}details.append(el('p',`本次预检合计 ${(o.diagnostics.totalMs/1000).toFixed(2)} 秒；部分阶段并行或嵌套，未包含真实成交时间。`,'helper'));if(experience)details.append(el('p',`匹配当前合约版本的历史记录：${experience.exactMatches} 条。${experience.recommendedRouteId?'已参考历史入口，价格和额度重新核验。':'本次按当前链上信息核验。'}`));details.append(el('p','历史预览通过与真实成交分开记录。','helper'));div.append(details);}
    return div;
 }
@@ -259,6 +259,7 @@ function showReviews(rows){
  for(const [asset,items]of groups){
   const context=items[0].project||items[0].plan?.project||items[0].plan?.resolved;
   const head=el('div',undefined,'review-project');head.append(el('h3',projectLabel(items[0])));$('reviewBody').append(head);
+  if(items.some(o=>o.error?.code==='MINT_QUOTA_UNKNOWN')){const adjust=el('button','改用付费份数','secondary');adjust.addEventListener('click',()=>{$('review').close();mintQuantity.usePaidCount();$('quantity').scrollIntoView({block:'center'});note('请在铸造份数填写数量，再预览；预算上限仍单独保留。');});$('reviewBody').append(adjust);}
   const needing=items.filter(needsRoute);if(needing.length){
    const box=el('div',undefined,'route-picker'),select=el('select'),label=el('label','铸造方式（'+needing.map(o=>o.intent.account+' 号').join('、')+'）');
    const options=needing[0].error.details.routes.filter(r=>needing.every(o=>o.error.details.routes.some(x=>x.id===r.id)));
@@ -335,16 +336,17 @@ async function retryOrder(id){
 }
 async function renderOrders(){
  const rows=await api('orders?summary=1');$('orders').replaceChildren();
- const unresolved=rows.filter(o=>['PENDING','SUBMITTING','SUBMISSION_UNKNOWN','READY_TO_CONTINUE','RECEIPT_REVIEW'].includes(o.status));$('recoveryBar').hidden=!unresolved.length;$('recoveryTitle').textContent=`${unresolved.length} 笔原单待核对 · 未明确失败前不重复提交`;
+ const pendingRows=rows.filter(o=>['PENDING','SUBMITTING','SUBMISSION_UNKNOWN','RECEIPT_REVIEW'].includes(o.status)),continuations=rows.filter(o=>['READY_TO_CONTINUE','APPROVAL_CONFIRMED'].includes(o.status));$('recoveryBar').hidden=!pendingRows.length&&!continuations.length;$('recoveryTitle').textContent=[pendingRows.length?`${pendingRows.length} 笔原单${boot?.capabilities?.originalTrackingVersion?'由后台自动核对':'待核对'}`:'',continuations.length?`${continuations.length} 笔后续步骤待处理`:''].filter(Boolean).join(' · ');
  if(!rows.length){const empty=el('div',undefined,'empty');empty.append(el('span','⌁'),el('b','交易从这里开始'),el('p','输入项目网址或代币 CA，操作记录将在这里显示。'));$('orders').append(empty);return;}
  for(const o of rows){const row=el('div',undefined,'order'),a=el('div'),b=el('div'),c=el('div'),actions=el('div',undefined,'order-actions');row.dataset.status=o.status;
   const name=projectLabel(o),short=/^0x[0-9a-f]{40}$/i.test(name)?name.slice(0,8)+'…'+name.slice(-6):name;
   a.append(el('b',`${o.intent.account} 号 · ${o.intent.side==='buy'?'买入':o.intent.side==='sell'?'卖出':'Mint'}`),el('small',short),el('small',new Date(o.createdAt).toLocaleTimeString()));a.title=o.intent.asset;
   b.append(el('span',statusLabel(o),'order-state'),el('small',o.intent.side==='buy'?`${o.intent.amount} ${o.intent.currency}`:o.intent.side==='sell'?`当前持仓 ${o.intent.percent}%`:o.intent.quantity==='max'?'打满可核验额度':`${o.intent.quantity||'—'} 份`));
-  c.append(el('div',totalTimeLabel(o),'order-time'));if(o.error)c.append(el('small',needsRoute(o)?'请选择铸造方式后重新预览':o.error.message,o.status==='SKIPPED'?'muted':'error'));
+  c.append(el('div',totalTimeLabel(o),'order-time'));if(o.error)c.append(el('small',needsRoute(o)?'请选择铸造方式后重新预览':o.error.message,o.status==='SKIPPED'?'muted':'error'));const progress=trackingLabel(o);if(progress)c.append(el('small',progress));if(o.followError)c.append(el('small',o.followError.message,'error'));
   if(o.txHash){const link=el('a','链上回执 ↗');link.href='https://bscscan.com/tx/'+o.txHash;link.target='_blank';link.rel='noopener';c.append(link);}
   const pending=['PENDING','SUBMITTING','SUBMISSION_UNKNOWN','RECEIPT_REVIEW'].includes(o.status),btn=el('button',pending?'核对原单':needsRoute(o)?'选择方式':isReady(o)?'查看预览':'详情','text-button');btn.addEventListener('click',()=>viewOrder(o.id,{follow:pending}));actions.append(btn);
   if(['FAILED','REJECTED','BLOCKED'].includes(o.status)&&['buy','sell'].includes(o.intent.side)){const retry=el('button','重新发起','secondary');retry.addEventListener('click',()=>retryOrder(o.id));actions.append(retry);}
+  if(boot?.capabilities?.originalTrackingVersion&&['READY_TO_CONTINUE','APPROVAL_CONFIRMED'].includes(o.status)){const stop=el('button','结束剩余步骤','secondary');stop.addEventListener('click',async()=>{stop.disabled=true;try{await api('stop-remaining',{id:o.id});note('剩余步骤已结束，已成功的交易保留，钱包可继续操作。');await refreshOrders();}catch(e){note(e.message,true);stop.disabled=false;}});actions.append(stop);}
   row.append(a,b,c,actions);$('orders').append(row);
  }
 }

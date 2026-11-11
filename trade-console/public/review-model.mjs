@@ -11,9 +11,18 @@ export function totalTimeLabel(o,now=Date.now()){
   ?[t.toConfirmedMs,elapsed(t.confirmedAt),elapsed(o.updatedAt)]
   :ongoing?[elapsed(now),elapsed(o.updatedAt),t.toSubmitMs,t.prepareMs]
   :o.status==='PREPARED'?[t.prepareMs,elapsed(o.updatedAt)]
-  :[elapsed(o.updatedAt),t.toConfirmedMs,t.toSubmitMs,t.prepareMs];
+  :[elapsed(t.finishedAt),elapsed(o.updatedAt),t.toConfirmedMs,t.toSubmitMs,t.prepareMs];
  const ms=candidates.find(valid);
  return `总耗时 ${ms===undefined?'—':(ms/1000).toFixed(2)+' 秒'}${ongoing?'（进行中）':''}`;
+}
+export function trackingLabel(o){
+ if(!['PENDING','SUBMITTING','SUBMISSION_UNKNOWN','RECEIPT_REVIEW'].includes(o.status))return '';
+ const t=o.tracking;
+ if(!t)return '后台将继续核对原单';
+ const progress=`已核对 ${t.attempts} 次 · 最近 ${new Date(t.lastCheckedAt).toLocaleTimeString()}`;
+ if(t.state==='needs-provider-check')return progress+' · 钱包尚未返回交易编号，继续等待原结果';
+ if(t.state==='read-unavailable')return progress+' · 查询暂不可用，后台会重试';
+ return progress+' · 后台跟踪中';
 }
 export function projectLabel(o){
  const p=o.project||o.plan?.project||o.plan?.resolved;

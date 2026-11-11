@@ -1,6 +1,7 @@
 import {address,DATA,hash,load,save} from './common.mjs';
 import {publicText,websiteUrl,getJson} from './network.mjs';
 import {publishedAbiHints,publishedMintPuzzle} from './abi-hints.mjs';
+import {publishedMintCalls} from './frontend-mint.mjs';
 import {keccak256,id} from 'ethers';
 import {measure,count} from './diagnostics.mjs';
 import {labelRoles,descriptionRoles,mergeCandidates,classifyAddresses} from './address-roles.mjs';
@@ -14,6 +15,8 @@ import {discoverCorla,corlaInput} from './corla.mjs';
 import {discoverBinancians} from './binancians.mjs';
 import {binanciansInput} from '../public/binancians-input.mjs';
 import {normalizeAssetInput} from '../public/asset-input.mjs';
+import {bagentInput,discoverBagent} from './bagent.mjs';
+import {htmlAddressPairs} from './html-addresses.mjs';
 const memory=new Map(),pending=new Map(),scopeIds=new WeakMap();let nextScope=0;
 const scopeId=v=>{if(!v)return 0;if(!scopeIds.has(v))scopeIds.set(v,++nextScope);return scopeIds.get(v);};
 const scopeKey=o=>[o.rpc,o.fetchText||publicText,o.sourceLoader||sourceFor,o.chainLearner].map(scopeId).join(':');
@@ -55,6 +58,7 @@ export function extractCandidates(text,source){
  const htmlPair=(label,body)=>{label=plain(label);if(label.length>180)return;const roles=descriptionRoles(label),generic=/^(?:(?:(?:official|current|live|main|deployed|project)\s+)?(?:contract|contract\s+address|deployment)|(?:官方|当前|主|项目)?合约(?:地址)?)$/i.test(label);if(!roles.length&&!generic)return;for(const m of body.matchAll(new RegExp(ADDR,'g')))add(m[1],label,roles,roles.includes('mint')||roles.includes('nft')||generic?3:roles.includes('token')?1:0);};
  for(const m of text.matchAll(/<tr\b[^>]*>([\s\S]{0,6000}?)<\/tr>/gi)){const cells=[...m[1].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)];if(cells.length>=2)htmlPair(cells[0][1],cells.slice(1).map(c=>c[1]).join(' '));}
  for(const m of text.matchAll(/<dt\b[^>]*>([\s\S]{0,500}?)<\/dt>\s*<dd\b[^>]*>([\s\S]{0,3000}?)<\/dd>/gi))htmlPair(m[1],m[2]);
+ if(/<[a-z][^>]*>/i.test(text))for(const p of htmlAddressPairs(text))htmlPair(p.label,p.address);
  for(const line of text.split('\n')){
   const table=line.match(new RegExp('^\\s*\\|\\s*([^|]{1,200})\\|\\s*[`"\']?'+ADDR));
   if(table){const roles=descriptionRoles(table[1]);add(table[2],table[1].trim(),roles,roles.includes('mint')?3:roles.includes('token')||roles.includes('nft')?1:0);}
@@ -77,6 +81,7 @@ export async function discover(asset,options={}){
  try{return structuredClone(await task);}finally{if(pending.get(key)===task)pending.delete(key);}
 }
 async function discoverImpl(asset,{rpc,fetchText=publicText,sourceLoader=sourceFor,chainFallback=false,learn=false,chainLearner=null,corlaRouting=true}={}){
+ if(rpc&&corlaRouting&&bagentInput(asset))return measure('bagentDiscovery',()=>discoverBagent(rpc,asset));
  if(rpc&&corlaRouting&&binanciansInput(asset)?.explicit)return measure('binanciansDiscovery',()=>discoverBinancians(rpc,asset));
  // Platform dispatch precedes generic source/ABI/history discovery. A verified
  // Corla project never enters the unrelated mint-guessing fallback.
@@ -113,9 +118,10 @@ async function discoverImpl(asset,{rpc,fetchText=publicText,sourceLoader=sourceF
  const dataLinks=publicDataLinks([...rows,...extra],u.href).filter(url=>!seen.has(url));
  extra.push(...await Promise.all(dataLinks.map(fetchRow)));
  // Script text is parsed only. It is never eval'ed or imported.
- const candidates=mergeCandidates([...rows.flatMap(r=>[...extractCandidates(r.text,r.url),...rawCandidates(r.text,r.url)]),...extra.flatMap(r=>extractCandidates(r.text,r.url))]);
+ const frontendCalls=publishedMintCalls([...rows,...extra]);
+ const candidates=mergeCandidates([...rows.flatMap(r=>[...extractCandidates(r.text,r.url),...rawCandidates(r.text,r.url)]),...extra.flatMap(r=>extractCandidates(r.text,r.url)),...frontendCalls.map(c=>({address:c.address,field:'网页实际调用 · '+c.method,method:c.name,roles:['mint'],priority:5,source:c.source}))]);
  let resolved;
- if(rpc)resolved=await measure('addressRoles',()=>classifyAddresses(rpc,candidates.flatMap(c=>c.hints.map(h=>({...h,address:c.address}))),sourceLoader));
+ if(rpc)resolved=await measure('addressRoles',()=>classifyAddresses(rpc,candidates.flatMap(c=>c.hints.map(h=>({...h,address:c.address}))),sourceLoader,{frontendCalls}));
  else{const project=candidates.filter(c=>!c.roles.some(r=>['registry','treasury','oracle','art','multicall','payment','router','factory','pool'].includes(r))),top=Math.max(-1,...project.map(x=>x.priority)),strong=project.filter(c=>c.priority===top);
   resolved={address:strong.length===1?strong[0].address:null,addresses:candidates,candidates:project,needsSelection:strong.length!==1};}
  const multipleKnownEntries=resolved.candidates?.filter(r=>r.verifiedRoles?.includes('mint')).length>1;
@@ -123,7 +129,7 @@ async function discoverImpl(asset,{rpc,fetchText=publicText,sourceLoader=sourceF
  const primary=resolved.addresses?.find(r=>r.primary);
  const access=!resolved.address&&!resolved.addresses?.length?siteAccess([...rows,...extra],u.href):null;
  const value={...resolved,access,pageError:rows[0].error||null,discovery:{documents:[...rows,...extra].filter(r=>r.text).map(r=>r.url),candidateCount:candidates.length},name:websiteName(rows[0].text)||primary?.name||u.hostname,nameSource:websiteName(rows[0].text)?'website':primary?.name?'onchain':'hostname',source:u.href,referralHints:detectReferralHints([...rows,...extra],u.href),errors:[...rows,...extra].filter(r=>r.error).map(r=>({url:r.url,error:r.error}))};
- value.abiHints=publishedAbiHints([...rows,...extra]);value.mintPuzzle=publishedMintPuzzle([...rows,...extra]);
+ value.abiHints=publishedAbiHints([...rows,...extra]);value.frontendCalls=frontendCalls;value.mintPuzzle=publishedMintPuzzle([...rows,...extra]);
  if(!value.address){value.failure=discoveryFailure(value);value.reason=value.failure.message;value.needsSelection=!!value.candidates?.length;}
  if(fetchText===publicText&&!value.pageError){if(memory.size>=256)memory.delete(memory.keys().next().value);const incomplete=value.chainLearning?.partial||['unavailable','time-budget'].includes(value.chainLearning?.status)||extra.some(r=>r.error&&/\.m?js$/i.test(new URL(r.url).pathname));memory.set(key,{until:Date.now()+(incomplete?5000:60000),value:structuredClone(value)});}return value;
 }

@@ -1,3 +1,4 @@
+import {INFINITY} from './infinity.mjs';
 import {Interface,WBNB,USDT,same} from './common.mjs';
 // Official deployment tables are linked in OPENING_SPEED_20261104.md.
 export const USDC='0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d';
@@ -18,6 +19,6 @@ export const QUOTER=new Interface(['function quoteExactInputSingle((address toke
 const payment=['function multicall(bytes[]) payable returns(bytes[])','function multicall(uint256,bytes[]) payable returns(bytes[])','function unwrapWETH9(uint256,address) payable'];
 export const V3_LEGACY=new Interface([...payment,'function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 deadline,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns(uint256)']);
 export const V3_MODERN=new Interface([...payment,'function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns(uint256)']);
-export function dexFor(pool){return DEXES.find(d=>same(d.factory,pool.factory)&&d.kind===pool.kind);}
+export function dexFor(pool){return [...DEXES,INFINITY].find(d=>same(d.factory,pool.factory)&&d.kind===pool.kind);}
 export function matchesCurrency(pool,currency){return currency==='AUTO'||same(pool.quote,currency==='USDT'?USDT:WBNB);}
 export function poolRouteKey(pool){return [pool?.factory,pool?.kind,...(pool?.legs||[pool]).map(p=>p?.pool),...(pool?.path||[]),pool?.quote,pool?.fee??''].join(':').toLowerCase();}

@@ -37,6 +37,31 @@ test('Corla input is exact-origin routing, accepts CA and scheme-less deep links
  for(const url of ['https://flap.sh.attacker.test/apps/corla/mint/'+token,'https://flap.sh@attacker.test/apps/corla','https://flap.sh:4430/apps/corla','https://evil-flap.sh/apps/corla','https://flap.sh.attacker/apps/corla'])assert.equal(corlaInput(url),null);
  assert.throws(()=>corlaInput('https://flap.sh/apps/corla/mint/invalid'),{code:'CORLA_LINK'});
 });
+test('reviewed delegate modules are pinned, coalesced and carried into mint/claim/refund submission checks',async()=>{
+ const {rpc,client,state,root}=fixture(),module=addr(8),code='0x6000600500';root.dependencies=[{address:module,codeHash:keccak256(code)}];
+ const identity=client.identity;let reads=0;client.identity=async(...args)=>{if(args[1]===module)reads++;return identity(...args);};
+ await Promise.all([client.factory(root),client.factory(root),client.verify({root,record:state.record})]);assert.equal(reads,1);
+ for(const routeId of ['corla:mint','corla:claim','corla:refund']){
+  state.status=routeId==='corla:claim'?3n:routeId==='corla:refund'?4n:1n;state.claimable=100n;state.refundable=100n;
+  const p=await corlaPlan(rpc,{...intent,routeId},w,{address:mint},{client});assert.equal(p.protocolIdentities[1].target,module);
+  const original=rpc.getCode;rpc.getCode=async a=>a===module?'0x6000600600':original(a);
+  await assert.rejects(verifyIdentity(rpc,p.protocolIdentities[1]),/变化|改变|不一致/);rpc.getCode=original;
+ }
+});
+test('changed or proxied delegate modules block before simulation and failed checks are not cached',async()=>{
+ const {rpc,client,state,root}=fixture(),module=addr(8);root.dependencies=[{address:module,codeHash:keccak256('0x6000600500')}];
+ const original=rpc.getCode;rpc.getCode=async a=>a===module?'0x6000600600':original(a);
+ await assert.rejects(client.locate(mint),{code:'CORLA_VERSION_CHANGED'});assert.equal(state.simulations,0);
+ rpc.getCode=original;await client.factory(root);rpc.getCode=async a=>a===module?'0x6000600600':original(a);
+ await assert.rejects(client.verify({root,record:state.record},{fresh:true}),{code:'CORLA_VERSION_CHANGED'});
+ rpc.getCode=original;const originalIdentity=client.identity;client.identity=async(...a)=>{const x=await originalIdentity(...a);return a[1]===module?{...x,implementation:impl}:x;};
+ await assert.rejects(client.dependencies(root,true),{code:'CORLA_VERSION_CHANGED'});
+});
+test('terminated phase is distinct from waiting for launch and cannot create a claim',async()=>{
+ const {client,state,row,rpc}=fixture();state.status=6n;
+ assert.equal((await client.state(row,w)).info.errorCode,'MINT_ENDED');
+ await assert.rejects(corlaPlan(rpc,{...intent,routeId:'corla:claim'},w,{address:mint},{client}),{code:'CORLA_ENDED'});assert.equal(state.simulations,0);
+});
 test('Flap hints cover bare domains, subdomains, locale prefixes, share suffixes and hash routes without trusting lookalikes',()=>{
  const urls=[`www.flap.sh/apps/corla/mint/${token}/?lang=zh&ref=abc#mint`,`//flap.sh/zh/apps/corla/mint/${token}`,`HTTP://FLAP.SH/apps/corla/mint/${token}`,`https://app.flap.sh/zh-CN/apps/corla/mint/${token}/details?utm_source=x`,`https://flap.sh/#/apps/corla/mint/${token}`,`https://flap.sh/apps/corla?ca=${token}`,`https://www.flap.sh./bnb/${token}?lang=zh`];
  for(const url of urls){assert.equal(corlaInput(url).address,token,url);assert.equal(corlaInput(url).priority,true,url);assert.match(corlaProgress(url),/快速识别/,url);}
@@ -217,38 +242,12 @@ test('claim original-transaction and receipt reads overlap; no sale proof withou
  const p=await corlaPlan(rpc,{...intent,routeId:'corla:claim'},w,{address:mint},{client}),engine=Object.create(Engine.prototype),step=p.steps[0];let txRead=false,release;
  const gate=new Promise(r=>release=r);engine.rpc={getTransaction:async()=>{txRead=true;await gate;return {from:w.address,to:mint,input:step.data,value:'0'};},getTransactionReceipt:async()=>{assert.equal(txRead,true);release();return {from:w.address,to:mint,status:1,logs:[{address:token,...TRANSFER.encodeEventLog(TRANSFER.getEvent('Transfer'),[mint,w.address,100n])}]};}};
  const entry={step,txHash:'fixture-hash'},order={plan:p,intent,status:'PENDING'};await engine.observeContract(order,entry,0);assert.equal(entry.received,'100');assert.equal(entry.status,'CONFIRMED');
- engine.rpc.getTransactionReceipt=async()=>({from:w.address,to:mint,status:1,logs:[]});const bad={step,txHash:'fixture-hash'};await engine.observeContract(order,bad,0);assert.equal(bad.status,'RECEIPT_REVIEW');
+ engine.rpc.getTransactionReceipt=async()=>({from:w.address,to:mint,status:1,logs:[]});const bad={step,txHash:'fixture-hash'};await engine.observeContract(order,bad,0);assert.equal(bad.status,'CONFIRMED_REVIEW');assert.equal(order.status,'CONFIRMED_REVIEW');
 });
 test('claim diagnostics distinguish unopened, refund phase, already claimed and no allocation without any simulation or send',async()=>{
  for(const [patch,code,reason] of [[{status:1n},'CORLA_CLAIM_NOT_OPEN'],[{status:4n},'CORLA_REFUND_ONLY'],[{status:3n,didClaim:true},'CORLA_ALREADY_CLAIMED'],[{status:3n},'NO_QUOTA','no-allocation'],[{status:3n,used:1},'NO_QUOTA','empty']]){
   const {client,state,row}=fixture();Object.assign(state,patch);await assert.rejects(client.claimState(row,w),e=>{assert.equal(e.code,code);if(reason)assert.equal(e.details.reason,reason);return true;});assert.equal(state.simulations,0);
  }
-});
-
-test('reviewed delegate modules are pinned, coalesced and carried into mint/claim/refund submission checks',async()=>{
- const {rpc,client,state,root}=fixture(),module=addr(8),code='0x6000600500';root.dependencies=[{address:module,codeHash:keccak256(code)}];
- const identity=client.identity;let reads=0;client.identity=async(...args)=>{if(args[1]===module)reads++;return identity(...args);};
- await Promise.all([client.factory(root),client.factory(root),client.verify({root,record:state.record})]);assert.equal(reads,1);
- for(const routeId of ['corla:mint','corla:claim','corla:refund']){
-  state.status=routeId==='corla:claim'?3n:routeId==='corla:refund'?4n:1n;state.claimable=100n;state.refundable=100n;
-  const p=await corlaPlan(rpc,{...intent,routeId},w,{address:mint},{client});assert.equal(p.protocolIdentities[1].target,module);
-  const original=rpc.getCode;rpc.getCode=async a=>a===module?'0x6000600600':original(a);
-  await assert.rejects(verifyIdentity(rpc,p.protocolIdentities[1]),/变化|改变|不一致/);rpc.getCode=original;
- }
-});
-test('changed or proxied delegate modules block before simulation and failed checks are not cached',async()=>{
- const {rpc,client,state,root}=fixture(),module=addr(8);root.dependencies=[{address:module,codeHash:keccak256('0x6000600500')}];
- const original=rpc.getCode;rpc.getCode=async a=>a===module?'0x6000600600':original(a);
- await assert.rejects(client.locate(mint),{code:'CORLA_VERSION_CHANGED'});assert.equal(state.simulations,0);
- rpc.getCode=original;await client.factory(root);rpc.getCode=async a=>a===module?'0x6000600600':original(a);
- await assert.rejects(client.verify({root,record:state.record},{fresh:true}),{code:'CORLA_VERSION_CHANGED'});
- rpc.getCode=original;const originalIdentity=client.identity;client.identity=async(...a)=>{const x=await originalIdentity(...a);return a[1]===module?{...x,implementation:impl}:x;};
- await assert.rejects(client.dependencies(root,true),{code:'CORLA_VERSION_CHANGED'});
-});
-test('terminated phase is distinct from waiting for launch and cannot create a claim',async()=>{
- const {client,state,row,rpc}=fixture();state.status=6n;
- assert.equal((await client.state(row,w)).info.errorCode,'MINT_ENDED');
- await assert.rejects(corlaPlan(rpc,{...intent,routeId:'corla:claim'},w,{address:mint},{client}),{code:'CORLA_ENDED'});assert.equal(state.simulations,0);
 });
 
 test('platform-rejected name stops mint with an explicit launch failure instead of a generic RPC error',async()=>{

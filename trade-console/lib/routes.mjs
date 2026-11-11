@@ -1,3 +1,8 @@
+import {INFINITY} from './infinity.mjs';
+import {gangClient,gangInternalPlan,gangSettlement} from './gang-modern.mjs';
+import {gangPoolPlan} from './gang-pool.mjs';
+import {legacyGangPlan} from './gang-legacy-plan.mjs';
+import {conversions,conversionSettlement} from './trade-conversion.mjs';
 import {openingSettlement} from './opening-route.mjs';
 import {DEXES} from './opening-dex.mjs';
 import {findOpenFourHelper} from './optional-tools.mjs';
@@ -6,9 +11,9 @@ import {promisify} from 'node:util';
 import * as flap from '../support/curve-trader/adapters/flap.mjs';
 import * as gang from '../support/curve-trader/adapters/gang.mjs';
 import {wallet,read,Interface,ERC20,BNB,WBNB,USDT,ZeroAddress,native,same,parseUnits,formatUnits,percentOf} from './common.mjs';
-import {sellAmount,quotedSlippage} from './sell-policy.mjs';
+import {sellAmount,quotedSlippage,directSlippage} from './sell-policy.mjs';
 import {measure,count} from './diagnostics.mjs';
-const exec=promisify(execFile),run=(file,args,options={})=>exec(file,args,{...options,windowsHide:true}),routeCache=new Map();
+const run=promisify(execFile),routeCache=new Map();
 // Scheduling hints only: fresh registration checks still determine every route.
 // Never cache holdings, prices, calldata, allowances, or negative registrations.
 const aggregateHints=new WeakMap();
@@ -29,17 +34,21 @@ export async function probeRegistrations(rpc,token){
 }
 async function four(command,params){
  const script=findOpenFourHelper();
- let out;try{out=(await run(process.execPath,[script,command,JSON.stringify(params)],{timeout:18000,maxBuffer:2<<20,env:{...process.env,NODE_USE_ENV_PROXY:'1'}})).stdout;}catch(e){out=e.stdout;if(!out)throw e;}
+ let out;try{out=(await run(process.execPath,[script,command,JSON.stringify(params)],{windowsHide:true,timeout:18000,maxBuffer:2<<20,env:{...process.env,NODE_USE_ENV_PROXY:'1'}})).stdout;}catch(e){out=e.stdout;if(!out)throw e;}
  const r=JSON.parse(out);if(!r.success)throw Object.assign(Error(r.error?.message||'Open Four 检查失败'),{code:r.error?.code});return r.data;
 }
 export async function detectRoute(rpc,token,w,platform){
+ const registryTask=()=>measure('routeRegistration',()=>probeRegistrations(rpc,token)).then(value=>({value}),error=>({error}));
+ const registeredTask=gangClient(rpc).known.has(token.toLowerCase())?null:registryTask();
+ const modern=await gangClient(rpc).probe(token).catch(e=>{if(e.code==='GANG_IDENTITY_MISMATCH'||gangClient(rpc).known.has(token.toLowerCase()))throw e;return null;});
+ if(modern)return {route:modern.migrated?'gang-pool':'gang-modern',state:modern};
  const cached=routeCache.get(token.toLowerCase());
- if(cached){try{const s=await cached.inspect({rpc,token,wallet:w});return {adapter:cached,state:s,route:s.migrated?'aggregate':cached.id};}catch{routeCache.delete(token.toLowerCase());}}
- const registered=await measure('routeRegistration',()=>probeRegistrations(rpc,token));
+ if(cached){try{const s=await cached.inspect({rpc,token,wallet:w});return {adapter:cached,state:s,route:s.migrated?(cached.id==='gang'?'gang-pool':'aggregate'):cached.id};}catch{routeCache.delete(token.toLowerCase());}}
+ const registration=await (registeredTask||registryTask());if(registration.error)throw registration.error;const registered=registration.value;
  const checks=await Promise.allSettled([registered.flap===false?Promise.resolve(null):flap.inspect({rpc,token,wallet:w}),registered.gang===false?Promise.resolve(null):gang.inspect({rpc,token,wallet:w}),/(4444|ffff)$/i.test(token)?four('info',{token,wallet:w}):Promise.resolve(null)]);
  const found=checks.slice(0,2).map((r,i)=>r.status==='fulfilled'&&r.value?{adapter:[flap,gang][i],state:r.value}:null).filter(Boolean);
  if(found.length>1)throw Error('多个发射台同时返回有效注册，需要核对合约');
- if(found.length){const f=found[0];routeCache.set(token.toLowerCase(),f.adapter);return {...f,route:f.state.migrated?'aggregate':f.adapter.id};}
+ if(found.length){const f=found[0];routeCache.set(token.toLowerCase(),f.adapter);return {...f,route:f.state.migrated?(f.adapter.id==='gang'?'gang-pool':'aggregate'):f.adapter.id};}
  const f=checks[2].status==='fulfilled'?checks[2].value:null;
  if(f?.route==='contract-call')return {route:'openfour',state:f};
  if(f?.route==='wait'||f?.route==='unavailable'&&f.isAgentIdExclusive)throw Error('Open Four 正在迁移或暂停，目前不能交易');
@@ -56,7 +65,7 @@ export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=
  // Buy input is already known; quote can run while token metadata/holdings are
  // read. This is read-only speculation; registry, audit and balance checks still
  // gate the final plan. Never do this for sell: its amount needs a fresh balance.
- const canSpeculate=overlapQuotes&&intent.currency!=='QUOTE'&&!platform&&!routeCache.has(hintKey)&&(coldQuoteOverlap||(hints.get(hintKey)||0)>Date.now());
+ const canSpeculate=overlapQuotes&&intent.currency!=='QUOTE'&&!platform&&!gangClient(rpc).known.has(hintKey)&&!/888[0-9a-f]$/i.test(token)&&!routeCache.has(hintKey)&&(coldQuoteOverlap||(hints.get(hintKey)||0)>Date.now());
  const earlyArgs=earlyBuyQuote&&canSpeculate&&intent.side==='buy'?['--binanceChainId','56','--fromToken',intent.currency==='USDT'?USDT:intent.currency==='WBNB'?WBNB:BNB,'--toToken',token,'--fromTokenQty',formatUnits(parseUnits(intent.amount,18),18),'--slippage',intent.slippageMode==='auto'?'auto':String(intent.slippageBps/100)]:null;
  const early=earlyArgs?measure('tradeQuote',()=>bridge.call(intent.account,['market-order','quote',...earlyArgs])).then(value=>({value}),error=>({error})):null;
  const [[d],[balance]]=await measure('tradeBalance',()=>Promise.all([read(rpc,token,ERC20,'decimals'),read(rpc,token,ERC20,'balanceOf',[w])]));
@@ -74,9 +83,8 @@ export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=
  // A direct fixed-slippage sell does not need an opaque aggregator quote.
  // Auto mode still obtains and pins the official recommendation under its cap.
  const speculative=early||(canSpeculate&&(!directEnabled||intent.slippageMode==='auto')?quoteOnly().then(value=>({value}),error=>({error})):null);
- const checkedQuote=result=>{if(result.error)throw result.error;const quote=result.value;if(!quote.toCoinAmount||Number(quote.toCoinAmount)<=0)throw Error('聚合器没有返回有效报价');return quote;};
  const startDirect=()=>{
-  const policy=intent.slippageMode==='auto'?(speculative||quoteOnly().then(value=>({value}),error=>({error}))).then(result=>quotedSlippage(intent,checkedQuote(result))):Promise.resolve(quotedSlippage(intent,{}));
+  const policy=intent.slippageMode==='auto'?(speculative||quoteOnly().then(value=>({value}),error=>({error}))).then(result=>directSlippage(intent,result)):Promise.resolve(quotedSlippage(intent,{}));
   // All work here is read-only speculation. A registered curve still wins;
   // a rejected speculative plan never escapes as an unhandled rejection.
   const seed={kind:'swap',wallet:w,token,inputToken:aggregateInput,outputToken:aggregateOutput,amountIn:String(aggregateAmount),holdingBefore:String(balance),slippage:{mode:'fixed',bps:intent.slippageBps,capBps:intent.slippageBps}};
@@ -96,6 +104,9 @@ export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=
   return {kind:'swap',route:'binance-aggregate',wallet:w,token,amountIn:String(amountIn),inputToken:input,outputToken:output,decimals,holdingBefore:String(balance),quote,slippage,args,review:[],steps:[]};
  }
  await bridge.ready(intent.account,{external:true});
+ if(route.route==='gang-modern')return gangInternalPlan(rpc,intent,route.state,w,balance,{amount:amount??undefined,conversion:args=>conversions(rpc).plan(args)});
+ if(route.route==='gang-pool')return gangPoolPlan(rpc,intent,route.state,w,balance,{amount:amount??undefined});
+ if(route.route==='gang')return legacyGangPlan(rpc,intent,route.state,w,balance,amount);
  if(route.route==='openfour'){
   const params={token,wallet:w,slippageBps:intent.slippageBps,amount:amount?formatUnits(amount,decimals):intent.amount};
   if(intent.side==='buy'){if(!['BNB','QUOTE'].includes(intent.currency))throw Error('Open Four 该入口使用 BNB 或 QUOTE');params.payToken=intent.currency==='QUOTE'?route.state.quote.address:'BNB';}else{if(intent.currency==='USDT'&&!same(route.state.quote.address,USDT))throw Error('此内盘收款币不是 USDT，请选择 QUOTE 或 BNB');params.receive=['USDT','AUTO'].includes(intent.currency)?'QUOTE':intent.currency;}
@@ -125,4 +136,4 @@ export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=
  const approval=allowance<amountIn?[{kind:'approve',to:input,value:'0',data:ERC20.encodeFunctionData('approve',[s.spender,amountIn]),spender:s.spender,allowance:String(amountIn)}]:[];
  return {kind:'contract',route:a.id,wallet:w,token,amountIn:String(amountIn),inputToken:input,outputToken:intent.side==='buy'?token:s.quoteToken,holdingBefore:String(balance),decimals,minOutput:String(min),quote:q,review:[],state:s,steps:[...approval,{kind:intent.side,...tx,value:String(tx.value)}]};
 }
-export const settlements={...Object.fromEntries(DEXES.map(d=>[d.id+'-opening',openingSettlement])),flap:flap.settlement,gang:gang.settlement};
+export const settlements={...Object.fromEntries([...DEXES,INFINITY].map(d=>[d.id+'-opening',openingSettlement])),flap:flap.settlement,gang:gang.settlement,'gang-modern':gangSettlement,'trade-conversion':conversionSettlement};

@@ -6,6 +6,9 @@ import {measure} from './diagnostics.mjs';
 import {mintError} from './mint-errors.mjs';
 import {walletParameterPrograms,evaluateWalletProgram} from './source-values.mjs';
 import {nativePriceProgram,evaluateNativePrice} from './source-price.mjs';
+import {frontendCallsFor,sourceMintName} from './frontend-mint.mjs';
+import {recognizeFairMint} from './fair-mint.mjs';
+import {sourceLimitPrograms,evaluateSourceLimits} from './source-limits.mjs';
 export {runtimeShape} from './bytecode.mjs';
 
 const NATIVE='0x'+'e'.repeat(40),UINT='uint256',MAX=500n;
@@ -25,7 +28,7 @@ const PAUSED=['paused','isPaused','mintPaused'];
 const ONCE=['hasMinted','hasPass','claimed','hasClaimed'];
 const UNIT_PRICE=['currentPrice','unitPriceWei','mintPriceBnb','mintPriceBNB','priceWei','mintPrice','price','PRICE','MINT_PRICE','PASS_PRICE','cost','mintFee','nextPrice'];
 const PAID_PRICE=['PAID_MINT_PRICE','PAID_PRICE','paidMintPrice','paidPrice'];
-const QUOTES=['mintPrice','currentMintPrice','quote','quoteFor','priceFor','quoteMint','getMintPrice','bnbQuote','quoteBnb','quoteBNB','getBnbPrice','cost','costOf'];
+const QUOTES=['mintPrice','currentMintPrice','quote','quoteFor','priceFor','quoteMint','getMintPrice','bnbQuote','quoteBnb','quoteBNB','getBnbPrice','cost','costOf','costFor'];
 const quantityName=/^_?(q|qty|quantity|amount|count|n|shares|cards|tokens|numTokens|num|numberOfTokens|mintAmount|mints)$/i;
 const nativeUnitName=n=>/^(?:(?:mint|sale|public|current|unit|perToken|perNft)_?){1,3}(?:price|fee|cost)(?:_?(?:wei|bnb))?$/i.test(n);
 const costName=/^_?(maxCost|maxTotalCost|maxPayment)$/i;
@@ -34,18 +37,22 @@ const remaining=(cap,used)=>cap>used?cap-used:0n;
 const smallest=values=>values.filter(v=>v!==null&&v!==undefined).reduce((a,b)=>a===null||b<a?b:a,null);
 const number=v=>v===null?null:v>BigInt(Number.MAX_SAFE_INTEGER)?String(v):Number(v);
 const normalizedName=n=>n.replace(/_/g,'').toLowerCase();
-const quotaNames=new Set([...TX,...REMAIN,...WALLET_CAP,...WALLET_USED,...COUNTERS.flat(),...STOCK,'maxQuotaOf','maxMintable','freeRemaining','paidRemaining'].map(normalizedName));
+const quotaNames=new Set([...TX,...REMAIN,...WALLET_CAP,...WALLET_USED,...COUNTERS.flat(),...STOCK,'quotaOf','maxQuotaOf','maxMintable','freeRemaining','paidRemaining'].map(normalizedName));
 function walk(node,fn){if(!node||typeof node!=='object')return;if(node.type)fn(node);for(const [k,v]of Object.entries(node))if(!['loc','range'].includes(k)){if(Array.isArray(v))v.forEach(n=>walk(n,fn));else if(v&&typeof v==='object')walk(v,fn);}}
 
-function runtimeAbi(code,hints=[]){
+function runtimeAbi(code,hints=[],frontend=[]){
  const shape=runtimeShape(code),functions=[];
  const add=s=>{const f=new Interface(['function '+s]).fragments[0];if(shape.selectors.has(f.selector))functions.push(JSON.parse(f.format('json')));};
  for(const name of MINT_NAMES){add(name+'() payable');add(name+'(uint256 quantity) payable');}
  for(const name of ['mint','mintWithBnb','mintWithBNB']){add(name+'(uint256 quantity,uint256 maxCost) payable');add(name+'(uint256 quantity,address referrer,uint256 maxCost) payable');}
+ // An address argument is not inherently an inviter. This runtime-only family
+ // requires its referral getter, then successful historical state-transition
+ // evidence before any nonzero inviter can be supplied.
+ if(shape.selectors.has(id('referrerOf(address)').slice(0,10)))for(const name of ['mint','mintWithBnb','mintWithBNB'])add(name+'(uint256 quantity,address referrer) payable');
  for(const name of QUOTES){add(name+'(address wallet,uint256 quantity) view returns(uint256)');add(name+'(uint256 quantity) view returns(uint256)');add(name+'(address wallet) view returns(uint256)');}
- for(const name of new Set([...TX,...WALLET_CAP,...COUNTERS.flat(),...STOCK,...UNITS,...MINT_END,...MINT_START,...UNIT_PRICE,...PAID_PRICE,'FREE_SUPPLY','freeMinted','PAID_SUPPLY','paidMinted','decimals','freeRemaining','freeSharesRemaining','paidRemaining']))add(name+'() view returns(uint256)');
- for(const name of [...REMAIN,...WALLET_USED,'maxMintable','freeRemaining','paidRemaining'])add(name+'(address wallet) view returns(uint256)');
- for(const name of [...OPEN,...PAUSED,'freeOpen','paidOpen'])add(name+'() view returns(bool)');
+ for(const name of new Set([...TX,...WALLET_CAP,...COUNTERS.flat(),...STOCK,...UNITS,...MINT_END,...MINT_START,...UNIT_PRICE,...PAID_PRICE,'FREE_SUPPLY','FREE_SHARES','FREE_PER_WALLET','PAID_PER_WALLET','freeMinted','PAID_SUPPLY','paidMinted','decimals','freeRemaining','freeSharesRemaining','paidRemaining']))add(name+'() view returns(uint256)');
+ for(const name of [...REMAIN,...WALLET_USED,'quotaOf','maxQuotaOf','maxMintPerWallet','freeClaimedCount','paidMintedCount','maxMintable','freeRemaining','paidRemaining'])add(name+'(address wallet) view returns(uint256)');
+ for(const name of [...OPEN,...PAUSED,'freeOpen','paidOpen','opened'])add(name+'() view returns(bool)');
  for(const name of [...ONCE,'freeClaimed','hasAgentId','freeShareAvailable','canMint'])add(name+'(address wallet) view returns(bool)');
  for(const name of TOKEN)add(name+'() view returns(address)');
  add('supportsInterface(bytes4) view returns(bool)');add('ownerOf(uint256) view returns(address)');add('balanceOf(address) view returns(uint256)');
@@ -53,6 +60,11 @@ function runtimeAbi(code,hints=[]){
  // Hints may refine return arity/mutability only for dispatched signatures
  // already in the bounded runtime vocabulary. They never assert verification.
  const bySelector=new Map(functions.map(f=>[FunctionFragment.from(f).selector,f]));
+ // A site's actual bound call may use a new Mint name. Accept only the simple
+ // no-argument / named-quantity form with a deployed selector. Signature/proof,
+ // recipient, token ID and payment-token parameters still need explicit support.
+ for(const c of frontend)try{const f=new Interface(c.abi).getFunction(c.method);if(f&&sourceMintName(f.name)&&f.selector===c.selector&&shape.selectors.has(f.selector)&&['payable','nonpayable'].includes(f.stateMutability)&&(!f.inputs.length||f.inputs.length===1&&f.inputs[0].type===UINT&&quantityName.test(f.inputs[0].name)))bySelector.set(f.selector,JSON.parse(f.format('json')));}catch{}
+ for(const c of frontend)try{const f=FunctionFragment.from(c.price?.abi);if(f.format('sighash')===c.price?.method&&shape.selectors.has(f.selector)&&['view','pure'].includes(f.stateMutability)&&f.inputs.length===1&&f.inputs[0].type===UINT&&f.outputs.length===1&&f.outputs[0].type===UINT)bySelector.set(f.selector,JSON.parse(f.format('json')));}catch{}
  for(const value of hints)try{const f=FunctionFragment.from(value);let prior=bySelector.get(f.selector);
   // Frontends vary mintUnitPriceWei / unit_price_bnb spelling. A name supplies
   // only a candidate getter: deployed dispatch, canonical decoding, exact
@@ -63,7 +75,7 @@ function runtimeAbi(code,hints=[]){
   if(!prior&&shape.selectors.has(f.selector)&&['view','pure'].includes(f.stateMutability)&&quotaNames.has(normalizedName(f.name))&&['','address'].includes(f.inputs.map(p=>p.type).join(','))&&f.outputs.length===1&&f.outputs[0].type===UINT)prior=JSON.parse(f.format('json'));
   if(!prior||f.format('sighash')!==FunctionFragment.from(prior).format('sighash'))continue;
   if(!f.outputs.every(o=>/^(uint(?:256|64|8)|bool|address)$/.test(o.type))||f.outputs.length>4)continue;
-  const write=MINT_NAMES.includes(f.name);if(write&&!['payable','nonpayable'].includes(f.stateMutability)||!write&&!['view','pure'].includes(f.stateMutability))continue;
+  const write=MINT_NAMES.includes(f.name)||frontend.some(c=>c.selector===f.selector&&c.method===f.format('sighash'));if(write&&!['payable','nonpayable'].includes(f.stateMutability)||!write&&!['view','pure'].includes(f.stateMutability))continue;
   // Keep proven parameter roles from the built-in signature vocabulary.
   bySelector.set(f.selector,{...JSON.parse(f.format('json')),inputs:prior.inputs});
  }catch{}
@@ -110,10 +122,11 @@ function sourceFacts(meta){
  return {usage,paid,nativeQuotes,zeroOptions,revertQuote};
 }
 export function recognizeMint(meta,{observedSelectors=[]}={}){
- const runtime=!meta.verified,shape=runtime?runtimeAbi(meta.runtimeCode,meta.abiHints):null;
+ const frontend=frontendCallsFor(meta),boundHints=frontend.length?frontend.flatMap(c=>c.abi||[]):meta.abiHints;
+ const runtime=!meta.verified,shape=runtime?runtimeAbi(meta.runtimeCode,boundHints,frontend):null;
  if(meta.proxy||shape?.proxy)return {abi:meta.abi||shape?.abi||[],routes:[],reason:'代理或动态转发合约需核验当前实现，暂不自动构造 Mint'};
  const abi=runtime?shape.abi:meta.abi||[],iface=new Interface(abi),facts=runtime?null:sourceFacts(meta),has=s=>!!iface.getFunction(s),routes=[];
- for(const f of abi.filter(f=>f.type==='function'&&!['view','pure'].includes(f.stateMutability)&&(MINT_NAMES.includes(f.name)||!runtime&&observedSelectors.length&&observedSelectors.includes(FunctionFragment.from(f).selector)))){
+ for(const f of abi.filter(f=>f.type==='function'&&!['view','pure'].includes(f.stateMutability)&&(MINT_NAMES.includes(f.name)||sourceMintName(f.name)&&frontend.some(c=>c.method===FunctionFragment.from(f).format('sighash'))||!runtime&&observedSelectors.length&&observedSelectors.includes(FunctionFragment.from(f).selector)))){
   const used=facts?.usage(f),roles=[],programs=runtime?{}:walletParameterPrograms(meta,f);let qty=false,invalid=false;
   for(let i=0;i<f.inputs.length;i++){const p=f.inputs[i];if(programs[i])roles.push('computed:'+i);
    else if(/^uint\d*$/.test(p.type)&&i===0&&quantityName.test(p.name)&&(!used||used.has(p.name))){roles.push('quantity');qty=true;}
@@ -128,8 +141,8 @@ export function recognizeMint(meta,{observedSelectors=[]}={}){
    routes.push({id:'auto:'+f.name+'(uint256,bool)',method:f.name+'(uint256,bool)',payment:NATIVE,pricing:'adaptive',quantity:false,roles:['default-zero','default-false'],quotes:[],units:[],runtime:false,lane:'free',freeEntry:true,zeroOnly:true,defaultOptions:true});continue;
   }
   if(invalid||(!runtime&&facts.paid(f)))continue; // ERC20 payment needs its own bounded payment adapter.
-  const quotes=[];
-  if(f.stateMutability==='payable')for(const qname of new Set([...(facts?.nativeQuotes(f)||[]),...QUOTES]))for(const g of abi.filter(g=>g.type==='function'&&g.name===qname&&['view','pure'].includes(g.stateMutability))){
+  const boundCalls=frontend.filter(c=>c.selector===FunctionFragment.from(f).selector),boundCall=boundCalls[0],sitePrices=[...new Set(boundCalls.map(c=>c.price?.method).filter(Boolean))],sitePrice=sitePrices.length===1&&!boundCalls.some(c=>c.priceAmbiguous)?sitePrices[0]:null,quotes=[];
+  if(f.stateMutability==='payable')for(const qname of new Set([...(sitePrice?[sitePrice.split('(')[0]]:[]),...(facts?.nativeQuotes(f)||[]),...QUOTES]))for(const g of abi.filter(g=>g.type==='function'&&g.name===qname&&['view','pure'].includes(g.stateMutability))){
    const types=g.inputs.map(p=>p.type).join(','),args=types==='address,uint256'?['wallet','quantity']:types==='uint256'?['quantity']:types==='address'&&!qty?['wallet']:null;if(!args)continue;
    const outputs=g.outputs||[];let index=-1;
    if(outputs.length===1&&outputs[0].type===UINT)index=0;
@@ -140,19 +153,24 @@ export function recognizeMint(meta,{observedSelectors=[]}={}){
   // Wallet-specific quotes include first-share discounts; prefer them over a
   // generic quote at the same denomination. Runtime tuple prices remain only
   // candidates until exact-value + one-wei-underpayment simulation succeeds.
-  quotes.sort((a,b)=>Number(/bnb/i.test(b.method))-Number(/bnb/i.test(a.method))||Number(b.args.includes('wallet'))-Number(a.args.includes('wallet')));
+  quotes.sort((a,b)=>Number(b.method===sitePrice)-Number(a.method===sitePrice)||Number(/bnb/i.test(b.method))-Number(/bnb/i.test(a.method))||Number(b.args.includes('wallet'))-Number(a.args.includes('wallet')));
+  if(sitePrice&&quotes.some(q=>q.method===sitePrice))quotes.splice(0,quotes.length,...quotes.filter(q=>q.method===sitePrice));
   const separateFree=abi.some(g=>g.type==='function'&&/^(mintFree|freeMint|claimFree)$/.test(g.name));
-  const explicitPaidPrice=PAID_PRICE.some(n=>has(n+'()'))||!!facts?.nativeQuotes(f).length;
-  const lane=/^(mintFree|freeMint|claimFree)$/.test(f.name)?'free':/^(paidMint|mintPaid)$/.test(f.name)||separateFree&&explicitPaidPrice&&/^(mint|publicMint)$/.test(f.name)?'paid':null;
+  const explicitPaidPrice=PAID_PRICE.some(n=>has(n+'()'))||!!facts?.nativeQuotes(f).length||!!boundCall&&f.stateMutability==='payable'&&quotes.length>0;
+  const lane=/^(mintFree|freeMint|claimFree)$/.test(f.name)?'free':/^(paidMint|mintPaid)$/.test(f.name)||separateFree&&explicitPaidPrice&&/^(mint|publicMint|mintWithBnb|mintWithBNB)$/.test(f.name)?'paid':null;
   const units=f.stateMutability==='payable'?[...new Set([...(facts?.nativeQuotes(f)||[]),...(lane==='paid'?[...PAID_PRICE,...UNIT_PRICE]:UNIT_PRICE),...abi.filter(g=>g.type==='function'&&nativeUnitName(g.name)).map(g=>g.name)])].filter(n=>{const g=iface.getFunction(n+'()');return g&&['view','pure'].includes(g.stateMutability)&&g.outputs.length===1&&g.outputs[0].type===UINT;}).map(n=>n+'()'):[];
   const method=f.name+'('+f.inputs.map(p=>p.type).join(',')+')';
   const revertQuote=f.stateMutability==='payable'?facts?.revertQuote(f):null;
   const sourcePrice=f.stateMutability==='payable'&&!runtime?nativePriceProgram(meta,f):null;
   const nftZeroProbe=runtime&&f.inputs.length===1&&roles[0]==='quantity'&&has('ownerOf(uint256)')&&has('balanceOf(address)')&&has('supportsInterface(bytes4)');
   if(f.inputs.length&&f.stateMutability==='payable'&&quotes.length===0&&units.length===0&&lane!=='free'&&!revertQuote&&!sourcePrice&&!nftZeroProbe)continue;
-  routes.push({id:'auto:'+method,method,payment:NATIVE,pricing:'adaptive',quantity:qty,roles,programs,quotes,units,revertQuote,sourcePrice,runtime,lane,freeEntry:lane==='free',zeroOnly:f.stateMutability!=='payable'||quotes.length===0&&units.length===0&&!revertQuote&&!sourcePrice});
+  const sourceLimits=runtime?[]:sourceLimitPrograms(meta,f,roles);
+  routes.push({id:'auto:'+method,method,payment:NATIVE,pricing:'adaptive',quantity:qty,roles,programs,quotes,units,revertQuote,sourcePrice,sourceLimits,runtime,lane,freeEntry:lane==='free',zeroOnly:f.stateMutability!=='payable'||quotes.length===0&&units.length===0&&!revertQuote&&!sourcePrice,...(boundCall?{frontend:{source:boundCall.source,method:boundCall.method,price:sitePrice},closedOnOpened:!!recognizeFairMint(meta)}:{})});
  }
- return {abi,routes,reason:routes.length?null:abi.some(f=>f.type==='function'&&/mint/i.test(f.name)&&f.inputs?.some(p=>/bytes|tuple/.test(p.type)))?'项目包含签名、白名单证明或组合参数，需要进一步适配':'当前通用识别器未找到可安全构造的铸造方法，需要适配该项目的参数和报价'};
+ // Prefer the site's actual entry within each lane, without hiding a missing
+ // free/paid lane. Missing evidence never causes us to invent a write method.
+ const used=routes.filter(r=>r.frontend||!routes.some(x=>x.frontend&&(x.lane===r.lane||x.lane==='paid'&&r.lane===null)));
+ return {abi,routes:used,reason:used.length?null:abi.some(f=>f.type==='function'&&/mint/i.test(f.name)&&f.inputs?.some(p=>/bytes|tuple/.test(p.type)))?'项目包含签名、白名单证明或组合参数，需要进一步适配':'当前通用识别器未找到可安全构造的铸造方法，需要适配该项目的参数和报价'};
 }
 
 export async function adaptiveQuote(meta,route,wallet,quantity,block,rpc,referrer=ZeroAddress){
@@ -169,20 +187,24 @@ async function quoteImpl(meta,route,wallet,quantity,block,rpc,referrer){
  const bool=(names,args=[],sig='()')=>first(typed(getters(names,sig),/^bool$/),args);
  // Independent state reads share one fixed block, and Rpc coalesces identical
  // requests across wallets. Only dependent quota fallbacks wait for round two.
- const [open,paused,agent,eligible,initialTx,initialWallet,initialPublic,callable,perUnit,token,end,start]=await Promise.all([
+ const [open,paused,agent,eligible,initialTx,initialWallet,initialPublic,callable,perUnit,token,end,start,opened,sourceLimits]=await Promise.all([
   bool(route.lane?[route.lane+'Open',...OPEN]:OPEN),bool(PAUSED),bool(['hasAgentId'],[wa],'(address)'),bool(['canMint'],[wa],'(address)'),
-  route.quantity?uint(TX):1n,uint(route.lane?[route.lane+'Remaining',...(route.lane==='free'?['freeMintsLeft','freeMintsRemaining']:[]),...REMAIN]:REMAIN,[wa],'(address)'),uint(route.lane==='paid'?['paidRemaining',...STOCK]:STOCK),uint(['maxMintable'],[wa],'(address)'),uint(UNITS),first(typed(getters(TOKEN),/^address$/)),uint(MINT_END),uint(MINT_START)
+  route.quantity?uint(TX):1n,uint(route.lane?[route.lane+'Remaining',...(route.lane==='free'?['freeMintsLeft','freeMintsRemaining']:[]),...REMAIN]:REMAIN,[wa],'(address)'),uint(route.lane?[route.lane+'Remaining',...STOCK]:STOCK),uint(['maxMintable'],[wa],'(address)'),uint(UNITS),first(typed(getters(TOKEN),/^address$/)),uint(MINT_END),uint(MINT_START),route.closedOnOpened?bool(['opened']):null,
+  evaluateSourceLimits(route.sourceLimits||[],{wallet:wa,read})
  ]);
+ if(opened?.value===true)throw Object.assign(Error('项目已开盘，Mint 阶段已结束'),{code:'MINT_ENDED'});
  if(end!==null&&end>0n&&BigInt(block.timestamp)>=end)throw Object.assign(Error('链上铸造截止时间已到，铸造阶段已结束'),{code:'MINT_ENDED',details:{endTime:String(end),chainTimestamp:block.timestamp}});
  if(start!==null&&start>BigInt(block.timestamp))throw Object.assign(Error('链上铸造开始时间尚未到达'),{code:'MINT_NOT_OPEN',details:{startTime:String(start),chainTimestamp:block.timestamp}});
  let available=(!open||open.value===true)&&paused?.value!==true,reason=available?null:paused?.value===true?'铸造已暂停':'铸造未开放';
  if(agent&&agent.value!==true){available=false;reason='此钱包没有该项目要求的 Agent ID';}
  if(eligible&&eligible.value!==true){available=false;reason='当前钱包未通过 canMint 资格检查';}
  const txLimit=initialTx;let walletRemaining=initialWallet,publicRemaining=initialPublic,publicQuotaScope=route.lane==='paid'&&initialPublic!==null&&has('paidRemaining()')?'paid':'project';
- if(walletRemaining===null){const [globalCap,addressCap,used]=await Promise.all([uint(WALLET_CAP),uint(['maxQuotaOf','maxMintPerWallet'],[wa],'(address)'),uint(WALLET_USED,[wa],'(address)')]);const cap=smallest([globalCap,addressCap]);if(cap!==null&&used!==null)walletRemaining=remaining(cap,used);}
+ for(const scope of ['wallet','public']){const values=sourceLimits.filter(p=>p.scope===scope);if(!values.length)continue;const value=smallest(values.map(p=>p.remaining));evidence.push('已核验源码 '+route.method+' · '+scope+' 剩余额度');if(scope==='wallet')walletRemaining=value;else {publicRemaining=value;publicQuotaScope=route.lane||'project';}}
+ if(walletRemaining===null&&route.lane){const [cap,used]=await Promise.all([uint([route.lane==='free'?'FREE_PER_WALLET':'PAID_PER_WALLET']),uint([route.lane==='free'?'freeClaimedCount':'paidMintedCount'],[wa],'(address)')]);if(cap!==null&&used!==null)walletRemaining=remaining(cap,used);}
+ if(walletRemaining===null){const [globalCap,addressCap,used]=await Promise.all([uint(WALLET_CAP),uint(['maxQuotaOf','maxMintPerWallet','quotaOf'],[wa],'(address)'),uint(WALLET_USED,[wa],'(address)')]);const cap=smallest([globalCap,addressCap]);if(cap!==null&&used!==null)walletRemaining=remaining(cap,used);}
  if(walletRemaining===null){const once=await bool(route.lane==='free'?['freeClaimed',...ONCE]:ONCE,[wa],'(address)');if(once)walletRemaining=once.value?0n:1n;}
- const counters=route.lane?[...(route.lane==='free'?[['FREE_SUPPLY','freeMinted']]:[['PAID_SUPPLY','paidMinted']]),...COUNTERS]:COUNTERS;
- if(publicRemaining===null)for(const [cap,count]of counters){if(!getters([cap]).some(has)||!getters([count]).some(has))continue;const [a,b]=await Promise.all([uint([cap]),uint([count])]);if(a!==null&&b!==null){publicRemaining=remaining(a,b);publicQuotaScope=cap==='FREE_SUPPLY'?'free':cap==='PAID_SUPPLY'?'paid':'project';break;}}
+ const counters=route.lane?[...(route.lane==='free'?[['FREE_SUPPLY','freeMinted'],['FREE_SHARES','freeMinted']]:[['PAID_SUPPLY','paidMinted']]),...COUNTERS]:COUNTERS;
+ if(publicRemaining===null)for(const [cap,count]of counters){if(!getters([cap]).some(has)||!getters([count]).some(has))continue;const [a,b]=await Promise.all([uint([cap]),uint([count])]);if(a!==null&&b!==null){publicRemaining=remaining(a,b);publicQuotaScope=['FREE_SUPPLY','FREE_SHARES'].includes(cap)?'free':cap==='PAID_SUPPLY'?'paid':'project';break;}}
  // Verified contracts often expose issuance counters as fields of stats(),
  // not separate getters. Match one unambiguous used/cap pair in the same tuple;
  // unknown frontend ABI names alone cannot add an availability assertion.
@@ -225,7 +247,7 @@ async function quoteImpl(meta,route,wallet,quantity,block,rpc,referrer){
   // A separate free entry must never inherit another method's PRICE/quote
   // after an eligibility or stock failure. Fee-bearing "free" entries require
   // their own bounded adapter; a name alone cannot authorize payment.
-  if(route.freeEntry){try{await simulate(n,0n);}catch(e){const cause=mintError(e);throw Object.assign(Error(cause.message+'；免费入口零付款模拟未通过，未套用付费价格'),{code:cause.code,data:cause.data});}return {cost:0n,free:n,method:'独立免费入口零付款模拟'};}
+  if(route.freeEntry){try{await simulate(n,0n);}catch(e){const cause=mintError(e,meta.verified?meta.abi:null);throw Object.assign(Error(cause.message+'；免费入口零付款模拟未通过，未套用付费价格'),{code:cause.code,data:cause.data});}return {cost:0n,free:n,method:'独立免费入口零付款模拟'};}
   if(route.zeroOnly)return {cost:0n,free:n,method:'零付款调用'};
   if(route.revertQuote){try{await simulate(n,0n);return {cost:0n,free:n,method:'本钱包零付款模拟'};}catch(e){
    const data=typeof e.data==='string'?e.data:e.message?.match(/execution reverted:\s*(0x[0-9a-f]+)/i)?.[1];let parsed;try{parsed=iface.parseError(data);}catch{}
@@ -233,7 +255,7 @@ async function quoteImpl(meta,route,wallet,quantity,block,rpc,referrer){
    const cost=BigInt(parsed.args[route.revertQuote.index]);if(cost<=0n)throw Error('合约返回的必要付款金额无效');return {cost,free:null,method:'本钱包当前模拟的必要付款金额（源码与错误参数交叉核验）'};
   }}
   if(route.sourcePrice){const cost=await evaluateNativePrice(route.sourcePrice,{wallet:wa,quantity:n,read});return {cost,free:cost===0n?n:null,method:'已核验源码的原生币付款表达式（当前钱包 / 当前区块）'};}
-  for(const desc of route.quotes){try{const v=await read(desc.method,desc.args.map(a=>a==='wallet'?wa:n)),cost=BigInt(v[desc.index]);let free=null;if(desc.paid>=0){const paid=BigInt(v[desc.paid]);if(paid>n)throw Error('报价中的付费数量异常');free=n-paid;}if(desc.free>=0){const f=BigInt(v[desc.free]);if(f>n||free!==null&&free!==f)throw Error('报价中的免费数量异常');free=f;}return {cost,free,method:desc.method};}catch(e){if(!route.runtime)throw e;}}
+  for(const desc of route.quotes){try{const v=await read(desc.method,desc.args.map(a=>a==='wallet'?wa:n)),cost=BigInt(v[desc.index]);let free=null;if(desc.paid>=0){const paid=BigInt(v[desc.paid]);if(paid>n)throw Error('报价中的付费数量异常');free=n-paid;}if(desc.free>=0){const f=BigInt(v[desc.free]);if(f>n||free!==null&&free!==f)throw Error('报价中的免费数量异常');free=f;}return {cost,free,method:desc.method};}catch(e){if(!route.runtime||desc.method===route.frontend?.price)throw e;}}
   const unit=await first(route.units);if(!unit)throw Object.assign(Error('未读取到与付款币一致的有效报价，需要适配该报价方式'),{code:'MINT_ADAPTER_INCOMPLETE'});
   // Zero-payment simulation detects free entitlements. Binary search is bounded by
   // the user's requested quantity, not a guessed global cap. Nonlinear paid tiers

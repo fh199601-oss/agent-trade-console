@@ -1,3 +1,4 @@
+import {infinityVenue} from './infinity.mjs';
 import {keccak256} from 'ethers';
 import {address,read,ERC20,WBNB,wallet,percentOf,same,formatUnits} from './common.mjs';
 import {codeIdentity} from './discovery.mjs';
@@ -9,6 +10,7 @@ export class OpeningPreparation{
  async token(input){const token=address(input);return this.cached('token:'+token,15000,async()=>{const [identity,[decimals]]=await Promise.all([this.identityFor(this.rpc,token),read(this.rpc,token,ERC20,'decimals')]);if(Number(decimals)>36)throw Error('代币精度不支持');return {identity,decimals:Number(decimals)};});}
  async quote(input){const token=address(input);return this.cached('quote:'+token,15000,async()=>{const [decimals]=await read(this.rpc,token,ERC20,'decimals');if(Number(decimals)>36)throw Error('计价币精度不支持');return {decimals:Number(decimals)};});}
  async venue(d){return this.cached('dex:'+d.id,60000,async()=>{
+  if(d.kind==='infinity-cl')return infinityVenue(this.rpc);
   const abi=d.kind==='v2'?V2_ROUTER_ABI:V3_IMMUTABLE,method='factory',wrapped=d.kind==='v2'?'WETH':'WETH9';
   const [[factory],[weth],code]=await Promise.all([read(this.rpc,d.router,abi,method),read(this.rpc,d.router,abi,wrapped),this.rpc.getCode(d.router)]);
   if(!same(factory,d.factory)||!same(weth,WBNB)||code==='0x')throw Error('路由身份不匹配：'+d.id);

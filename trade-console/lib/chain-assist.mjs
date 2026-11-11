@@ -4,6 +4,7 @@ import {recognizeMint,runtimeShape,adaptiveQuote} from './adaptive-mint.mjs';
 import {ROLE_LABELS} from './address-roles.mjs';
 import {learnerFor} from './chain-learning.mjs';
 import {unavailableMintState} from './source-constraints.mjs';
+import {runtimeReferralEvidence} from './runtime-referral.mjs';
 
 // Evidence can resolve address roles, but never override another verified
 // project entry or turn a token into a mint target without a checked link.
@@ -39,7 +40,10 @@ export function learnedRecognition(meta,base,evidence){
 }
 
 export async function assistMint(rpc,meta,resolved,sourceLoader,{learner=learnerFor(rpc),recover=false}={}){
- const base=recognizeMint(meta);if(base.routes.length&&!recover)return base;
+ const base=recognizeMint(meta);if(base.routes.length&&!recover){
+  await Promise.all(base.routes.map(async r=>{if(r.runtime&&/^mint(?:WithBnb|WithBNB)?\(uint256,address\)$/.test(r.method))r.referralEvidence=await runtimeReferralEvidence(learner.logRpc||rpc,meta,r.method);}));
+  return base;
+ }
  const stopped=await unavailableMintState(rpc,meta);if(stopped)return {...base,reason:stopped.message,failure:stopped};
  const entries=(meta.abi||[]).filter(f=>f.type==='function'&&!['view','pure'].includes(f.stateMutability)&&/^(mint|freeMint|paidMint|publicMint|claimFree)/.test(f.name));
  if(meta.verified&&entries.length&&entries.every(f=>f.inputs.some(p=>['bytes','bytes32[]'].includes(p.type)&&/signature|proof|sig$/i.test(p.name)))){

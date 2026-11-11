@@ -1,3 +1,4 @@
+import {stagedQuotePlan} from './staged-quote-mint.mjs';
 import {runtimeAnswerPlan} from './runtime-answer-mint.mjs';
 import {quotaTokenSalePlan} from './quota-token-sale.mjs';
 import {challengePowPlan} from './challenge-pow.mjs';
@@ -26,6 +27,7 @@ import {sourceSalePlan} from './source-sale.mjs';
 import {protectedSalePlan} from './protected-sale.mjs';
 import {corlaPlan} from './corla.mjs';
 import {binanciansPlan} from './binancians.mjs';
+import {bagentPlan} from './bagent.mjs';
 import {probeFreeBatch} from './free-mint-probe.mjs';
 const REGISTRY='0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F';
 const templates=[
@@ -35,16 +37,18 @@ const templates=[
 ];
 function selects(code){const b=Buffer.from(code.slice(2),'hex'),set=new Set();for(let i=0;i<b.length;i++){const op=b[i];if(op>=0x60&&op<=0x7f){if(op===0x63)set.add(b.subarray(i+1,i+5).toString('hex'));i+=op-0x5f;}}return set;}
 export async function mintPlan(rpc,bridge,intent,target,resolved={source:'用户输入 CA'},experienceStore=null,{sourceLoader=sourceFor,chainLearner=null,officialPreview=false}={}){
+ if(resolved.platform==='bagent')return measure('bagentMintPlan',()=>bagentPlan(rpc,intent,wallet(intent.account),resolved,{officialPreview}));
  if(resolved.platform==='corla')return measure('corlaMintPlan',()=>corlaPlan(rpc,intent,wallet(intent.account),resolved,{officialPreview}));
  if(resolved.platform==='binancians')return measure('binanciansMintPlan',()=>binanciansPlan(rpc,intent,wallet(intent.account),resolved,{officialPreview,wallets:bindings()}));
  if(intent.quoteToken!==undefined)throw Object.assign(Error('其他付款币预算目前仅适用于 Corla 专用入口'),{code:'MINT_ROUTE_INVALID'});
- const w=wallet(intent.account),meta={...await sourceLoader(rpc,target),abiHints:resolved.abiHints},experience=experienceStore?.lookup(meta.identity,{...intent,wallet:w.address});
+ const w=wallet(intent.account),meta={...await sourceLoader(rpc,target),abiHints:resolved.abiHints,frontendCalls:resolved.frontendCalls},experience=experienceStore?.lookup(meta.identity,{...intent,wallet:w.address});
  try{const plan=await measure('mintPlan',()=>buildMintPlan(rpc,bridge,intent,target,resolved,w,meta,experience,experienceStore,{sourceLoader,chainLearner}));plan.experience??=experience||null;return plan;}
  catch(e){e=mintError(e,meta.verified?meta.abi:null);e.mintContext={identity:meta.identity,wallet:w.address,sourceVerified:meta.verified,experience};if(resolved.chainLearning)e.details={...e.details,chainLearning:resolved.chainLearning};throw e;}
 }
 async function buildMintPlan(rpc,bridge,intent,target,resolved,w,meta,experience,experienceStore,{sourceLoader,chainLearner}){
  const sels=selects(meta.runtimeCode),template=templates.find(t=>t.detect.every(s=>sels.has(s)));
  const limit=intent.scope==='free'?0n:parseUnits(intent.maxBnb,18);
+ const staged=await stagedQuotePlan(rpc,intent,meta,w,resolved);if(staged){staged.referral=await resolveReferral(rpc,bridge,resolved,meta,staged.referral);return staged;}
  const answer=await runtimeAnswerPlan(rpc,intent,meta,w,resolved);if(answer){answer.referral=await resolveReferral(rpc,bridge,resolved,meta);return answer;}
  const social=await socialSalePlan(rpc,intent,meta,w,resolved);if(social){social.referral=await resolveReferral(rpc,bridge,resolved,meta,social.referral);return social;}
  const special=await specialMintPlan(rpc,intent,meta,w,resolved,{data:experienceStore?.dir?path.dirname(experienceStore.dir):undefined});if(special){special.referral=await resolveReferral(rpc,bridge,resolved,meta);return special;}
@@ -58,12 +62,15 @@ async function buildMintPlan(rpc,bridge,intent,target,resolved,w,meta,experience
  const handle=await handleMintPlan(rpc,bridge,intent,meta,limit,w,resolved);if(handle){handle.referral=await resolveReferral(rpc,bridge,resolved,meta);return handle;}
  const primary=await primaryHandleMintPlan(rpc,intent,meta,limit,w,resolved);if(primary){primary.referral=await resolveReferral(rpc,bridge,resolved,meta);return primary;}
  const nft=await nftMintPlan(rpc,intent,meta,limit,w,resolved);if(nft){nft.referral=await resolveReferral(rpc,bridge,resolved,meta);return nft;}
- const fair=await fairMintPlan(rpc,intent,meta,w);if(fair)return fair;
+ // A read-only family diagnostic must not hide a deployed, site-bound entry.
+ // Without that evidence retain its conservative unsupported/ended result.
+ const frontendRoute=recognizeMint(meta).routes.some(r=>r.frontend);
+ if(!frontendRoute){const fair=await fairMintPlan(rpc,intent,meta,w);if(fair)return fair;}
  const inferred=await sourceSalePlan(rpc,intent,meta,w,resolved);if(inferred){inferred.referral=await resolveReferral(rpc,bridge,resolved,meta,inferred.referral);return inferred;}
  const protectedPlan=await protectedSalePlan(rpc,intent,meta,w,resolved);if(protectedPlan){protectedPlan.referral=await resolveReferral(rpc,bridge,resolved,meta,protectedPlan.referral);return protectedPlan;}
  // A matching paid template must not hide a separate free entry or ignore an
  // explicit user-selected method. Keep scope/selection ahead of template reuse.
- if(template&&!intent.routeId&&!(['free','all'].includes(intent.scope)&&recognizeMint(meta).routes.some(r=>r.freeEntry)))return templatePlan(rpc,bridge,intent,meta,template,limit,w);
+ if(template&&!frontendRoute&&!intent.routeId&&!(['free','all'].includes(intent.scope)&&recognizeMint(meta).routes.some(r=>r.freeEntry)))return templatePlan(rpc,bridge,intent,meta,template,limit,w);
  const recognized=await assistMint(rpc,meta,resolved,sourceLoader,chainLearner?{learner:chainLearner}:{});
  if(!recognized.routes.length&&resolved.chainLearning&&!resolved.chainRedirected){const next=applyChainEvidence(resolved,resolved.chainLearning);if(next.address&&!same(next.address,target)){Object.assign(resolved,next,{chainRedirected:true});return mintPlan(rpc,bridge,intent,next.address,resolved,experienceStore,{sourceLoader,chainLearner});}}
  meta.abi=recognized.abi;
@@ -91,8 +98,12 @@ async function buildMintPlan(rpc,bridge,intent,target,resolved,w,meta,experience
   const cap=Math.min(...[10,route.quantity?10:1,q.limits.txLimit,q.limits.publicRemaining,route.maxQuantity].filter(v=>v!==null&&v!==undefined));
   const found=await probeFreeBatch({quote:n=>quote(n,true),seed:q,cap});q=found.quote;freeProbe=found.probe;
  }else if(intent.quantity==='max'){
-  if(q.limits.walletRemaining===null&&q.limits.callRemaining===null)throw Error('未读取到可靠付费上限，请选择付费额度并填写份数');
+  if(q.limits.walletRemaining===null&&q.limits.callRemaining===null)throw Object.assign(Error('尚未核实本钱包付费总额度，不能自动打满。可点击“改用付费份数”填写数量后重新预览；BNB / USDT 预算不是份数。'),{code:'MINT_QUOTA_UNKNOWN'});
   let lo=0,hi=q.limits.max,best=null;
+  // The common case is full budget + known remaining allowance. Try that
+  // bound first, avoiding several sequential quote/simulation rounds.
+  const full=hi===1?q:await quote(hi);
+  if(full.available&&BigInt(full.total.raw)<=limit){lo=hi;best=full;}else hi--;
   while(lo<hi){const mid=Math.ceil((lo+hi)/2),v=mid===1?q:await quote(mid);if(v.available&&BigInt(v.total.raw)<=limit){lo=mid;best=v;}else hi=mid-1;}
   if(!lo)throw Error('没有符合预算的可铸造额度');q=best?.quantity===lo?best:await quote(lo);
  }

@@ -3,13 +3,14 @@ import {freshOpeningSnapshot} from './opening-pools.mjs';
 import {dexFor,matchesCurrency} from './opening-dex.mjs';
 import {sellAmount,quotedSlippage} from './sell-policy.mjs';
 import {openingPlan} from './opening-route.mjs';
+import {unsubmittedContractStep} from './provider-outcome.mjs';
 
 // A retry needs proof of a reverted or locally unsubmitted sale, not a timeout, successful
 // receipt with an undecoded payout, or a failed approval. Old tasks never opt in.
 export function recoverableOpeningSale(order){
  const entry=order?.steps?.at(-1),plan=entry?.plan||order?.plan;
  let reverted=false;try{reverted=entry?.receipt?.status!==undefined&&BigInt(entry.receipt.status)===0n;}catch{}
- const unsubmitted=entry?.submissionOutcome?.source==='local-wallet'&&entry.submissionOutcome.accepted===false&&!entry.txHash&&!entry.orderId&&!entry.result&&!entry.receipt&&!order?.txHash&&!order?.orderId;
+ const unsubmitted=unsubmittedContractStep(order,entry);
  const failedOnChain=order?.error?.code==='TRANSACTION_REVERTED'&&entry?.revertVerified===true&&reverted&&/^0x[\da-f]{64}$/i.test(entry.txHash||'');
  return order?.status==='FAILED'&&entry?.status==='FAILED'&&entry.step?.kind==='sell'&&(failedOnChain||unsubmitted)&&plan?.requireSellCredit===true&&!!dexFor(plan.opening)&&order.steps.slice(0,-1).every(e=>e.status==='CONFIRMED'&&e.step?.kind==='approve');
 }

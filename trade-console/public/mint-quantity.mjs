@@ -13,5 +13,5 @@ export function createMintQuantityControl({document:doc=document,onChange=()=>{}
  scope.addEventListener('change',()=>{render();onChange();});
  input.addEventListener('input',()=>{paid=normalizeMintQuantity(input.value);button.setAttribute('aria-pressed',String(paid==='max'));onChange();});
  input.addEventListener('blur',()=>{if(normalizeMintQuantity(input.value)==='max'){paid='max';render();}});
- button.addEventListener('click',()=>{paid='max';render();onChange();});render();return {value};
+ button.addEventListener('click',()=>{paid='max';render();onChange();});render();return {value,usePaidCount(){scope.value='paid';paid='1';render();onChange();input.focus();input.select();}};
 }

@@ -51,10 +51,13 @@ export function detectReferralHints(rows,source){
 export function addressReferral(meta,route,intent){
  if(!route.roles.includes('zero'))return null;
  const inviter=wallet(1),use=intent.referral!=='none'&&[2,3].includes(intent.account);
- if(use&&!meta.verified)throw Error('检测到邀请参数，但源码未核验；不能猜测邀请含义或静默使用零地址');
+ const evidence=(meta.frontendCalls||[]).filter(c=>same(c.address,meta.address)&&c.method===route.method);
+ const frontend=route.frontend&&evidence.length&&evidence.every(c=>!c.referralAmbiguous&&c.referral?.some(r=>r.kind==='address'&&r.transport==='query'&&route.roles[r.index]==='zero'))?evidence[0]:null;
+ const learned=route.referralEvidence?.kind==='historical-referrer-transition'&&route.referralEvidence.method===route.method&&same(route.referralEvidence.target,meta.address)&&route.referralEvidence.fingerprint===meta.hash&&route.roles[route.referralEvidence.index]==='zero';
+ if(use&&!meta.verified&&!frontend&&!learned)throw Error('已找到 Mint 入口，但源码未核验、邀请参数尚未核验；需要官网直接调用证据或成功交易的邀请绑定变化');
  if(use&&same(wallet(intent.account).address,inviter.address))throw Error('邀请钱包与当前钱包相同');
  return {detected:true,account:1,address:inviter.address,appliesTo:[2,3],valueKind:'address',linkValue:inviter.address,bindingVerified:!!meta.verified,
-  callValue:use?inviter.address:ZeroAddress,active:intent.referral!=='none',note:'按已核验 ABI 将 1 号地址传入邀请参数；资格、首次绑定和奖励仍以实际模拟与合约规则为准'};
+  callValue:use?inviter.address:ZeroAddress,active:intent.referral!=='none',...(learned?{parameterEvidence:'historical-referrer-transition',note:'两个不同钱包的成功交易及前后绑定状态确认邀请参数；当前钱包资格、费用和到账仍须重新模拟'}:frontend&&!meta.verified?{parameterEvidence:'frontend-query-address',parameterSource:frontend.source,note:'官网前端明确把网址中的邀请地址传入此参数；仍须本钱包模拟通过，奖励资格尚未核验'}:{note:'按已核验 ABI 将 1 号地址传入邀请参数；资格、首次绑定和奖励仍以实际模拟与合约规则为准'})};
 }
 
 function linkFrom(template,source,value){

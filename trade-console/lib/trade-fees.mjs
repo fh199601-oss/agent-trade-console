@@ -25,7 +25,8 @@ export function poolFeeProof(pool,amounts,token,block){
  return {version:1,source:pool.kind==='v3'?'verified-v3-fee':'same-block-reserves-and-quote',poolFeePpm:compoundFees(fees),pools:legs.map((p,i)=>({address:p.pool,factory:p.factory,feePpm:fees[i]})),block};
 }
 export function compareFeeRoutes(a,b){
- const af=a.fees?.poolFeePpm??null,bf=b.fees?.poolFeePpm??null;
+ const cost=r=>r.fees?.poolFeePpm==null?null:Math.max(r.fees.poolFeePpm,r.fees.quoteLossPpm||0);
+ const af=cost(a),bf=cost(b);
  const tier=f=>f===null?2:f>=HIGH_FEE_PPM?1:0;
  if(tier(af)!==tier(bf))return tier(af)-tier(bf);
  if(!!a.failed!==!!b.failed)return a.failed?1:-1;
@@ -40,7 +41,9 @@ function percentPpm(value){if(value===null||value===undefined||value===''||!/^\d
 function curveFees(plan){
  const bps=value=>{const n=ppm(value);return n===null?null:ppm(n*100);};
  if(plan.route==='flap')return {poolFeePpm:bps(plan.state?.sellFeeBps),taxPpm:bps(plan.state?.sellTaxBps),source:'Flap 链上费率'};
- if(plan.route==='gang'&&plan.state?.feeBps!==undefined)return {poolFeePpm:bps(plan.state.feeBps),source:'Gang 链上费率'};
+ if(plan.route==='gang'&&plan.state?.feeBps!==undefined)return {poolFeePpm:compoundFees([bps(plan.state.feeBps),plan.poolFees?.poolFeePpm??0]),taxPpm:0,source:'Gang 链上费率'};
+ if(plan.route==='gang-pool'&&plan.state?.verifiedSellTaxBps!==undefined)return {poolFeePpm:plan.poolFees?.poolFeePpm??null,taxPpm:bps(plan.state.verifiedSellTaxBps),source:'Gang 链上卖出税及固定工厂池费'};
+ if(plan.route==='gang-modern'&&plan.state?.feeBps!==undefined)return {poolFeePpm:compoundFees([bps(plan.state.feeBps),plan.poolFees?.poolFeePpm??0]),taxPpm:0,source:'Gang 统一入口实时报价（含中转池费）'};
  return null;
 }
 function simulatedShortfall(plan,preview){
@@ -67,23 +70,25 @@ export function assessSellFees(plan,preview,{beforeSell=false}={}){
  let canCheckSellCredit=false;
  try{canCheckSellCredit=!opaque&&poolFeePpm!==null&&plan.requireSellCredit===true&&plan.steps?.at(-1)?.kind==='sell'&&!!plan.outputToken&&parseUnits(String(plan.quote?.toCoinAmount),plan.outputDecimals??18)>0n;}catch{}
  const pendingSellPreview=taxPpm===null&&additionalLossPpm===null&&canCheckSellCredit;
- const totalFeePpm=compoundFees([poolFeePpm,effectiveTax]),reasons=[];
+ const quoteLossPpm=ppm(proof?.quoteLossPpm);
+ const totalFeePpm=compoundFees([poolFeePpm===null?null:Math.max(poolFeePpm,quoteLossPpm||0),effectiveTax]),reasons=[];
  if(opaque)reasons.push('聚合器不公开且不能固定实际池子与池费，可能再次走高费池；此路线禁止提交');
  else if(poolFeePpm===null)reasons.push('当前路线的池手续费无法可靠核验');
  if(taxPpm===null&&additionalLossPpm===null&&(!canCheckSellCredit||beforeSell))reasons.push('未取得卖出税率或本钱包的模拟净到账');
+ if(quoteLossPpm!==null&&quoteLossPpm>=HIGH_FEE_PPM)reasons.push('报价相对池内现价减少 '+feePercent(quoteLossPpm)+'（包含池费、Hook 扣费和价格冲击）');
  if(poolFeePpm!==null&&poolFeePpm>=HIGH_FEE_PPM)reasons.push('池手续费高达 '+feePercent(poolFeePpm));
  if(taxPpm!==null&&taxPpm>=HIGH_FEE_PPM)reasons.push('代币卖出税高达 '+feePercent(taxPpm));
  if(totalFeePpm!==null&&totalFeePpm>=HIGH_FEE_PPM&&!reasons.length)reasons.push('池费与已检测的税费/到账差额合计约 '+feePercent(totalFeePpm));
  if(additionalLossPpm!==null&&additionalLossPpm>=HIGH_FEE_PPM)reasons.push('模拟到账比路由报价少 '+feePercent(additionalLossPpm)+'，可能包含额外扣费或价格变化');
  const blocked=opaque||poolFeePpm===null||beforeSell&&pendingSellPreview;
- return {version:3,blocked,required:reasons.length>0,opaque,poolFeePpm,taxPpm,totalFeePpm,additionalLossPpm,pendingSellPreview,thresholdPpm:HIGH_FEE_PPM,pools:opaque?[]:proof?.pools||[],source:opaque?'未公开':curve?.source||proof?.source||'未知',reasons};
+ return {version:3,blocked,required:reasons.length>0,opaque,poolFeePpm,quoteLossPpm,taxPpm,totalFeePpm,additionalLossPpm,pendingSellPreview,thresholdPpm:HIGH_FEE_PPM,pools:opaque?[]:proof?.pools||[],source:opaque?'未公开':curve?.source||proof?.source||'未知',reasons};
 }
 export function updateFeeReview(order,preview,options){
  if(order.intent?.side!=='sell'||!order.plan)return null;
  const fees=assessSellFees(order.plan,preview,options),p=order.plan;
  // Low simulated shortfall changing by a rounding unit is not a new risk.
  // High/combined fees, unknown evidence, route and amounts remain bound.
- const feeBinding={poolFeePpm:fees.poolFeePpm,pools:fees.pools,blocked:fees.blocked,opaque:fees.opaque,taxPpm:fees.taxPpm===null&&fees.additionalLossPpm===null&&!fees.pendingSellPreview?'unknown':fees.taxPpm>=HIGH_FEE_PPM?fees.taxPpm:null,totalFeePpm:fees.totalFeePpm>=HIGH_FEE_PPM?fees.totalFeePpm:null,additionalLossPpm:fees.additionalLossPpm>=HIGH_FEE_PPM?fees.additionalLossPpm:null};
+ const feeBinding={poolFeePpm:fees.poolFeePpm,quoteLossPpm:fees.quoteLossPpm>=HIGH_FEE_PPM?fees.quoteLossPpm:null,pools:fees.pools,blocked:fees.blocked,opaque:fees.opaque,taxPpm:fees.taxPpm===null&&fees.additionalLossPpm===null&&!fees.pendingSellPreview?'unknown':fees.taxPpm>=HIGH_FEE_PPM?fees.taxPpm:null,totalFeePpm:fees.totalFeePpm>=HIGH_FEE_PPM?fees.totalFeePpm:null,additionalLossPpm:fees.additionalLossPpm>=HIGH_FEE_PPM?fees.additionalLossPpm:null};
  const binding={order:order.id,account:order.intent.account,token:p.token,wallet:p.wallet,input:p.inputToken,output:p.outputToken,amount:p.amountIn,holding:p.holdingBefore,route:p.route,kind:p.kind,slippage:p.slippage,fees:feeBinding,steps:p.steps?.map(s=>({kind:s.kind,to:s.to,spender:s.spender})),...(fees.opaque?{quote:p.quote}:{} )};
  const id=createHash('sha256').update(JSON.stringify(binding)).digest('hex');
  order.feeReview={...fees,id};order.needsFeeReview=fees.required&&!fees.blocked;

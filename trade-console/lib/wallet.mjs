@@ -4,7 +4,15 @@ import path from 'node:path';
 import {ROOT,LOCAL,wallet,same,load} from './common.mjs';
 let seq=0;
 export class Wallets{
- constructor(){this.workers=new Map();this.queues=new Map();this.readyCache=new Map();this.readyInflight=new Map();this.warmInflight=new Map();this.foregroundEpoch=new Map();this.warmBackoff=new Map();this.timings=[];}
+ constructor({responseTimeoutMs=120000}={}){this.responseTimeoutMs=responseTimeoutMs;this.workers=new Map();this.queues=new Map();this.readyCache=new Map();this.readyInflight=new Map();this.warmInflight=new Map();this.foregroundEpoch=new Map();this.warmBackoff=new Map();this.timings=[];}
+ flushLate(state){for(const [id,late] of state.late||[])if(late.response){try{late.onLateResponse(late.response);state.late.delete(id);}catch{/* Retry durable storage on the next wallet response/call. */}}}
+ receive(state,r){
+  this.flushLate(state);
+  const p=state.pending.get(r.id),late=state.late?.get(r.id);if(!p&&!late)return;
+  const response=r.result?.success===true?{data:r.result.data}:{error:Object.assign(Error(r.result?.error?.message||'钱包响应无效'),{code:r.result?.error?.code,errorName:r.result?.error?.name,responseReceived:true,dispatched:r.result?.error?.commandDispatched!==false})};
+  if(p){state.pending.delete(r.id);clearTimeout(p.timer);if(response.error)p.reject(response.error);else p.resolve(response.data);}
+  else{late.response??=response;this.flushLate(state);}
+ }
  worker(account){
   if(this.workers.has(account))return this.workers.get(account);
   wallet(account);
@@ -17,8 +25,7 @@ export class Wallets{
   createInterface({input:process.stdout}).on('line',line=>{
    let r;try{r=JSON.parse(line,(k,v,c)=>typeof v==='number'&&!Number.isSafeInteger(v)&&/^-?\d+$/.test(c?.source||'')?c.source:v);}catch{return;}
    if(r.ready===true){readyResolve();return;}
-   const p=state.pending.get(r.id);if(!p)return;state.pending.delete(r.id);clearTimeout(p.timer);
-   if(r.result?.success===true)p.resolve(r.result.data);else p.reject(Object.assign(Error(r.result?.error?.message||'钱包响应无效'),{code:r.result?.error?.code,errorName:r.result?.error?.name,responseReceived:true,dispatched:r.result?.error?.commandDispatched!==false}));
+   this.receive(state,r);
   });
   const fail=()=>{readyReject(Object.assign(Error('钱包常驻进程未就绪'),{dispatched:false}));this.workers.delete(account);this.readyCache.delete(account);for(const p of state.pending.values()){clearTimeout(p.timer);p.reject(Object.assign(Error('钱包进程退出，提交状态需核对'),{dispatched:true}));}state.pending.clear();};
   process.on('exit',fail);process.on('error',fail);return state;
@@ -29,8 +36,16 @@ export class Wallets{
   if(options.background&&this.queues.has(account))return Promise.reject(Object.assign(Error('只读预热让位于当前操作'),{code:'WARM_YIELDED',dispatched:false}));
   const prior=this.queues.get(account)||Promise.resolve();
   const op=prior.catch(()=>{}).then(async()=>{if(options.background&&(this.foregroundEpoch.get(account)||0)!==epoch)throw Object.assign(Error('只读预热让位于当前操作'),{code:'WARM_YIELDED',dispatched:false});const w=this.worker(account);await w.ready;return new Promise((resolve,reject)=>{
-   const start=Date.now(),id=String(++seq);
-   const timer=setTimeout(()=>{w.pending.delete(id);reject(Object.assign(Error('钱包响应超时；仅核对原单，不重新提交'),{dispatched:true}));},120000);
+   this.flushLate(w);const start=Date.now(),id=String(++seq);
+   const timer=setTimeout(()=>{
+    w.pending.delete(id);
+    if(typeof options.onLateResponse==='function'&&['contract-call execute','market-order swap'].includes(args.slice(0,2).join(' '))){
+     w.late??=new Map();for(const [key,p] of w.late)if(p.expiresAt<Date.now())w.late.delete(key);
+     while(w.late.size>=128)w.late.delete(w.late.keys().next().value);
+     w.late.set(id,{onLateResponse:options.onLateResponse,expiresAt:Date.now()+86400000});
+    }
+    reject(Object.assign(Error('钱包响应超时；后台继续接收原结果并核对，不重复提交'),{dispatched:true}));
+   },this.responseTimeoutMs);
    w.pending.set(id,{timer,resolve:v=>{this.timings.push({account,operation:args.slice(0,2).join(' '),ms:Date.now()-start,queueMs:start-queuedAt,totalMs:Date.now()-queuedAt});if(this.timings.length>1000)this.timings.splice(0,this.timings.length-1000);resolve(v);},reject});
    w.process.stdin.write(JSON.stringify({id,args:args.includes('--json')?args:[...args,'--json'],...(options.readOnlyTimeoutMs?{readOnlyTimeoutMs:options.readOnlyTimeoutMs}:{}),...(options.background?{background:true}:{})})+'\n',e=>{if(e){clearTimeout(timer);w.pending.delete(id);reject(Object.assign(e,{dispatched:false}));}});
   });});this.queues.set(account,op);op.finally(()=>{if(this.queues.get(account)===op)this.queues.delete(account);}).catch(()=>{});return op;

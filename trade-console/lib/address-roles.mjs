@@ -7,6 +7,7 @@ import parser from '@solidity-parser/parser';
 import {recognizeHandleMint} from './handle-mint.mjs';
 import {recognizePrimaryHandleMint} from './primary-handle-mint.mjs';
 import {recognizeSourceSale} from './source-sale.mjs';
+import {sourceMintName} from './frontend-mint.mjs';
 
 export const ROLE_LABELS={mint:'Mint / 项目入口',token:'代币 CA',nft:'NFT / 领取凭证',registry:'Agent ID / 身份注册',treasury:'项目收款 / 金库',oracle:'价格预言机',art:'NFT 图像 / 元数据',multicall:'批量只读查询',router:'交易路由',factory:'交易池工厂',pool:'交易池 / LP',market:'NFT / 二级交易市场',payment:'付款 / 计价币',implementation:'代理实现',unknown:'用途待核验'};
 const SUPPORT=new Set(['registry','treasury','oracle','art','multicall','router','factory','pool','market','payment','implementation']);
@@ -121,11 +122,12 @@ export function selectPrimary(rows){
  const uncertain=rows.filter(r=>!r.inspected&&!supportive(r)&&r.priority>=strongest);
  if(top.length===1&&!uncertain.length)return {address:top[0].address,reason:'网页部署信息与链上 Mint 接口一致'};
  const tokens=rows.filter(r=>r.hasCode&&r.verifiedRoles.includes('token')&&!supportive(r));
- if(!eligible.length&&!uncertain.length&&tokens.length===1)return {address:tokens[0].address,reason:'已核验唯一项目代币；Mint 入口仍需适配'};
+ const unresolvedMint=rows.some(r=>r.hasCode&&!supportive(r)&&(!r.verifiedRoles.length||r.roles.includes('mint')&&!r.verifiedRoles.includes('mint')));
+ if(!eligible.length&&!uncertain.length&&!unresolvedMint&&tokens.length===1)return {address:tokens[0].address,reason:'已核验唯一项目代币；Mint 入口仍需适配'};
  return {address:null,reason:top.length>1?'存在多个可用 Mint 合约，无法唯一确定当前项目入口':'缺少足够的链上证据，保留待核验候选'};
 }
 // A bounded read-only pass: ABI/bytecode and no-argument view getters, never scripts or transactions.
-export async function classifyAddresses(rpc,candidates,sourceLoader){
+export async function classifyAddresses(rpc,candidates,sourceLoader,{frontendCalls=[]}={}){
  await rpc.verifyChain();const rows=mergeCandidates(candidates).sort((a,b)=>b.priority-a.priority),metadata=new Map();
  for(const row of rows){const known=KNOWN.get(row.address.toLowerCase());if(known){row.hasCode=row.address.toLowerCase()!=='0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';row.inspected=true;addProof(row,known,{kind:'known-address',label:'已知 BSC 公共地址'});}}
  const inspect=async row=>{
@@ -140,8 +142,9 @@ export async function classifyAddresses(rpc,candidates,sourceLoader){
     for(const [n,key]of ['name','symbol'].entries())if(labels[n].status==='fulfilled'&&labels[n].value)row[key]=labels[n].value;
    }else{
     // Selectors give interface evidence only; no guessed ABI is used for a write.
-    const shape=runtimeShape(meta.runtimeCode);if(!shape.delegate){const patterns=['mint()','mint(uint256)','mint(uint256,uint256)','mint(uint256,address,uint256)','mintFree()','freeMint()','freeMint(uint256)','paidMint(uint256)','mintPass()','mintNative(uint256)','mintWithBnb(uint256)','mintWithBnb(uint256,address,uint256)','mintFree(uint256,uint256)','mintPaid(uint256)','mintPaid(uint256,uint256,uint256)','claimFree()','publicMint(uint256)','mintPublic(uint256)'];
+    const shape=runtimeShape(meta.runtimeCode);if(!shape.delegate){const patterns=['mint()','mint(uint256)','mint(uint256,address)','mint(uint256,uint256)','mint(uint256,address,uint256)','mintFree()','freeMint()','freeMint(uint256)','paidMint(uint256)','mintPass()','mintNative(uint256)','mintWithBnb(uint256)','mintWithBnb(uint256,address)','mintWithBnb(uint256,address,uint256)','mintFree(uint256,uint256)','mintPaid(uint256)','mintPaid(uint256,uint256,uint256)','claimFree()','publicMint(uint256)','mintPublic(uint256)'];
      const handle=recognizeHandleMint(meta)||recognizePrimaryHandleMint(meta),matched=patterns.filter(s=>shape.selectors.has(new Interface(['function '+s]).fragments[0].selector));
+     for(const c of frontendCalls.filter(c=>same(c.address,row.address)))try{const f=new Interface(c.abi).getFunction(c.method);if(f&&sourceMintName(f.name)&&!['view','pure'].includes(f.stateMutability)&&f.selector===c.selector&&shape.selectors.has(f.selector)&&!matched.includes(c.method))matched.push(c.method);}catch{}
      if(handle)matched.push(handle.methods.free,handle.methods.paid);
      const special=recognizeSpecialMint(meta);if(special)matched.push(special.kind==='ordinal-vrf-nft'?'mintPaid((uint8,uint8,uint256,uint256,uint256,address))':'mint(address,uint256)');
      if(matched.length){row.methods=matched;addProof(row,'mint',{kind:'runtime-selector',label:handle?'运行代码匹配 Agent ID 名称铸造接口组；身份、额度与报价仍须逐钱包核验':'运行代码存在 Mint 分派；具体参数和费用仍须验证'});}
@@ -155,13 +158,20 @@ export async function classifyAddresses(rpc,candidates,sourceLoader){
    }
   }catch(e){row.inspected=false;row.error=e.message;}
  };
- const unknown=rows.filter(r=>!r.inspected),strong=unknown.filter(r=>r.priority>=3).slice(0,12);
+ const unknown=rows.filter(r=>!r.inspected),strongCandidates=unknown.filter(r=>r.priority>=3).slice(0,12);
+ // Once the frontend's actual invocation is matched on-chain, unrelated
+ // treasury/token configs need not delay Mint by fetching all their sources.
+ // Equal-priority candidates are still inspected together to retain ambiguity.
+ const sitePriority=Math.max(-1,...strongCandidates.filter(r=>frontendCalls.some(c=>same(c.address,r.address))).map(r=>r.priority));
+ let strong=sitePriority>=5?strongCandidates.filter(r=>r.priority>=sitePriority):strongCandidates;
  for(let i=0;i<strong.length;i+=4)await Promise.all(strong.slice(i,i+4).map(inspect));
+ const boundEntry=strong.some(r=>r.priority>=sitePriority&&r.verifiedRoles.includes('mint')&&!supportive(r)&&frontendCalls.some(c=>same(c.address,r.address)&&r.methods?.includes(c.method)));
+ if(!boundEntry&&strong.length<strongCandidates.length){const more=strongCandidates.filter(r=>!strong.includes(r));for(let i=0;i<more.length;i+=4)await Promise.all(more.slice(i,i+4).map(inspect));strong=strongCandidates;}
  const verifiedEntry=strong.some(r=>r.verifiedRoles.includes('mint')&&!supportive(r));
  const rest=unknown.filter(r=>!strong.includes(r));
- const follow=verifiedEntry?rest.filter(r=>r.priority>=3).slice(0,12-strong.length):rest.slice(0,12-strong.length);
+ const follow=verifiedEntry?rest.filter(r=>r.priority>=Math.max(3,boundEntry?sitePriority:3)).slice(0,12-strong.length):rest.slice(0,12-strong.length);
  for(let i=0;i<follow.length;i+=4)await Promise.all(follow.slice(i,i+4).map(inspect));
- for(const row of rest.filter(r=>!follow.includes(r))){row.deferred=verifiedEntry&&row.priority<3;row.error=row.deferred?'已优先核验网站明确的 Mint 入口，此辅助地址用途尚未逐项核验':'地址过多，超出本轮链上核验上限';}
+ for(const row of rest.filter(r=>!follow.includes(r))){row.deferred=verifiedEntry&&row.priority<Math.max(3,boundEntry?sitePriority:3);row.error=row.deferred?'已优先核验网站明确的 Mint 入口，此辅助地址用途尚未逐项核验':'地址过多，超出本轮链上核验上限';}
  // A versioned collection can expose old and current deployments together.
  // Suppress a predecessor only when the new contract identifies it on-chain,
  // activation is complete, and the old paused supply matches the frozen count.
@@ -188,6 +198,25 @@ export async function classifyAddresses(rpc,candidates,sourceLoader){
   }
   if(new Set(tokens).size===1)token=tokens[0];
  }
+ // Keep the issued token visible even when a runtime-only sale is sold out.
+ // A selector alone is insufficient: require a canonical getter result and
+ // the target's ERC-20 interface, separate from the mint address itself.
+ if(meta&&!meta.verified&&root.verifiedRoles.includes('mint')&&!runtimeShape(meta.runtimeCode).delegate)try{
+  const linkAbi=new Interface(['function token() view returns(address)']);
+  if(runtimeShape(meta.runtimeCode).selectors.has(linkAbi.getFunction('token').selector)){
+   const target=address((await read(rpc,root.address,linkAbi,'token'))[0]);
+   if(!same(target,ZeroAddress)&&!same(target,root.address)){
+    const code=await rpc.getCode(target),shape=runtimeShape(code);
+    const erc20=new Interface(['function balanceOf(address)','function transfer(address,uint256)','function allowance(address,address)','function decimals()','function totalSupply()']);
+    let isToken=!shape.delegate&&erc20.fragments.every(f=>shape.selectors.has(f.selector));
+    if(!isToken){const tm=metadata.get(target)||await sourceLoader(rpc,target);isToken=tm.verified&&abiRoles(new Interface(tm.abi),tm).roles.includes('token');}
+    if(isToken){
+     let row=rows.find(r=>same(r.address,target));if(!row){row={address:target,priority:0,field:'token()',source:root.address,hints:[],roles:[],verifiedRoles:[],evidence:[]};rows.push(row);}
+     token=target;addProof(row,'token',{kind:'onchain-reference',from:root.address,method:'token',label:'铸造入口 token() 返回此地址，且其 ERC-20 接口已核验'});
+    }
+   }
+  }
+ }catch{}
  for(const row of rows){if(!row.roles.length)row.roles.push('unknown');row.roleLabels=row.roles.map(r=>ROLE_LABELS[r]);row.selectable=!row.deferred&&!supportive(row)&&row.hasCode!==false&&(row.verifiedRoles.includes('mint')||row.verifiedRoles.includes('token')||!row.inspected);row.primary=row.address===primary.address;}
  return {...primary,token,addresses:rows,candidates:rows.filter(r=>r.selectable&&!r.primary),needsSelection:!primary.address};
 }

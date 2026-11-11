@@ -82,3 +82,31 @@ test('documented methods must match deployed ABI; duplicate current mint declara
  const both=await discover('https://two-new-products.example/',{rpc:g.rpc,sourceLoader:g.loader,fetchText:async u=>u.endsWith('/')?doc:''});assert.equal(both.address,null);assert.equal(both.needsSelection,true);
  assert.equal(extractCandidates(`\nContract: ${A}\nToken: ${B}\nCall: freeMint()`, 'https://boundaries.example/').some(r=>r.method),false);
 });
+
+test('adjacent visible labels distinguish mint, token, treasury and router across unseen hosts, order and aliases',async()=>{
+ const D='0x4444444444444444444444444444444444444444';
+ for(const host of ['never-seen.example','new.sale.example'])for(const labels of [['铸造合约','代币合约','金库地址','Router'],['Mint Contract','Token CA','Treasury','交易路由']])for(const reverse of [false,true]){
+  const blocks=[[labels[0],A],[labels[1],B],[labels[2],C],[labels[3],D]];if(reverse)blocks.reverse();
+  for(const footer of [false,true]){
+   const html=blocks.map(([label,a])=>footer?`<span class="footer-title">${label}</span><code>${a}</code><div><a href="https://bscscan.com/address/${a}">BscScan</a></div>`:`<div class="contract"><span>${label}</span><a href="https://bscscan.com/address/${a}"><code>${a.slice(0,8)}…</code><span>BscScan</span></a><button data-copy="${a}">复制</button></div>`).join('');
+   const rows=mergeCandidates(extractCandidates(`<footer>${html}</footer>`,'https://'+host+'/'));
+   assert.deepEqual(rows.find(r=>r.address===A).roles,['mint']);assert.deepEqual(rows.find(r=>r.address===B).roles,['token']);assert.deepEqual(rows.find(r=>r.address===C).roles,['treasury']);assert.deepEqual(rows.find(r=>r.address===D).roles,['router']);
+   const f=fake({[A]:{abi:['function mint(uint256 quantity,address referrer) payable']},[B]:{abi:erc20},[C]:{eoa:true},[D]:{abi:[]}});
+   assert.equal((await classifyAddresses(f.rpc,rows.flatMap(r=>r.hints.map(h=>({...h,address:r.address}))),f.loader)).address,A);
+  }
+ }
+});
+test('unsupported but explicitly labelled minter must not silently fall back to the token',async()=>{
+ const f=fake({[A]:{abi:['function join(bytes proof)']},[B]:{abi:erc20}}),rows=extractCandidates(`<div><span>铸造合约</span><code>${A}</code><span>代币合约</span><code>${B}</code></div>`,'https://unseen.example/');
+ const r=await classifyAddresses(f.rpc,rows,f.loader);assert.equal(r.address,null);assert.equal(r.needsSelection,true);
+});
+test('HTML labels do not span multiple candidate addresses, scripts or unrelated sections',()=>{
+ const html=`<label>Mint contract</label><div>${A} ${B}</div><section><span>说明</span><code>${C}</code></section><script>const x='${B}'; const label='Mint contract';</script>`;
+ const rows=extractCandidates(html,'https://unseen.example/');assert.equal(rows.some(r=>r.roles.includes('mint')),false);
+});
+test('runtime mint(quantity,address) selector resolves the minter without scanning token transfer history',async()=>{
+ const iface=new Interface(['function mint(uint256,address)','function referrerOf(address) view returns(address)']),code='0x'+iface.fragments.map(f=>'63'+f.selector.slice(2)+'1461000057').join('');
+ const f=fake({[B]:{abi:erc20}}),rpc={...f.rpc,getCode:async a=>a===A?code:f.rpc.getCode(a)},loader=async(r,a)=>a===A?{address:A,runtimeCode:code,verified:false}:f.loader(r,a);let history=0;
+ const result=await discover('https://brand-new.example/',{rpc,sourceLoader:loader,chainFallback:true,chainLearner:{learn:async()=>{history++;throw Error('wrong fallback');}},fetchText:async url=>url.endsWith('/')?`<div><span>Mint Contract</span><a href="https://bscscan.com/address/${A}">BscScan</a></div><div><span>Token Contract</span><code>${B}</code></div>`:''});
+ assert.equal(result.address,A);assert.equal(history,0);
+});

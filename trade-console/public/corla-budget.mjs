@@ -2,6 +2,8 @@ import {normalizeMintQuantity} from './mint-quantity.mjs';
 // Pure exact arithmetic shared by the dashboard and regression tests.
 function decimal(raw,places){const s=raw.toString().padStart(places+1,'0');return places?(s.slice(0,-places)+'.'+s.slice(-places)).replace(/\.?0+$/,''):s;}
 export function corlaBudget(project,accounts,scope,quantity){
+ if(project?.budgetPolicy==='current-wallet-quote')return currentWalletBudget(project,accounts,scope,quantity);
+ if(project?.budgetPolicy==='verified-staged-quote')return stagedBudget(project,accounts,scope,quantity);
  if(project?.platform==='binancians')return binanciansBudget(project,accounts,scope,quantity);
  if(project?.platform!=='corla'||normalizeMintQuantity(quantity)!=='max'||!['paid','all'].includes(scope))return null;
  const rows=accounts.map(a=>project.quotas?.find(q=>q.account===a));if(!rows.length||rows.some(q=>!q))throw Error('请选择钱包并刷新额度');
@@ -33,8 +35,44 @@ function binanciansBudget(project,accounts,scope,quantity){
 // Only automatic price caps may be refreshed before confirmation. The caller
 // supplies a stable snapshot so edits during a request cannot change its scope.
 export async function refreshMintBudget({project,asset,accounts,scope,quantity,manual=false},inspect){
- if(manual||project?.platform!=='binancians'||normalizeMintQuantity(quantity)!=='max'||!['all','paid'].includes(scope))return null;
+ const staged=['verified-staged-quote','current-wallet-quote'].includes(project?.budgetPolicy);
+ if(manual||!staged&&(project?.platform!=='binancians'||normalizeMintQuantity(quantity)!=='max')||!['all','paid'].includes(scope))return null;
  const fresh=await inspect(asset);
- if(fresh?.platform!==project.platform||String(fresh.address).toLowerCase()!==String(project.address).toLowerCase()||String(fresh.token).toLowerCase()!==String(project.token).toLowerCase())throw Error('预算刷新时项目入口或到账代币发生变化，请重新识别');
+ if(staged&&fresh?.budgetPolicy!==project.budgetPolicy||fresh?.platform!==project.platform||String(fresh.address).toLowerCase()!==String(project.address).toLowerCase()||String(fresh.token).toLowerCase()!==String(project.token).toLowerCase())throw Error('预算刷新时项目入口或到账代币发生变化，请重新识别');
  return {project:fresh,budget:corlaBudget(fresh,accounts,scope,quantity)};
+}
+
+// Generic contracts may have nonlinear prices. Reuse only the exact quantity
+// actually simulated for this wallet; never multiply a website's advertised fee.
+function currentWalletBudget(project,accounts,scope,quantity){
+ if(!['all','paid'].includes(scope))return null;quantity=normalizeMintQuantity(quantity);
+ let maximum=0n,total=0n;const costs=[],unavailable=[];
+ for(const account of accounts){const q=project.quotas?.find(q=>q.account===account);if(!q)throw Error('请选择钱包并刷新额度');
+  if(q.error){unavailable.push({account,error:q.error});continue;}
+  const full=quantity==='max'||Number(quantity)===q.fullBudget?.quantity?q.fullBudget:Number(quantity)===1?q.singleBudget:null;
+  if(!full)return null;
+  if(q.budgetCurrency!=='BNB'||!Number.isInteger(full.quantity)||full.quantity<1||full.quantity>500||!/^\d+$/.test(full.raw)||!['paid','all'].includes(full.scope))throw Error('缺少当前钱包的完整份数报价');
+  if(scope==='paid'&&full.scope!=='paid')throw Error('当前入口包含免费份额，不能按纯付费额度自动预算');
+  const raw=BigInt(full.raw);maximum=raw>maximum?raw:maximum;total+=raw;costs.push({account,lots:full.quantity,cost:decimal(raw,18)});
+ }
+ if(!costs.length)throw Error('当前钱包均没有可核验的认购报价');
+ return {currency:'BNB',symbol:'BNB',decimals:18,maxBnb:decimal(maximum,18),maxUsdt:'0',maxQuote:'0',total:decimal(total,18),costs,unavailable};
+}
+
+// This capability is emitted only by a source-verified adapter with a bounded,
+// fixed-price pre-open quote. Public/unbounded inventory is never auto-budgeted.
+function stagedBudget(project,accounts,scope,quantity){
+ if(!['all','paid'].includes(scope))return null;quantity=normalizeMintQuantity(quantity);
+ const rows=accounts.map(a=>project.quotas?.find(q=>q.account===a));if(!rows.length||rows.some(q=>!q))throw Error('请选择钱包并刷新额度');
+ let maximum=0n,total=0n;const costs=[],unavailable=[];
+ for(const q of rows){
+  if(q.error){unavailable.push({account:q.account,error:q.error});continue;}
+  if(q.unboundedPaid||!q.fullBudget)throw Error('开盘后需指定份数及最高费用，不能把项目总库存作为钱包额度');
+  const full=q.fullBudget;if(q.budgetCurrency!=='BNB'||!Number.isInteger(full.quantity)||full.quantity<0||full.quantity>500||!/^\d+$/.test(full.raw))throw Error('未取得本钱包的完整认购报价');
+  const n=quantity==='max'?full.quantity:Number(quantity),raw=BigInt(full.raw);
+  if(n>full.quantity||n<0||full.quantity&&raw%BigInt(full.quantity)!==0n)throw Error('份数超过当前可核验额度，请刷新项目');
+  const cost=full.quantity?raw*BigInt(n)/BigInt(full.quantity):0n;maximum=cost>maximum?cost:maximum;total+=cost;costs.push({account:q.account,lots:n,cost:decimal(cost,18)});
+ }
+ if(!costs.length)throw Error('当前钱包均没有可核验的认购报价');
+ return {currency:'BNB',symbol:'BNB',decimals:18,maxBnb:decimal(maximum,18),maxUsdt:'0',maxQuote:'0',total:decimal(total,18),costs,unavailable};
 }

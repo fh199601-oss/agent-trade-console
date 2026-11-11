@@ -1,3 +1,4 @@
+import {InfinityPools} from './infinity.mjs';
 import {Interface,address,same,ZeroAddress,WBNB,USDT} from './common.mjs';
 import {DEXES,QUOTES,matchesCurrency} from './opening-dex.mjs';
 import {openingReads} from './opening-read.mjs';
@@ -8,7 +9,7 @@ export const POOL=new Interface(['function token0() view returns(address)','func
 const checkedSnapshots=new WeakSet();
 export function freshOpeningSnapshot(s,token,maxAge=1200){return !!s&&checkedSnapshots.has(s)&&same(s.token,token)&&Date.now()-s.at>=0&&Date.now()-s.at<=maxAge;}
 export class OpeningPools{
- constructor(rpc,{dexes=DEXES,quotes=QUOTES,quoteDiscovery=new OpeningQuotes(rpc)}={}){Object.assign(this,{rpc,dexes,quotes,quoteDiscovery});this.known=new Map();this.inflight=new Map();this.discoveryAfter=new Map();this.paths=new Map();}
+ constructor(rpc,{dexes=DEXES,quotes=QUOTES,quoteDiscovery=new OpeningQuotes(rpc),infinity=typeof rpc.send==='function'?new InfinityPools(rpc):null}={}){Object.assign(this,{rpc,dexes,quotes,quoteDiscovery,infinity});this.known=new Map();this.inflight=new Map();this.discoveryAfter=new Map();this.paths=new Map();}
  async scan(input,{currency='AUTO',expand=false}={}){
   const token=address(input),key=token.toLowerCase()+':'+currency+(expand?':expanded':'');if(this.inflight.has(key))return this.inflight.get(key);
   const task=this.inspect(token,currency,{expand});this.inflight.set(key,task);try{return await task;}finally{this.inflight.delete(key);}
@@ -21,6 +22,7 @@ export class OpeningPools{
   const key=token.toLowerCase()+':'+currency;
   const discoverDue=expand||Date.now()>=(this.discoveryAfter.get(key)||0);
   const hints=this.quoteDiscovery&&discoverDue?this.quoteDiscovery.discover(token).catch(()=>[]):Promise.resolve(this.quoteDiscovery?.known(token)||[]);
+  const infinity=this.infinity?.scan(token,{expand,deep:expand}).catch(e=>({pools:[],errors:['Infinity 查询暂不可用：'+e.message]}));
   const base=await this.inspectQuotes(token,expand?'AUTO':currency,quotes);
   // Normal liquid routes never wait for slow third-party hints. Empty scans
   // also have a fixed discovery wait; outstanding reads populate the next scan.
@@ -34,8 +36,14 @@ export class OpeningPools{
   const expanded=[...new Set([...missing,...changed,...(currency!=='AUTO'&&!base.pools.some(p=>p.liquid)?quotes:[])])];
   const extra=expanded.length?await this.inspectQuotes(token,'AUTO',expanded,base.block).catch(e=>({pools:[],errors:['扩展池查询暂不可用：'+e.message]})):null;
   let pools=[...new Map([...base.pools,...(extra?.pools||[])].map(p=>[p.pool.toLowerCase(),p])).values()];
-  const observedLiquidity=pools.some(p=>p.liquid);
   const errors=[...base.errors,...(extra?.errors||[])];
+  if(infinity){
+   const discovery=infinity.then(async found=>!expand&&!pools.some(p=>p.liquid)&&!found.pools.length?this.infinity.scan(token,{deep:true}).catch(e=>({pools:[],errors:['Infinity 历史查询暂不可用：'+e.message]})):found);
+   let timer;try{const found=await Promise.race([discovery,new Promise(r=>timer=setTimeout(()=>r(null),expand||!pools.some(p=>p.liquid)?5000:80))]);
+    if(found){pools.push(...found.pools);errors.push(...found.errors);}else errors.push('Infinity 池查询仍在进行，再次预览会复用发现结果');
+   }finally{clearTimeout(timer);}
+  }
+  const observedLiquidity=pools.some(p=>p.liquid);
   if(currency!=='AUTO'){
    const direct=pools.filter(p=>matchesCurrency(p,currency));
    if(expand||!direct.some(p=>p.liquid))direct.push(...await this.bridges(token,currency,pools,base.block,errors));

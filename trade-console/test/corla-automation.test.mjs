@@ -27,12 +27,13 @@ for(const code of ['SELL_FEE_REVIEW','SELL_FEES_UNVERIFIABLE'])test(code+': clai
  for(const status of ['PAUSED','STOPPED','DELETED']){j.status=status;j.feeReviewPending=true;h.m.reconcileOrder({id:'held-sale',status:'CONFIRMED'});assert.equal(j.status,status);}
 });
 test('claim verified failures retry twice with new IDs and fresh preview, then stop or hand off once',async t=>{
- for(const failure of ['reverted','not-dispatched'])for(const succeeds of [true,false]){
+ for(const failure of ['reverted','not-dispatched','simulation-rejected'])for(const succeeds of [true,false]){
   const h=harness(t),j=h.m.enroll(h.parent);h.open();let submissions=0;
   h.engine.execute=async id=>{
    submissions++;const o=h.orders.get(id);o.status='FAILED';o.error={code:'TRANSACTION_REVERTED'};
    const e={plan:o.plan,step:o.plan.steps[0],status:'FAILED'};
    if(failure==='reverted')Object.assign(e,{revertVerified:true,txHash:'0x'+'1'.repeat(64),receipt:{status:'0x0'}});
+   else if(failure==='simulation-rejected'){e.error=o.error={code:953401,message:'simulation error',responseReceived:true};e.submissionOutcome={source:'wallet-provider',operation:'contract-call execute',kind:'SIMULATION_REJECTED',accepted:false};}
    else e.submissionOutcome={source:'local-wallet',accepted:false};
    o.steps=[e];if(submissions===3&&succeeds){o.status='CONFIRMED';e.status='CONFIRMED';e.received='1000';}return o;
   };
@@ -71,6 +72,11 @@ test('open triggers full claim exactly once and hands off only after credited re
  await h.m.tick(j.id);assert.equal(h.calls().execs,1);h.confirm(j);await h.m.tick(j.id);assert.equal(j.status,'SELLING');assert.equal(h.calls().handoffs,1);assert.equal(h.opening.jobs.get(j.sellJobId).config.percent,'50');await h.m.tick(j.id);assert.equal(h.calls().handoffs,1);
  h.opening.jobs.get(j.sellJobId).status='COMPLETED';h.opening.jobs.get(j.sellJobId).rows[0].status='CONFIRMED';await h.m.tick(j.id);assert.equal(j.status,'DONE');
 });
+test('terminated Corla project stops waiting without submitting or automatically selling',async t=>{
+ const h=harness(t),j=h.m.enroll(h.parent);h.options.client.get=async()=>[2n,6n];
+ await h.m.tick(j.id);assert.equal(j.status,'REVIEW');assert.match(j.message,/终止/);
+ h.advance(1000);await h.m.tick(j.id);assert.equal(h.calls().execs,0);assert.equal(h.calls().prepares,0);assert.equal(h.calls().handoffs,0);
+});
 test('claim-only leaves all tokens and manual external claim does not authorize a sale',async t=>{
  const h=harness(t,{sell:false}),j=h.m.enroll(h.parent);h.open();await h.m.tick(j.id);h.confirm(j);await h.m.tick(j.id);assert.equal(j.status,'DONE');assert.equal(h.calls().handoffs,0);
  const other=harness(t);other.engine.prepare=async()=>({status:'BLOCKED',steps:[],error:{message:'NothingToClaim'}});const x=other.m.enroll(other.parent);other.open();await other.m.tick(x.id);assert.equal(other.calls().execs,0);assert.equal(other.calls().handoffs,0);
@@ -78,6 +84,12 @@ test('claim-only leaves all tokens and manual external claim does not authorize 
 test('failed mint and refund phase never claim; partial confirmed subscriptions do',async t=>{
  const h=harness(t);h.parent.status='FAILED';h.parent.steps=[];let j=h.m.enroll(h.parent);h.open();await h.m.tick(j.id);assert.equal(j.status,'REVIEW');assert.equal(h.calls().execs,0);
  const other=harness(t);other.parent.status='PARTIAL';j=other.m.enroll(other.parent);other.end();await other.m.tick(j.id);assert.equal(j.status,'REVIEW');assert.match(j.message,/退款/);
+});
+test('partial subscription with a rejected later lot still claims confirmed allocation once at opening',async t=>{
+ const h=harness(t);h.parent.status='PARTIAL';h.parent.error={code:953401,message:'simulation error'};h.parent.steps.push({status:'FAILED',error:h.parent.error});
+ const j=h.m.enroll(h.parent);await h.m.tick(j.id);assert.equal(j.status,'WATCHING');assert.equal(h.calls().execs,0);
+ h.open();h.advance(300);await h.m.tick(j.id);assert.equal(j.status,'CLAIMING');assert.equal(h.calls().execs,1);assert.equal(h.calls().handoffs,0);
+ h.confirm(j);await h.m.tick(j.id);assert.equal(j.status,'SELLING');assert.equal(h.calls().handoffs,1);
 });
 test('new wallet risks or changed target, token or identity stop automatic execution',async t=>{
  for(const mutate of [o=>o.preview.risks=['new risk'],o=>o.plan.outputToken=addr(8),o=>o.plan.wallet=addr(8),o=>o.plan.identity={fingerprint:'changed'},o=>o.plan.protocolIdentities=[{fingerprint:'changed'}],o=>o.plan.steps[0].value='1']){
@@ -219,9 +231,3 @@ test('refund-only phase five stops monitoring; refund-mint version one keeps wat
 });
 test('bulk-compatible Corla resume rejects an overlapping active task and cancelled marker',t=>{const h=harness(t),j=h.m.enroll(h.parent);j.status='PAUSED';j.resumeStatus='WATCHING';const other=h.m.enroll({...h.parent,id:'another-subscription'});assert.throws(()=>h.m.resume(j.id),/已有/);h.m.stop(other.id);j.cancelled=true;assert.throws(()=>h.m.resume(j.id),/未停止/);j.cancelled=false;assert.equal(h.m.resume(j.id).status,'WATCHING');assert.equal(h.calls().execs,0);});
 test('Corla resume persistence failure remains paused and does not schedule actions',t=>{const h=harness(t),j=h.m.enroll(h.parent);j.status='PAUSED';j.resumeStatus='WATCHING';h.m.persist=()=>{throw Error('disk full');};let schedules=0;h.m.schedule=()=>schedules++;assert.throws(()=>h.m.resume(j.id),/disk full/);assert.equal(j.status,'PAUSED');assert.equal(j.resumeStatus,'WATCHING');assert.equal(schedules,0);assert.equal(h.calls().execs,0);});
-
-test('terminated Corla project stops waiting without submitting or automatically selling',async t=>{
- const h=harness(t),j=h.m.enroll(h.parent);h.options.client.get=async()=>[2n,6n];
- await h.m.tick(j.id);assert.equal(j.status,'REVIEW');assert.match(j.message,/终止/);
- h.advance(1000);await h.m.tick(j.id);assert.equal(h.calls().execs,0);assert.equal(h.calls().prepares,0);assert.equal(h.calls().handoffs,0);
-});
