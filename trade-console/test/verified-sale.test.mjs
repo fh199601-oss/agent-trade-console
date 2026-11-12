@@ -28,5 +28,5 @@ test('receive sale requires reviewed source body, exact cost, inventory after re
  for(const s of Object.values(f.meta.sources))s.content=s.content.replace('shares * PRESALE_TOKEN','shares * 1');assert.equal(recognizeVerifiedSale(f.meta),null);
 });
 test('failure reasons remain separate in API and UI; generic reverts never mean ended',()=>{
- for(const [error,kind,label]of [[{code:'MINT_ENDED'},'ended','铸造已结束'],[{code:'NO_QUOTA'},'no_quota','当前无可用额度'],[{code:'BUDGET_LIMIT'},'budget','本次预算不足'],[{code:'MINT_INELIGIBLE'},'ineligible','钱包资格不足'],[{code:'MINT_UNSUPPORTED'},'adapter_needed','此类型仍需适配'],[{message:'execution reverted: 0x'},'validation','预览未通过']]){assert.equal(failureKind(error),kind);assert.equal(statusLabel({status:'BLOCKED',error}),label);}
+ for(const [error,kind,label]of [[{code:'MINT_ENDED'},'ended','铸造已结束'],[{code:'NO_QUOTA'},'no_quota','当前无可用额度'],[{code:'BUDGET_LIMIT'},'budget','本次预算不足'],[{code:'MINT_INELIGIBLE'},'ineligible','钱包资格不足'],[{code:'MINT_UNSUPPORTED'},'adapter_needed','此类型仍需适配'],[{message:'execution reverted: 0x'},'validation','检查未通过 · 查看原因']]){assert.equal(failureKind(error),kind);assert.equal(statusLabel({status:'BLOCKED',error}),label);}
 });

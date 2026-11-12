@@ -1,3 +1,4 @@
+import {presentError,describeError,safeErrorText} from '../public/error-message.mjs';
 import {percentOf,parseUnits} from './common.mjs';
 import {providerRefusal,providerRefusalMessage} from './provider-outcome.mjs';
 
@@ -38,10 +39,10 @@ export function directSlippage(intent,result){
 
 export function tradeError(e){
  if(Number(e?.code)===30003001){
-  const raw=String(e.providerMessage||e.message||'未知原因');
+  const raw=safeErrorText(e.providerMessage||e.message||'未知原因');
   const refusal=providerRefusal(e);
-  const message=refusal?.kind==='INSUFFICIENT_BNB'?providerRefusalMessage(refusal):/potentially risky|risk warning|风险提示/i.test(raw)?'币安要求在 App 查看该代币的风险提示；不会自动重试或提高滑点。':/slippage|滑点/i.test(raw)?'官方返回滑点条件未满足；本次不会自动放宽滑点或重新下单。':'官方返回错误：'+raw;
+  const message=refusal?.kind==='INSUFFICIENT_BNB'?providerRefusalMessage(refusal):/potentially risky|risk warning|风险提示/i.test(raw)?'币安要求在 App 查看该代币的风险提示；不会自动重试或提高滑点。':/slippage|滑点/i.test(raw)?'官方返回滑点条件未满足；本次不会自动放宽滑点或重新下单。':describeError(e);
   return {message,code:e.code,providerMessage:raw};
  }
- return {message:e.message,code:e.code||'ERROR'};
+ return presentError(e);
 }

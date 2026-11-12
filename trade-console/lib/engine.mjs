@@ -1,3 +1,7 @@
+import {diagnoseRevert} from './revert-reason.mjs';
+import {describeError} from '../public/error-message.mjs';
+import {SellCoordinator,sellLane} from './sell-coordinator.mjs';
+import {refreshGangSell} from './gang-modern.mjs';
 import {INFINITY,verifyInfinityApproval,verifyInfinityAllowance} from './infinity.mjs';
 import {tradeLegPlan} from './trade-leg.mjs';
 import {providerRefusal,repairRejectedOrder,applyContractRefusal} from './provider-outcome.mjs';
@@ -36,7 +40,7 @@ async function originalRead(work){try{return await work();}catch(e){throw receip
 export function verifyPreview(p,plan,step){
  plan=tradeLegPlan(plan,step);
  const s=p?.simulationResult;
- if(!p?.requestId||s?.simulationCode!=='000000000'||s.simulationErrorDetail)throw Object.assign(Error('钱包模拟未明确通过'),{code:p?.requestId&&s?.simulationCode?'OFFICIAL_SIMULATION_FAILED':'OFFICIAL_PREVIEW_INVALID',details:{simulationCode:s?.simulationCode,simulationErrorDetail:s?.simulationErrorDetail}});
+ if(!p?.requestId||s?.simulationCode!=='000000000'||s.simulationErrorDetail)throw Object.assign(Error(s?.simulationErrorDetail?describeError({message:'钱包模拟未明确通过',details:{simulationErrorDetail:s.simulationErrorDetail}}):'钱包模拟未明确通过：接口未提供具体原因'),{code:p?.requestId&&s?.simulationCode?'OFFICIAL_SIMULATION_FAILED':'OFFICIAL_PREVIEW_INVALID',details:{simulationCode:s?.simulationCode,simulationErrorDetail:s?.simulationErrorDetail}});
  // Official Permit2 previews describe the approved TOKEN in contractAddress,
  // not the execution target. Accept that representation only for our pinned,
  // exact-input Permit2 step, never as a generic target-check exemption.
@@ -89,7 +93,7 @@ export function verifyPreview(p,plan,step){
  return {parsedTx:p.parsedTx,risks:p.risks||[],authorityChanges:s.authorityChanges||[],allowanceChanges:s.allowanceChanges||[],balanceChanges:(s.balanceChanges||[]).map(c=>({...c,...(typeof c.change==='number'&&!Number.isSafeInteger(c.change)?{amountApproximate:true}:{} )})),requireConfirmation:p.requireConfirmation};
 }
 export class Engine{
- constructor({rpc,bridge,data=DATA,live=false,planFn=null,auditFn=auditToken,tradePlanOptions={}}){Object.assign(this,{rpc,bridge,data,live,planFn,auditFn,tradePlanOptions});this.experience=new ExperienceStore(data);this.running=new Set();this.mintSequences=new Map();this.previews=new Map();this.ordersDir=path.join(data,'orders');fs.mkdirSync(this.ordersDir,{recursive:true,mode:0o700});
+ constructor({rpc,bridge,data=DATA,live=false,planFn=null,auditFn=auditToken,tradePlanOptions={}}){Object.assign(this,{rpc,bridge,data,live,planFn,auditFn,tradePlanOptions});this.experience=new ExperienceStore(data);this.running=new Set();this.sellCoordinator=new SellCoordinator();this.mintSequences=new Map();this.previews=new Map();this.ordersDir=path.join(data,'orders');fs.mkdirSync(this.ordersDir,{recursive:true,mode:0o700});
   this.orderIndex=new OrderIndex(this.ordersDir);this.following=new Map();
   for(const row of this.list()){if(this.repairRefusal(row))continue;if(row.status==='SUBMITTING'){row.status='SUBMISSION_UNKNOWN';row.error={message:'服务在提交过程中退出，只能核对原单'};this.write(row);}else{try{this.experience.record(row);}catch{}}}
  }
@@ -278,14 +282,34 @@ export class Engine{
       // Fresh identity checks and quote/official preview reads are independent.
       // Capture THIS plan: a fee-search reroute restarts the loop and checks the
       // new target again. Every guard must finish before execute can be called.
+      const laneKey=o.intent.side==='sell'?sellLane(o.plan,o.plan.steps[index]):null;
+      const lane=await this.sellCoordinator.enter(laneKey);
+      try{
+      // A previous fast-return submit may still be on-chain. Follow that exact
+      // original before quoting another wallet against the same pool.
+      const prior=laneKey?this.orderIndex.find(r=>r.id!==o.id&&unresolved.has(r.status)&&r.intent?.side==='sell'&&sellLane(r.plan,r.steps?.at(-1)?.step)===laneKey):null;
+      let repriced=lane.waited||!!(laneKey&&this.orderIndex.find(r=>r.id!==o.id&&r.intent?.side==='sell'&&r.updatedAt>=o.createdAt&&r.steps?.some(e=>e.status==='CONFIRMED'&&sellLane(e.plan||r.plan,e.step)===laneKey)));
+      if(prior){let original=this.get(prior.id);const until=Date.now()+8000;
+       // Share the normal original-order follower and account lock. A separate
+       // observer could overwrite a newer background confirmation with stale data.
+       while(original.steps?.at(-1)?.txHash&&original.steps.at(-1).status!=='CONFIRMED'&&unresolved.has(original.status)&&Date.now()<until){
+        try{original=await this.follow(prior.id,{receiptTimeoutMs:Math.max(0,until-Date.now())});}catch(e){if(e.code!=='WALLET_BUSY')throw e;original=this.get(prior.id);}
+        if(original.steps?.at(-1)?.status!=='CONFIRMED'&&unresolved.has(original.status))await sleep(100);
+       }
+       if(original.steps?.at(-1)?.status!=='CONFIRMED'&&unresolved.has(original.status))throw Object.assign(Error('同一池子前一笔卖出尚未确认，本次尚未提交；后台继续核对原单'),{code:'SELL_POOL_BUSY'});
+       repriced=true;
+      }
       const identityPlan=o.plan;
       const identityCheck=measure('executionIdentity',()=>Promise.all([verifyIdentity(this.rpc,identityPlan.identity),...(identityPlan.protocolIdentities||[]).map(identity=>verifyIdentity(this.rpc,identity))])).then(()=>({}),error=>({error}));
       // Authorization can take several blocks. Refresh the automatic sale's
       // quote and deadline AFTER approval, then obtain a new official preview.
       // Preserve the original amount, venue, recipient and slippage percentage.
       const fastSale=o.intent.side==='sell'&&o.plan.opening&&o.plan.steps[index].kind==='sell';
-      if(fastSale&&(o.steps.some(e=>e.step.kind==='approve'&&e.status==='CONFIRMED')||Date.now()-(o.previewAt||0)>1000)){
+      if(fastSale&&(repriced||o.steps.some(e=>e.step.kind==='approve'&&e.status==='CONFIRMED')||Date.now()-(o.previewAt||0)>1000)){
        o.plan=await refreshOpeningSell(this.rpc,{...o.plan,account:o.intent.account});this.previews.delete(id);this.write(o);
+      }
+      if(laneKey&&o.plan.route==='gang-modern'&&(repriced||o.steps.some(e=>e.step.kind==='approve'&&e.status==='CONFIRMED')||Date.now()-(o.previewAt||0)>1000)){
+       o.plan=await refreshGangSell(this.rpc,o.plan,index);this.previews.delete(id);this.write(o);
       }
       const step=o.plan.steps[index];let p=o.steps.length===0?this.previews.get(id):null;
       if(o.intent.side==='sell'&&step.kind==='sell'&&o.plan.audit?.checkedAt&&Date.now()-o.plan.audit.checkedAt>5000)o.plan.audit=await this.sellAudit(o.plan.token);
@@ -310,6 +334,7 @@ export class Engine{
       await this.observeContract(o,entry,(step.kind==='sell'||o.plan.route==='corla:claim')&&swapReceiptWaitMs===0?0:10000);
       if(entry.status!=='CONFIRMED')return this.write(o);
       o.nextStep=index+1;o.status='READY_TO_CONTINUE';this.write(o);
+      }finally{lane.release();}
      }
      if(o.intent.side!=='mint')return this.finish(o);
      if(o.settledStage!==(o.stage||0)){
@@ -395,7 +420,9 @@ export class Engine{
     const tx=result.tx;if(!tx)throw receiptReadError(Error('节点已返回回执，但原交易暂未同步'));
     if(!same(tx.from,plan.wallet)||!same(tx.to,entry.step.to)||tx.input.toLowerCase()!==entry.step.data.toLowerCase()||BigInt(tx.value)!==BigInt(entry.step.value)||receipt.transactionHash&&!same(receipt.transactionHash,entry.txHash)||tx.hash&&!same(tx.hash,entry.txHash)){entry.status=o.status='RECEIPT_REVIEW';o.error={code:'ORIGINAL_MISMATCH',message:'节点返回的交易内容与原单不一致，正在重新核对原单'};break;}
     if(!['0x0','0x1','0','1',0,1,0n,1n].includes(receipt.status))throw receiptReadError(Error('节点回执状态无效'));
-    if(BigInt(receipt.status)===0n){this.clearResolvedErrors(o);entry.revertVerified=true;entry.status=o.status='FAILED';o.error={code:'TRANSACTION_REVERTED',message:'原交易已上链但执行回滚；可按当前持仓重新预览'};o.timing.finishedAt=Date.now();break;}
+    if(BigInt(receipt.status)===0n){this.clearResolvedErrors(o);entry.revertVerified=true;entry.status=o.status='FAILED';o.error={code:'TRANSACTION_REVERTED',message:'原交易已上链但执行回滚；回执未提供具体原因；可按当前持仓重新预览'};o.timing.finishedAt=Date.now();
+     // Diagnostics never delay wallet release or dispatch another transaction.
+     this.write(o);void diagnoseRevert(this.rpc,tx,receipt).then(reason=>{if(!reason)return;const current=this.get(o.id);if(current?.status!=='FAILED'||current.steps?.at(-1)?.txHash!==entry.txHash)return;current.steps.at(-1).revertDiagnosis=reason;current.error={code:'TRANSACTION_REVERTED',...reason};this.write(current);}).catch(()=>{});break;}
     try{if(entry.step.kind==='approve'){
      if(entry.step.approvalType==='infinity-permit2')await verifyInfinityAllowance(this.rpc,entry.step,plan,originalRead);
      else{const [allowance]=await originalRead(()=>read(this.rpc,entry.step.to,ERC20,'allowance',[plan.wallet,entry.step.spender]));if(allowance<BigInt(entry.step.allowance))throw Error('当前授权额度不足，后续步骤未执行');}
@@ -457,13 +484,13 @@ export class Engine{
   }
   return this.write(o);
  }
- async followOriginal(id,{background=false}={}){let o=this.get(id);if(!o)throw Error('找不到订单');o=this.repairRefusal(o)||o;if(terminal.has(o.status)||['PREPARED','READY_TO_CONTINUE'].includes(o.status))return o;
+ async followOriginal(id,{background=false,receiptTimeoutMs=0}={}){let o=this.get(id);if(!o)throw Error('找不到订单');o=this.repairRefusal(o)||o;if(terminal.has(o.status)||['PREPARED','READY_TO_CONTINUE'].includes(o.status))return o;
   return this.exclusive(o.intent.account,async()=>{o=this.recoverLate(o);if(terminal.has(o.status))return o;const previousFollowError=o.followError;let readSucceeded=false;try{
    const readOptions={readOnlyTimeoutMs:1000,...(background?{background:true}:{})};
    o.tracking={attempts:(o.tracking?.attempts||0)+1,lastCheckedAt:Date.now(),state:'checking'};
    const query=rejectedSwapQuery(o);if(query){const result=await this.bridge.call(o.intent.account,query.args,readOptions),failed=uniqueFailedSwap(o,result,this.list());if(failed)applyFailedSwap(o,failed);}
    if(o.orderId&&!terminal.has(o.status))await this.observeSwap(o,0,readOptions);else if(!terminal.has(o.status)){
-    const e=o.steps?.at(-1);if(e?.txHash){await this.observeContract(o,e,0);if(e.status==='CONFIRMED'){
+    const e=o.steps?.at(-1);if(e?.txHash){await this.observeContract(o,e,Math.min(8000,Math.max(0,Number(receiptTimeoutMs)||0)));if(e.status==='CONFIRMED'){
      o.nextStep=e.index+1;
      if(o.nextStep<o.plan.steps.length||o.intent.side==='mint'&&o.plan.fill?.continue)o.status='READY_TO_CONTINUE';else{
       if(o.intent.side==='mint'&&o.settledStage!==(o.stage||0)){o.completedQuantity=(o.completedQuantity||0)+o.plan.quantity;const key=o.plan.budgetCurrency==='QUOTE'?'quote':o.plan.budgetCurrency==='USDT'?'usdt':'bnb';o.spent??={bnb:'0',usdt:'0'};o.spent[key]=String(BigInt(o.spent[key]||'0')+BigInt(o.plan.amountIn));o.settledStage=o.stage||0;}

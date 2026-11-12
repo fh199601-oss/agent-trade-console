@@ -1,3 +1,4 @@
+import {describeError,safeErrorText} from './error-message.mjs';
 import {createRpcDialog} from './rpc-settings.mjs';
 import {createMintQuantityControl} from './mint-quantity.mjs';
 import {createUpdateDialog} from './app-updates.mjs';
@@ -248,7 +249,7 @@ function renderReviewDetail(o){const div=el('div',undefined,'review-item');div.a
    }
    if(o.intent.side==='mint')div.append(el('div',`${({free:'只用免费额度',paid:'只用付费额度',all:'全部额度'})[o.intent.scope]||'核对额度'} · ${o.intent.quantity==='max'?'打满可核验额度':o.intent.quantity+' 份'} · 预算 ${o.intent.maxBnb} BNB / ${o.intent.maxUsdt||'0'} USDT${o.intent.maxQuote!==undefined?' / '+o.intent.maxQuote+' '+(o.plan?.quota?.currency||'指定付款币'):''}（Gas 另计）`,'helper'));
    if(o.intent.routeId)div.append(el('div','所选方法：'+o.intent.routeId.replace(/^auto:/,''),'mono'));
-   if(o.error){div.append(el('p',needsRoute(o)?'请使用上方选择框，然后点击重新预览。':o.error.message));if(o.error.providerMessage){const original=el('details');original.append(el('summary','币安原始返回'),el('p',o.error.providerMessage));div.append(original);}}
+   if(o.error){div.append(el('p',needsRoute(o)?'请使用上方选择框，然后点击重新预览。':describeError(o.error)));if(o.error.providerMessage){const original=el('details');original.append(el('summary','币安原始返回'),el('p',safeErrorText(o.error.providerMessage)));div.append(original);}}
    if(o.plan&&o.intent.side!=='mint'){const p=o.plan;if(p.gang)div.append(el('p','Gang · '+(p.route==='gang-pool'?'外盘':({curve:'曲线内盘',fair:'Fair 按份认购',fly:'Fly 飞轮内盘'}[p.state?.mode]||'内盘'))+' · 计价 '+(p.quote?.quoteSymbol||'链上原币')+(p.quote?.conversion?' · 含兑换步骤':''),'helper'));div.append(el('p',`${o.intent.side==='sell'?'卖出当前持仓 '+o.intent.percent+'%':'买入'} · 支出 ${p.quote?.fromCoinAmount||p.amountIn+' 最小单位'} ${p.quote?.fromCoinSymbol||''}`,'review-trade-amount'),el('p',`预计到账 ${p.quote?.toCoinAmount||'见详情'} ${p.quote?.toCoinSymbol||o.intent.currency} · 滑点 ${(p.slippage?.bps??o.intent.slippageBps)/100}%${p.slippage?.mode==='auto'?'（'+(p.slippage.source==='verified-direct-fallback'?'直连保守值':'自动建议')+'，上限 '+p.slippage.capBps/100+'%）':''}`));}if(o.plan){div.append(el('p',`${o.plan.route==='corla:mint'?'首笔 1 份 · 本次最多 '+o.plan.fill.targetQuantity+' 份 · ':o.plan.fill?.probe?'免费试算 '+o.plan.quantity+' 份 · 确认后逐批检查剩余额度 · ':o.plan.quantity?o.plan.quantity+' 份 · ':''}准备 ${((o.timing?.prepareMs||0)/1000).toFixed(2)} 秒`),el('div',o.plan.token,'mono'));for(const r of o.review||[])div.append(el('p',r));const details=el('details');details.append(el('summary','查看金额、模拟资产变化与风险详情'),el('pre',JSON.stringify({route:o.plan.route,inputToken:o.plan.inputToken,amountRaw:o.plan.amountIn,minimumOutputRaw:o.plan.minOutput,quota:o.plan.quota,referral:o.plan.referral,fill:o.plan.fill,quote:o.plan.quote,preview:o.preview},null,2)));div.append(details);}
    if(o.diagnostics){const details=el('details'),experience=o.plan?.experience||o.mintContext?.experience,labels={corlaDiscovery:'Corla 工厂直查',corlaMintPlan:'Corla 价格与额度预检',projectDiscovery:'网站与合约识别',codeIdentity:'合约版本检查',verifiedSource:'源码读取',walletReady:'钱包连接检查',mintPlan:'铸造参数与额度',officialPreview:'官方钱包模拟',chainLearning:'链上成功记录回查'};details.append(el('summary','预检耗时与历史经验'));for(const [key,label]of Object.entries(labels)){const stage=o.diagnostics.stages?.[key];if(stage)details.append(el('p',`${label}：${(stage.totalMs/1000).toFixed(2)} 秒${stage.calls>1?'（'+stage.calls+' 次）':''}`));}details.append(el('p',`本次预检合计 ${(o.diagnostics.totalMs/1000).toFixed(2)} 秒；部分阶段并行或嵌套，未包含真实成交时间。`,'helper'));if(experience)details.append(el('p',`匹配当前合约版本的历史记录：${experience.exactMatches} 条。${experience.recommendedRouteId?'已参考历史入口，价格和额度重新核验。':'本次按当前链上信息核验。'}`));details.append(el('p','历史预览通过与真实成交分开记录。','helper'));div.append(details);}
    return div;
@@ -285,7 +286,7 @@ function showReviews(rows){
     const follow=first.plan.afterMint,terms=['Gas 另计'];if(summary.approval)terms.push('先授权，再认购');if(follow){terms.push('开盘领取 100%');if(follow.sell)terms.push('到账后卖出当前持仓 '+follow.sell.percent+'% · 滑点 '+follow.sell.slippageBps/100+'%');}
     card.append(el('p',terms.join(' · '),'helper'));$('reviewBody').append(card);
     for(const o of group.rows)details.append(renderReviewDetail(o));
-   }else if(group.error){const div=el('div',undefined,'review-compact-error');div.append(el('b',group.rows.length+' 个钱包（'+accounts+' 号）· '+statusLabel(first)),el('p',first.error.message));$('reviewBody').append(div);for(const o of group.rows)details.append(renderReviewDetail(o));}
+   }else if(group.error){const div=el('div',undefined,'review-compact-error');div.append(el('b',group.rows.length+' 个钱包（'+accounts+' 号）· '+statusLabel(first)),el('p',describeError(first.error)));$('reviewBody').append(div);for(const o of group.rows)details.append(renderReviewDetail(o));}
    else for(const o of group.rows)$('reviewBody').append(renderReviewDetail(o));
   }
   if(details.children.length>2)$('reviewBody').append(details);
@@ -318,8 +319,8 @@ async function viewOrder(id,{follow=false}={}){
 }
 function showTradeFeedback(rows){
  rows=rows.map(o=>tradeUpdates.get(o.id)||o);feedbackRows=rows;
- const box=$('tradeFeedback');box.replaceChildren();const reasons=[...new Set(rows.flatMap(o=>[o.error?.message,...(o.needsFeeReview?o.feeReview?.reasons||[]:[])]).filter(Boolean))];
- for(const o of rows){const r=el('div',undefined,'feedback-row');r.dataset.status=o.status;const text=el('span');text.append(el('b',`${o.intent.account} 号 · ${statusLabel(o)}`));r.append(text);
+ const box=$('tradeFeedback');box.replaceChildren();const reasons=[...new Set(rows.flatMap(o=>[o.error?describeError(o.error):null,...(o.needsFeeReview?o.feeReview?.reasons||[]:[])]).filter(Boolean))];
+ for(const o of rows){const r=el('div',undefined,'feedback-row');r.dataset.status=o.status;const text=el('span');text.append(el('b',`${o.intent.account} 号 · ${statusLabel(o)}`));if(o.error)text.append(el('small',describeError(o.error),'error'));r.append(text);
   const id=o.error?.details?.orderId||o.id,btn=el('button',o.error?.code==='ORDER_UNRESOLVED'?'核对原单':'详情','text-button');btn.addEventListener('click',()=>viewOrder(id,{follow:o.error?.code==='ORDER_UNRESOLVED'}));r.append(btn);box.append(r);
   if(o.feeRouteSearch)text.append(el('small',o.feeRouteSearch.status==='selected'?'已自动切换低费路线':'已自动寻找低费路线，本轮未找到符合条件的替代路线'));
  }
@@ -342,7 +343,7 @@ async function renderOrders(){
   const name=projectLabel(o),short=/^0x[0-9a-f]{40}$/i.test(name)?name.slice(0,8)+'…'+name.slice(-6):name;
   a.append(el('b',`${o.intent.account} 号 · ${o.intent.side==='buy'?'买入':o.intent.side==='sell'?'卖出':'Mint'}`),el('small',short),el('small',new Date(o.createdAt).toLocaleTimeString()));a.title=o.intent.asset;
   b.append(el('span',statusLabel(o),'order-state'),el('small',o.intent.side==='buy'?`${o.intent.amount} ${o.intent.currency}`:o.intent.side==='sell'?`当前持仓 ${o.intent.percent}%`:o.intent.quantity==='max'?'打满可核验额度':`${o.intent.quantity||'—'} 份`));
-  c.append(el('div',totalTimeLabel(o),'order-time'));if(o.error)c.append(el('small',needsRoute(o)?'请选择铸造方式后重新预览':o.error.message,o.status==='SKIPPED'?'muted':'error'));const progress=trackingLabel(o);if(progress)c.append(el('small',progress));if(o.followError)c.append(el('small',o.followError.message,'error'));
+  c.append(el('div',totalTimeLabel(o),'order-time'));if(o.error)c.append(el('small',needsRoute(o)?'请选择铸造方式后重新预览':describeError(o.error),o.status==='SKIPPED'?'muted':'error'));const progress=trackingLabel(o);if(progress)c.append(el('small',progress));if(o.followError)c.append(el('small',describeError(o.followError),'error'));
   if(o.txHash){const link=el('a','链上回执 ↗');link.href='https://bscscan.com/tx/'+o.txHash;link.target='_blank';link.rel='noopener';c.append(link);}
   const pending=['PENDING','SUBMITTING','SUBMISSION_UNKNOWN','RECEIPT_REVIEW'].includes(o.status),btn=el('button',pending?'核对原单':needsRoute(o)?'选择方式':isReady(o)?'查看预览':'详情','text-button');btn.addEventListener('click',()=>viewOrder(o.id,{follow:pending}));actions.append(btn);
   if(['FAILED','REJECTED','BLOCKED'].includes(o.status)&&['buy','sell'].includes(o.intent.side)){const retry=el('button','重新发起','secondary');retry.addEventListener('click',()=>retryOrder(o.id));actions.append(retry);}

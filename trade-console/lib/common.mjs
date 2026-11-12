@@ -1,3 +1,4 @@
+import {presentError} from '../public/error-message.mjs';
 import {normalizeMintQuantity} from '../public/mint-quantity.mjs';
 import {sellGasLimit} from './sell-gas.mjs';
 import fs from 'node:fs';
@@ -71,4 +72,4 @@ export function validateIntent(input){
  return i;
 }
 export async function read(rpc,to,abi,method,args=[],block='latest'){return abi.decodeFunctionResult(method,await rpc.call({to,data:abi.encodeFunctionData(method,args)},block));}
-export const publicError=e=>({message:e.message,code:e.code||'ERROR'});
+export const publicError=presentError;

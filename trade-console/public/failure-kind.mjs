@@ -1,7 +1,9 @@
+import {errorCategory,errorLabels} from './error-message.mjs';
 // Shared by reports and UI. Unknown reverts never imply a sold-out/ended sale.
-export const failureLabels={site_proof:'需要本钱包官网凭证',deferred:'认购后另行领取',input_needed:'请明确铸造份数',proof_pending:'工作量证明尚未完成',ended:'铸造已结束',no_quota:'当前无可用额度',ineligible:'钱包资格不足',not_open:'铸造尚未开放',paused:'合约暂停',budget:'本次预算不足',route_choice:'待选择铸造方式',adapter_needed:'此类型仍需适配',network:'网络查询失败',wallet_or_simulation:'钱包或模拟检查未通过',eligibility_or_state:'合约状态不允许',validation:'预览未通过'};
+export const failureLabels={...errorLabels,site_proof:'需要本钱包官网凭证',deferred:'认购后另行领取',input_needed:'请明确铸造份数',proof_pending:'工作量证明尚未完成',ended:'铸造已结束',no_quota:'当前无可用额度',ineligible:'钱包资格不足',not_open:'铸造尚未开放',paused:'合约暂停',budget:'本次预算不足',route_choice:'待选择铸造方式',adapter_needed:'此类型仍需适配',network:'网络查询失败',wallet_or_simulation:'钱包或模拟检查未通过',eligibility_or_state:'合约状态不允许',validation:'检查未通过 · 查看原因'};
 export function failureKind(error){
  const code=error?.code||'',message=error?.message||'';
+ const category=errorCategory(error);if(category)return category;
  if(['CHAIN_HISTORY_INCOMPLETE','WEBSITE_UNAVAILABLE'].includes(code))return 'network';
  if(code==='NO_FREE_MINT')return 'no_quota';
  if(['SITE_PROOF_REQUIRED','SITE_PROOF_INVALID'].includes(code))return 'site_proof';

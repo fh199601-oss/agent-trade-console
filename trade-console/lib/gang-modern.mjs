@@ -38,7 +38,7 @@ export const FLY_ABI=new Interface([
 const clients=new WeakMap();
 export function gangClient(rpc){if(!clients.has(rpc))clients.set(rpc,new GangClient(rpc));return clients.get(rpc);}
 export class GangClient{
- constructor(rpc,{identityFor=codeIdentity}={}){this.rpc=rpc;this.identityFor=identityFor;this.pending=new Map();this.metadata=new Map();this.known=new Set();this.warmAfter=new Map();}
+ constructor(rpc,{identityFor=codeIdentity}={}){this.rpc=rpc;this.identityFor=identityFor;this.pending=new Map();this.metadata=new Map();this.known=new Set();this.warmAfter=new Map();this.identities=new Map();}
  async shared(key,fn){if(this.pending.has(key))return this.pending.get(key);const p=fn();this.pending.set(key,p);try{return await p;}finally{this.pending.delete(key);}}
  // Display-driven, read-only registration/metadata warmup. No balances, quotes,
  // approvals or transactions are cached. A real plan still rereads live state.
@@ -59,7 +59,7 @@ export class GangClient{
   const value=native(token)?{decimals:18,symbol:'BNB'}:await Promise.all([read(this.rpc,token,ERC20,'decimals'),read(this.rpc,token,ERC20,'symbol').catch(()=>['代币'])]).then(([d,s])=>({decimals:Number(d[0]),symbol:String(s[0]).slice(0,32)}));
   if(value.decimals>36)throw Error('Gang 计价币精度不支持');this.metadata.set(key,{value,until:Date.now()+60000});if(this.metadata.size>128)this.metadata.delete(this.metadata.keys().next().value);return value;
  });}
- async identity(state){return this.shared('identity:'+state.pad,()=>Promise.all([...new Set([GANG_ENTRY,GANG_REGISTRY,state.pad])].map(a=>this.identityFor(this.rpc,a))));}
+ async identity(state){const key=state.pad.toLowerCase(),old=this.identities.get(key);if(old?.until>Date.now())return old.value;return this.shared('identity:'+key,async()=>{const value=await Promise.all([...new Set([GANG_ENTRY,GANG_REGISTRY,state.pad])].map(a=>this.identityFor(this.rpc,a)));this.identities.set(key,{value,until:Date.now()+15000});if(this.identities.size>64)this.identities.delete(this.identities.keys().next().value);return value;});}
  async detail(state){return this.shared('detail:'+state.token,async()=>{
   if(state.kind===1){const c=await read(this.rpc,state.pad,GANG_PAD_ABI,'curves',[state.token]);return {creator:c.creator,refPair:c.refPair,buyTaxBps:Number(c.buyTaxBps),sellTaxBps:Number(c.sellTaxBps)};}
   if(state.kind===2){const s=await read(this.rpc,state.pad,GANG_PAD_ABI,'sales',[state.token]);return {gate:s.gate,price:s.sharePrice,mintFeeBps:Number(s.mintFeeBps),cap:Number(s.capShares),sold:Number(s.sold),shareSize:50000n*10n**18n};}
@@ -98,6 +98,7 @@ export class GangClient{
  }
 }
 export async function gangInternalPlan(rpc,intent,state,owner,balance,{amount,conversion,client=gangClient(rpc)}={}){
+ const identityTask=client.identity(state).then(value=>({value}),error=>({error}));
  const meta=await client.meta(state.quoteToken),buy=intent.side==='buy';
  const requested=buy?intent.currency==='QUOTE'?state.quoteToken:intent.currency==='USDT'?'0x55d398326f99059fF775485246999027B3197955':intent.currency==='WBNB'?WBNB:BNB:state.token;
  const budget=amount??parseUnits(intent.amount,native(requested)?18:same(requested,state.quoteToken)?meta.decimals:18);
@@ -106,7 +107,7 @@ export async function gangInternalPlan(rpc,intent,state,owner,balance,{amount,co
   if(!conversion)throw Error('需要先兑换 Gang 计价币：'+meta.symbol);
   prefix=await conversion({inputToken:requested,outputToken:state.quoteToken,amount:budget,owner,slippageBps:Math.floor(slip/2)});available=BigInt(prefix.minOutput);slip-=Math.floor(slip/2);
  }
- const [q,identities]=await Promise.all([client.quote(state,owner,intent.side,available),client.identity(state)]);
+ const [q,identityResult]=await Promise.all([client.quote(state,owner,intent.side,available),identityTask]);if(identityResult.error)throw identityResult.error;const identities=identityResult.value;
  let input=buy?state.quoteToken:state.token,output=buy?state.token:state.quoteToken;
  // The native unified entry wraps WBNB itself. Direct ungated share entries
  // need ERC20 WBNB, except Fly's explicit mintWithBnb.
@@ -136,6 +137,24 @@ export async function gangInternalPlan(rpc,intent,state,owner,balance,{amount,co
   state:{...state,feeBps:Number((q.fee*10000n+feeBase-1n)/feeBase)},gang:true,stagedTrade:true,protocolIdentities:[...identities,...(prefix?.identities||[]),...(suffix?.identities||[])],requireSellCredit:!buy,requireTradeCredit:true,
   quote:{fromCoinAmount:formatUnits(buy?budget:q.amountIn,buy&&same(requested,state.quoteToken)?meta.decimals:18),fromCoinSymbol:buy?(intent.currency==='QUOTE'?meta.symbol:intent.currency):'项目代币',toCoinSymbol:buy?'项目代币':suffix?intent.currency:meta.symbol,toCoinAmount:formatUnits(suffix?.amountOut??q.amountOut,buy?18:suffix?.outputDecimals??meta.decimals),quoteSymbol:meta.symbol,quoteToken:state.quoteToken,roundedShares:state.kind!==1,conversion:!!(prefix||suffix)},
   poolFees:suffix?.fees,slippage:{mode:'fixed',bps:intent.slippageBps,capBps:intent.slippageBps},review:[],steps};
+}
+// Reprice only the unsent sell leg. Never recalculate the percentage, replace a
+// sent transaction or spend more. A following conversion retains its input floor.
+export async function refreshGangSell(rpc,plan,index,client=gangClient(rpc)){
+ const old=plan.steps[index],leg=old?.tradeLeg,state=leg?.state;
+ if(old?.kind!=='sell'||leg?.settlementRoute!=='gang-modern'||!state)throw Error('Gang 卖出刷新缺少已核验入口');
+ const fresh=await client.probe(state.token);
+ if(!fresh||fresh.migrated||!same(fresh.pad,state.pad)||fresh.kind!==state.kind||!same(fresh.quoteToken,state.quoteToken))throw Object.assign(Error('Gang 已迁移或交易入口变化，请重新按当前市场预览'),{code:'GANG_MARKET_CHANGED'});
+ const [q,[balance]]=await Promise.all([client.quote(fresh,plan.wallet,'sell',BigInt(leg.amountIn)),read(rpc,state.token,ERC20,'balanceOf',[plan.wallet])]);
+ if(String(balance)!==plan.holdingBefore||String(q.amountIn)!==leg.amountIn||!!q.direct!==!!state.direct)throw Error('Gang 当前持仓或卖出份数已变化，请重新预览');
+ const hasConversion=plan.steps.slice(index+1).some(s=>s.kind==='conversion');
+ let minimum=q.amountOut*BigInt(10000-(hasConversion?Math.floor(plan.slippage.bps/2):plan.slippage.bps))/10000n;
+ if(hasConversion&&minimum<BigInt(leg.minOutput))minimum=BigInt(leg.minOutput);
+ if(minimum<=0n||q.amountOut<minimum)throw Object.assign(Error('Gang 最新卖出到账不足后续兑换所需金额，请重新预览'),{code:'SLIPPAGE_LIMIT'});
+ const data=q.direct?GANG_PAD_ABI.encodeFunctionData('withdraw',[state.token,q.shares,minimum]):GANG_ABI.encodeFunctionData('sellToken',[0,state.token,plan.wallet,q.amountIn,minimum,0,ZeroAddress]);
+ const feeBase=q.amountOut+q.fee,feeBps=Number((q.fee*10000n+feeBase-1n)/feeBase);
+ const steps=plan.steps.map((s,n)=>n===index?{...s,data,tradeLeg:{...leg,minOutput:String(minimum),state:{...state,feeBps}}}:s);
+ return {...plan,steps,state:{...plan.state,feeBps},...(!hasConversion?{minOutput:String(minimum),quote:{...plan.quote,toCoinAmount:formatUnits(q.amountOut,plan.outputDecimals)}}:{}),quoteRefreshedAt:Date.now()};
 }
 export function gangSettlement({receipt,wallet:owner,token,side,state,step}){
  const abi=state.direct?GANG_PAD_ABI:GANG_ABI,name=state.direct?side==='buy'?'Minted':'Withdrawn':side==='buy'?'GatewayBuy':'GatewaySell';

@@ -140,7 +140,7 @@ test('receipt read or parent follow contention never creates a fresh claim or lo
  assert.equal(j.status,'CLAIMING');assert.equal(j.claimId,original);assert.equal(j.attempts,1);assert.equal(h.calls().execs,1);
  h.engine.follow=follow;h.confirm(j);await h.m.tick(j.id);assert.equal(h.calls().handoffs,1);
  const b=harness(t),k=b.m.enroll(b.parent);b.parent.status='PENDING';b.engine.follow=async()=>{throw Error('fixture temporary original lookup');};await b.m.tick(k.id);
- assert.equal(k.status,'WAITING_MINT');assert.equal(k.lastError.message,'fixture temporary original lookup');assert.equal(b.calls().execs,0);
+ assert.equal(k.status,'WAITING_MINT');assert.equal(k.lastError.providerMessage,'fixture temporary original lookup');assert.equal(b.calls().execs,0);
 });
 test('already claimed and missing allocation stop with specific reasons and never authorize a sale',async t=>{
  for(const code of ['CORLA_ALREADY_CLAIMED','NO_QUOTA','CORLA_REFUND_ONLY']){

@@ -1,6 +1,7 @@
 // Fixed, factory-verified routes. This is a planner: no signing/broadcast here.
 import {Interface,read,ERC20,BNB,WBNB,USDT,same,native} from './common.mjs';
-import {OpeningPools} from './opening-pools.mjs';
+import {OpeningPools,POOL} from './opening-pools.mjs';
+import {openingReads} from './opening-read.mjs';
 import {OpeningPreparation} from './opening-preparation.mjs';
 import {DEXES,dexFor,V2_ROUTER_ABI,V3_LEGACY,V3_MODERN,QUOTER} from './opening-dex.mjs';
 import {poolFeeProof,HIGH_FEE_PPM,compoundFees} from './trade-fees.mjs';
@@ -11,8 +12,57 @@ const V2_NATIVE=new Interface(['function swapExactETHForTokensSupportingFeeOnTra
 const clients=new WeakMap();
 export function conversions(rpc){if(!clients.has(rpc))clients.set(rpc,new TradeConversions(rpc));return clients.get(rpc);}
 export class TradeConversions{
- constructor(rpc,{pools=new OpeningPools(rpc,{quoteDiscovery:null,infinity:null}),prep=new OpeningPreparation(rpc),identityFor=codeIdentity}={}){Object.assign(this,{rpc,pools,prep,identityFor});}
- async plan({inputToken,outputToken,amount,owner,slippageBps,preferredPool,quotedOutput,maxHops=2}){
+ constructor(rpc,{pools=new OpeningPools(rpc,{quoteDiscovery:null,infinity:null}),prep=new OpeningPreparation(rpc),identityFor=codeIdentity,now=Date.now}={}){Object.assign(this,{rpc,pools,prep,identityFor,now});this.topologies=new Map();this.preparing=new Map();}
+ key(a,b){return [native(a)?WBNB:a,native(b)?WBNB:b].map(x=>x.toLowerCase()).sort().join(':');}
+ remember(input,output,edges){
+  // Only venue identities are retained: no reserves, prices, balances or allowance.
+  if([...edges.values()].some(e=>e.errors?.length)||![...edges.values()].some(e=>e.pools.some(p=>p.liquid)))return;
+  const clean=new Map([...edges].map(([k,e])=>[k,{token:e.token,quote:e.quote,pools:e.pools.map(p=>{const {reserve0,reserve1,liquidity,block,liquid,...identity}=p;return {...identity,verifiedBlock:p.verifiedBlock??Number(block)};})}]));
+  this.topologies.set(this.key(input,output),{until:this.now()+30000,edges:clean});if(this.topologies.size>64)this.topologies.delete(this.topologies.keys().next().value);
+ }
+ async edge(input,output,graph,block='latest'){
+  const key=this.key(input,output);let e=graph.get(key);
+  if(!e){e={...await this.pools.inspectQuotes(input,'AUTO',[output],block),token:input,quote:output};graph.set(key,e);}
+  return {...e,pools:e.pools.map(p=>({...p,token:input,quote:output}))};
+ }
+ async refresh(input,output){
+  const key=this.key(input,output),old=this.topologies.get(key);if(!old||old.until<=this.now())return null;
+  const all=[...old.edges.values()].flatMap(e=>e.pools),unique=[...new Map(all.map(p=>[p.pool.toLowerCase(),p])).values()];
+  if(!unique.length)return null;
+  const first=await openingReads(this.rpc,unique.slice(0,64).map(p=>({to:p.pool,abi:POOL,method:p.kind==='v2'?'getReserves':'liquidity'})));
+  const parts=await Promise.all(Array.from({length:Math.ceil(Math.max(0,unique.length-64)/64)},(_,n)=>openingReads(this.rpc,unique.slice(64+n*64,128+n*64).map(p=>({to:p.pool,abi:POOL,method:p.kind==='v2'?'getReserves':'liquidity'})),first.block)));
+  const rows=[...first.results,...parts.flatMap(x=>x.results)],fresh=new Map();
+  unique.forEach((p,n)=>{const r=rows[n];if(r?.status!=='fulfilled'||first.block<p.verifiedBlock)return;const v=r.value;fresh.set(p.pool.toLowerCase(),{...p,block:first.block,liquid:v[0]>0n&&(p.kind!=='v2'||v[1]>0n),...(p.kind==='v2'?{reserve0:String(v[0]),reserve1:String(v[1])}:{liquidity:String(v[0])})});});
+  // Partial refresh must not turn an RPC failure into "no liquidity".
+  if(fresh.size!==unique.length){this.topologies.delete(key);return null;}
+  return new Map([...old.edges].map(([k,e])=>[k,{...e,block:first.block,errors:[],pools:e.pools.map(p=>fresh.get(p.pool.toLowerCase()))}]));
+ }
+ async warm(inputToken,outputToken,{busy=()=>false}={}){
+  const input=native(inputToken)?WBNB:inputToken,output=native(outputToken)?WBNB:outputToken,key=this.key(input,output);
+  if(busy())return;
+  if(this.preparing.has(key))return this.preparing.get(key);
+  const work=(async()=>{
+   if(same(input,output)){await this.prep.token?.(output);return;}
+   if((this.topologies.get(key)?.until||0)>this.now())return;
+   const graph=new Map(),block=await this.rpc.getBlockNumber(),mids=[WBNB,USDT].filter(t=>!same(t,input)&&!same(t,output));
+   if(busy())return;
+   await this.edge(input,output,graph,block);
+   if(busy())return;
+   await Promise.all(mids.flatMap(mid=>[this.edge(input,mid,graph,block),this.edge(mid,output,graph,block)]));
+   this.remember(input,output,graph);
+   if(busy())return;
+   const venues=[...new Map([...graph.values()].flatMap(e=>e.pools.filter(p=>p.liquid).map(p=>{const d=dexFor(p);return [d?.id,d];}))).values()].filter(Boolean);
+   await Promise.allSettled([...venues.map(d=>this.prep.venue(d)),...[input,output].map(t=>this.prep.token?this.prep.token(t):this.prep.quote(t))]);
+  })();this.preparing.set(key,work);try{return await work;}finally{this.preparing.delete(key);}
+ }
+ async plan(args){
+  if(args.graph)return this.build(args);
+  const input=native(args.inputToken)?WBNB:args.inputToken,output=native(args.outputToken)?WBNB:args.outputToken;
+  const prepared=await this.refresh(input,output),graph=prepared||new Map();
+  try{const result=await this.build({...args,graph});if(!prepared)this.remember(input,output,graph);return result;}
+  catch(e){if(!prepared||e.code!=='QUOTE_CONVERSION_UNAVAILABLE')throw e;this.topologies.delete(this.key(input,output));const fresh=new Map(),result=await this.build({...args,graph:fresh});this.remember(input,output,fresh);return result;}
+ }
+ async build({inputToken,outputToken,amount,owner,slippageBps,preferredPool,quotedOutput,maxHops=2,graph}){
   amount=BigInt(amount);if(amount<=0n||!Number.isInteger(slippageBps)||slippageBps<0||slippageBps>5000)throw Error('兑换金额或滑点无效');
   const ni=native(inputToken),no=native(outputToken),input=ni?WBNB:inputToken,output=no?WBNB:outputToken;
   if(same(input,output)){
@@ -21,11 +71,11 @@ export class TradeConversions{
    const tradeLeg={inputToken,outputToken,amountIn:String(amount),minOutput:String(amount),settlementRoute:'trade-conversion',state:{wrap:ni?'deposit':'withdraw'}};
    return {outputToken,amountOut:amount,minOutput:String(amount),outputDecimals:18,identities:[identity],fees:{poolFeePpm:0,source:'WBNB 1:1 包装',pools:[]},steps:[{kind:'conversion',to:WBNB,value:ni?String(amount):'0',data,tradeLeg}]};
   }
-  const base=await this.pools.inspectQuotes(input,'AUTO',[output]),candidates=base.pools.filter(p=>p.liquid);
+  const base=await this.edge(input,output,graph),candidates=base.pools.filter(p=>p.liquid);
   // If no direct pair exists, include fixed same-factory two-hop V2 paths.
-  if(!candidates.length){
+  if(!candidates.length&&maxHops>1){
    const mids=[WBNB,USDT].filter(t=>!same(t,input)&&!same(t,output));
-   const rows=await Promise.all(mids.map(async mid=>{const [a,b]=await Promise.all([this.pools.inspectQuotes(input,'AUTO',[mid],base.block),this.pools.inspectQuotes(mid,'AUTO',[output],base.block)]);return a.pools.filter(p=>p.liquid&&p.kind==='v2').flatMap(p=>b.pools.filter(q=>q.liquid&&q.kind==='v2'&&same(q.factory,p.factory)).map(q=>({...p,quote:output,path:[input,mid,output],legs:[p,q]})));}));candidates.push(...rows.flat());
+   const rows=await Promise.all(mids.map(async mid=>{const [a,b]=await Promise.all([this.edge(input,mid,graph,base.block),this.edge(mid,output,graph,base.block)]);return a.pools.filter(p=>p.liquid&&p.kind==='v2').flatMap(p=>b.pools.filter(q=>q.liquid&&q.kind==='v2'&&same(q.factory,p.factory)).map(q=>({...p,quote:output,path:[input,mid,output],legs:[p,q]})));}));candidates.push(...rows.flat());
   }
   const quoted=await Promise.allSettled(candidates.map(async pool=>{
    const d=dexFor(pool);if(!d)throw Error('兑换池不在已核验工厂中');
@@ -47,8 +97,8 @@ export class TradeConversions{
   if(!valid.length&&maxHops>1&&!quotedOutput){
    const mids=[WBNB,USDT].filter(t=>!same(t,input)&&!same(t,output));
    const alternatives=await Promise.allSettled(mids.map(async mid=>{
-    const first=await this.plan({inputToken,outputToken:mid,amount,owner,slippageBps:Math.floor(slippageBps/2),maxHops:1});
-    const last=await this.plan({inputToken:mid,outputToken,amount:BigInt(first.minOutput),owner,slippageBps:slippageBps-Math.floor(slippageBps/2),maxHops:1});
+    const first=await this.plan({inputToken,outputToken:mid,amount,owner,slippageBps:Math.floor(slippageBps/2),maxHops:1,graph});
+    const last=await this.plan({inputToken:mid,outputToken,amount:BigInt(first.minOutput),owner,slippageBps:slippageBps-Math.floor(slippageBps/2),maxHops:1,graph});
     const fee=compoundFees([first.fees.poolFeePpm,last.fees.poolFeePpm]);if(fee===null||fee>=HIGH_FEE_PPM)throw Error('中转费用超限');
     return {...last,steps:[...first.steps,...last.steps],identities:[...first.identities,...last.identities],fees:{poolFeePpm:fee,source:'固定工厂跨池兑换',pools:[...first.fees.pools,...last.fees.pools]}};
    }));
@@ -58,7 +108,7 @@ export class TradeConversions{
   if(!valid.length)throw Object.assign(Error('未找到 '+inputToken+' → '+outputToken+' 的可核验低费兑换路径；可选择池子原币直接交易'),{code:'QUOTE_CONVERSION_UNAVAILABLE'});
   const {pool,d,amountOut,fees}=valid[0],minimum=amountOut*BigInt(10000-slippageBps)/10000n;
   if(minimum<=0n)throw Error('兑换最低到账为零');
-  const [venue,identity,[allowance],meta]=await Promise.all([this.prep.venue(d),this.identityFor(this.rpc,output),ni?[amount]:read(this.rpc,input,ERC20,'allowance',[owner,d.router]),this.prep.quote(output)]);
+  const [venue,identity,[allowance],meta]=await Promise.all([this.prep.venue(d),this.prep.token?this.prep.token(output).then(v=>v.identity):this.identityFor(this.rpc,output),ni?[amount]:read(this.rpc,input,ERC20,'allowance',[owner,d.router]),this.prep.quote(output)]);
   const deadline=Math.floor(Date.now()/1000)+180;let data;
   if(d.kind==='v2')data=ni?V2_NATIVE.encodeFunctionData('swapExactETHForTokensSupportingFeeOnTransferTokens',[minimum,pool.path||[input,output],owner,deadline]):V2_ROUTER_ABI.encodeFunctionData(no?'swapExactTokensForETHSupportingFeeOnTransferTokens':'swapExactTokensForTokensSupportingFeeOnTransferTokens',[amount,minimum,pool.path||[input,output],owner,deadline]);
   else{

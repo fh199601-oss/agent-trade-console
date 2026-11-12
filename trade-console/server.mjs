@@ -1,3 +1,4 @@
+import {GangWarmup} from './lib/gang-warmup.mjs';
 import {gangClient} from './lib/gang-modern.mjs';
 import {TaskEnrollment} from './lib/task-enrollment.mjs';
 import {editTasks} from './lib/task-edit.mjs';
@@ -45,6 +46,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
  const opening=providedOpening||new OpeningSell({engine,rpc:openingRpc,bridge,detector,data,preparation});
  const corla=providedCorla||new CorlaAutomation({engine,rpc:openingRpc,opening,data});engine.onAuthorized=o=>corla.enroll(o);
  const sellWarmup=new ManualSellWarmup({scan:engine.openingScan,preparation,busy:()=>engine.running.size>0||!!opening.active?.()||!!corla.active?.()});
+ const gangWarmup=new GangWarmup({rpc,busy:()=>engine.running.size>0||!!opening.active?.()||!!corla.active?.()});
  const reconcileOrder=o=>{opening.reconcileOrder?.(o);corla.reconcileOrder?.(o);return o;};
  const tracker=new OriginalTracker({engine,onUpdate:reconcileOrder});
  const enrollment=new TaskEnrollment({engine,corla,opening,rpc:readRpc});
@@ -65,7 +67,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
   const send=(code,v,type='application/json')=>{res.writeHead(code,{'content-type':type+'; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer','content-security-policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"});res.end(type==='application/json'?json(v):v);};
   try{
    guard(req);const u=new URL(req.url,'http://'+req.headers.host),p=u.pathname;
-   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,instance,capabilities:{gangVersion:1,genericMintVersion:3,infinitySellVersion:1,originalTrackingVersion:1,rpcRecoveryVersion:1,sellFeeGuardVersion:3,sellFeeThresholdPpm:HIGH_FEE_PPM,feeRouteSearchVersion:1,sellGasVersion:1,openingVersion:4,recoveryVersion:1,instantReview:true,corlaVersion:3,corlaAutomationVersion:2,taskCenterVersion:2},token,mode:live?'LIVE':'SIMULATION',wallets:bindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list(),corla:corla.list()});
+   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,instance,capabilities:{gangVersion:2,sellCoordinationVersion:2,genericMintVersion:3,infinitySellVersion:1,originalTrackingVersion:1,rpcRecoveryVersion:1,sellFeeGuardVersion:3,sellFeeThresholdPpm:HIGH_FEE_PPM,feeRouteSearchVersion:1,sellGasVersion:1,openingVersion:4,recoveryVersion:1,instantReview:true,corlaVersion:3,corlaAutomationVersion:2,taskCenterVersion:2},token,mode:live?'LIVE':'SIMULATION',wallets:bindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list(),corla:corla.list()});
    if(p.startsWith('/api/'))auth(req);
    if(req.method==='GET'&&p==='/api/rpc')return send(200,rpcSettings?.status()||{available:false});
    if(req.method==='POST'&&p==='/api/rpc'){
@@ -91,8 +93,8 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
    if(req.method==='GET'&&p==='/api/market')return send(200,await market(readRpc,u.searchParams.get('ca')));
    if(req.method==='GET'&&p==='/api/holdings'){
     const result=await holdings(readRpc,u.searchParams.get('ca'));send(200,result);
-    if(result.assetType==='ERC20'&&!engine.running.size)void gangClient(rpc).warm(result.token).catch(()=>{});
-    if(result.assetType==='ERC20'&&result.wallets.some(w=>/^\d+$/.test(w.raw||'')&&BigInt(w.raw)>0n))sellWarmup.request(result.token);
+    if(result.assetType==='ERC20'&&!engine.running.size)void gangWarmup.request(result.token);
+    if(result.assetType==='ERC20'&&result.wallets.some(w=>/^\d+$/.test(w.raw||'')&&BigInt(w.raw)>0n))!gangClient(rpc).known.has(result.token.toLowerCase())&&sellWarmup.request(result.token);
     return;
    }
    if(req.method==='GET'&&p==='/api/wallets')return send(200,await walletOverview(readRpc,bridge,readiness));
@@ -113,7 +115,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
    if(req.method==='POST'&&p==='/api/run'){const b=await body(req);return send(200,reconcileOrder(await engine.run(b.intent,b.id,{...b,swapReceiptWaitMs:b.fastReturn===true?0:10000})));}
    if(req.method==='POST'&&p==='/api/stop-remaining'){const b=await body(req);return send(200,await engine.stopRemaining(b.id));}
    if(req.method==='POST'&&p==='/api/follow'){const b=await body(req),o=await engine.follow(b.id);return send(200,reconcileOrder(o));}
-   if(req.method==='GET'&&['/','/app.js','/task-center.mjs','/app-updates.mjs','/rpc-settings.mjs','/mint-quantity.mjs','/binancians-input.mjs','/corla-input.mjs','/corla-view.mjs','/corla-budget.mjs','/review-model.mjs','/failure-kind.mjs','/trade-workflow.mjs','/asset-input.mjs','/session-client.mjs','/style.css','/favicon.svg'].includes(p)){const file=path.join(HERE,'public',p==='/'?'index.html':p.slice(1));return send(200,fs.readFileSync(file,'utf8'),/\.m?js$/.test(p)?'text/javascript':p.endsWith('.css')?'text/css':p.endsWith('.svg')?'image/svg+xml':'text/html');}
+   if(req.method==='GET'&&['/','/app.js','/task-center.mjs','/app-updates.mjs','/rpc-settings.mjs','/mint-quantity.mjs','/binancians-input.mjs','/corla-input.mjs','/corla-view.mjs','/corla-budget.mjs','/review-model.mjs','/error-message.mjs','/failure-kind.mjs','/trade-workflow.mjs','/asset-input.mjs','/session-client.mjs','/style.css','/favicon.svg'].includes(p)){const file=path.join(HERE,'public',p==='/'?'index.html':p.slice(1));return send(200,fs.readFileSync(file,'utf8'),/\.m?js$/.test(p)?'text/javascript':p.endsWith('.css')?'text/css':p.endsWith('.svg')?'image/svg+xml':'text/html');}
    return send(404,{error:'未找到接口'});
   }catch(e){return send(e.code==='LOCAL_SESSION_EXPIRED'&&e.statusCode===401?401:400,{error:publicError(e),details:e.details,diagnostics:e.diagnostics});}
  });
@@ -130,7 +132,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
   })).finally(()=>{warming=null;});return warming;
  }
  server.on('listening',()=>{tracker.start();if(rpcSettings)void rpc.verifyChain().catch(()=>{});});
- server.on('close',()=>{tracker.close();sellWarmup.close();corla.close();opening.close();void rpcSettings?.close()?.catch(()=>{});});
+ server.on('close',()=>{gangWarmup.close();tracker.close();sellWarmup.close();corla.close();opening.close();void rpcSettings?.close()?.catch(()=>{});});
  return {server,engine,bridge,token,warm,rpc,readRpc,opening,corla,rpcSettings,enrollment,tracker};
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){

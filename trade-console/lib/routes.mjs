@@ -61,14 +61,15 @@ export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=
  // reads in the same batch increased latency. Production starts the balance
  // first, then overlaps the quote and registry reads (see round 3 evidence).
  const warm=intent.side==='sell'&&!platform&&!routeCache.has(hintKey)&&(hints.get(hintKey)||0)>Date.now();
- const pendingRoute=warm&&overlapRouteReads?measure('tradeRoute',()=>detectRoute(rpc,token,w,platform)).then(route=>({route}),error=>({error})):null;
+ const knownGang=gangClient(rpc).known.has(hintKey);
+ const pendingRoute=(knownGang||warm&&overlapRouteReads)?measure('tradeRoute',()=>detectRoute(rpc,token,w,platform)).then(route=>({route}),error=>({error})):null;
  // Buy input is already known; quote can run while token metadata/holdings are
  // read. This is read-only speculation; registry, audit and balance checks still
  // gate the final plan. Never do this for sell: its amount needs a fresh balance.
  const canSpeculate=overlapQuotes&&intent.currency!=='QUOTE'&&!platform&&!gangClient(rpc).known.has(hintKey)&&!/888[0-9a-f]$/i.test(token)&&!routeCache.has(hintKey)&&(coldQuoteOverlap||(hints.get(hintKey)||0)>Date.now());
  const earlyArgs=earlyBuyQuote&&canSpeculate&&intent.side==='buy'?['--binanceChainId','56','--fromToken',intent.currency==='USDT'?USDT:intent.currency==='WBNB'?WBNB:BNB,'--toToken',token,'--fromTokenQty',formatUnits(parseUnits(intent.amount,18),18),'--slippage',intent.slippageMode==='auto'?'auto':String(intent.slippageBps/100)]:null;
  const early=earlyArgs?measure('tradeQuote',()=>bridge.call(intent.account,['market-order','quote',...earlyArgs])).then(value=>({value}),error=>({error})):null;
- const [[d],[balance]]=await measure('tradeBalance',()=>Promise.all([read(rpc,token,ERC20,'decimals'),read(rpc,token,ERC20,'balanceOf',[w])]));
+ const [[d],[balance]]=await measure('tradeBalance',()=>Promise.all([knownGang?gangClient(rpc).meta(token).then(m=>[m.decimals]):read(rpc,token,ERC20,'decimals'),read(rpc,token,ERC20,'balanceOf',[w])]));
  const decimals=Number(d);if(decimals>36)throw Error('代币精度不支持');
  const amount=intent.side==='sell'?sellAmount(balance,intent.percent):null;
  const aggregateInput=intent.side==='sell'?token:intent.currency==='USDT'?USDT:intent.currency==='WBNB'?WBNB:BNB;

@@ -46,3 +46,19 @@ test('resuming after confirmed primary sale executes only payout conversion and 
  e.write({id:'resume',createdAt:Date.now(),intent:{account:1,side:'sell'},plan:p,status:'READY_TO_CONTINUE',nextStep:1,steps:[{step:p.steps[0],status:'CONFIRMED'}],timing:{preparedAt:Date.now()},review:[]});
  const r=await executeReviewed(e,'resume',{authorization:'synthetic resume'});assert.equal(r.status,'CONFIRMED');assert.equal(submits,1);await e.execute('resume',{authorization:'same original'});assert.equal(submits,1);
 });
+
+test('Gang repricing updates net quote and fee without increasing amount or slippage',async()=>{
+ const {refreshGangSell}=await import('../lib/gang-modern.mjs'),state={token,pad,kind:1,quoteToken:quote};
+ const p=await gangInternalPlan(rpcMock(),{account:1,side:'sell',currency:'AUTO',slippageBps:100},state,owner,100n,{client:fakeClient,amount:50n});
+ const rpc={call:async()=>ERC20.encodeFunctionResult('balanceOf',[100n])},client={probe:async()=>state,quote:async()=>({amountIn:50n,amountOut:8000n,fee:400n})};
+ const fresh=await refreshGangSell(rpc,p,p.steps.length-1,client);assert.equal(fresh.amountIn,p.amountIn);assert.deepEqual(fresh.slippage,p.slippage);assert.equal(fresh.minOutput,'7920');assert.equal(fresh.quote.toCoinAmount,'0.008');assert.equal(fresh.state.feeBps,477);assert.equal(GANG_ABI.parseTransaction(fresh.steps.at(-1)).args[4],7920n);
+ await assert.rejects(refreshGangSell(rpc,p,p.steps.length-1,{...client,probe:async()=>({...state,migrated:true})}),e=>e.code==='GANG_MARKET_CHANGED');
+ await assert.rejects(refreshGangSell({call:async()=>ERC20.encodeFunctionResult('balanceOf',[90n])},p,p.steps.length-1,client),/持仓/);
+});
+test('Gang repricing cannot underfund a following conversion or silently change direct entry',async()=>{
+ const {refreshGangSell}=await import('../lib/gang-modern.mjs'),state={token,pad,kind:1,quoteToken:quote};
+ const p=await gangInternalPlan(rpcMock(),{account:1,side:'sell',currency:'BNB',slippageBps:100},state,owner,100n,{client:fakeClient,conversion,amount:50n}),i=p.steps.findIndex(s=>s.kind==='sell');
+ const rpc={call:async()=>ERC20.encodeFunctionResult('balanceOf',[100n])},client={probe:async()=>state,quote:async()=>({amountIn:50n,amountOut:8000n,fee:1n})};
+ await assert.rejects(refreshGangSell(rpc,p,i,client),e=>e.code==='SLIPPAGE_LIMIT');
+ await assert.rejects(refreshGangSell(rpc,p,i,{...client,quote:async()=>({amountIn:50n,amountOut:10000n,fee:1n,direct:true})}),/份数已变化/);
+});
