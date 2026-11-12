@@ -1,3 +1,5 @@
+import {invitationFailure} from './mint-funding.mjs';
+import {refreshStarsMint,verifyStarsPreview,verifyStarsReceipt} from './stars.mjs';
 import {OpeningApprovalPreviews} from './opening-approval-previews.mjs';
 import {diagnoseRevert} from './revert-reason.mjs';
 import {describeError} from '../public/error-message.mjs';
@@ -59,8 +61,10 @@ export function verifyPreview(p,plan,step){
  }
  if(p.parsedTx?.contractAddress&&!same(p.parsedTx.contractAddress,step.to)&&!permitTokenView)throw Error('模拟目标合约不匹配');
  if(s.authorityChanges?.length)throw Error('模拟出现权限变更');
+ const starsAllowance=plan.route==='stars:mint'&&verifyStarsPreview(p,plan,step);
  if(step.kind==='referral'&&(s.allowanceChanges?.length||(s.balanceChanges||[]).some(c=>same(c.owner,plan.wallet)&&integer(c.change)!==0n)))throw Error('邀请绑定模拟出现资产或授权变更');
  for(const c of s.allowanceChanges||[]){
+  if(starsAllowance)continue; // Exact token, owner, spender and amount checked above.
   if(!same(c.owner,plan.wallet))continue;
   if(step.kind==='approve'){
    if(!same(c.tokenAddress,step.approvalType==='infinity-permit2'?step.token:step.to)||!same(c.spender,step.spender)||integer(c.postAmount)>BigInt(step.allowance))throw Error('授权范围超出本笔所需');
@@ -146,14 +150,14 @@ export class Engine{
   // both the chain and wallet checks. Failed guards cannot produce a plan.
   const ready=earlyReady||preflight();
   const ensureReady=async()=>{const r=await ready;if(r.error)throw r.error;};
-  const overlap=intent.side==='mint'?['corla','binancians'].includes(resolved.platform):!intent.openingOnly&&this.tradePlanOptions.overlapTradePreflight!==false;
+  const overlap=intent.side==='mint'?['corla','binancians','stars'].includes(resolved.platform):!intent.openingOnly&&this.tradePlanOptions.overlapTradePreflight!==false;
   if(!overlap)await ensureReady();
   const tradeBridge=overlap?{call:async(...args)=>{await ensureReady();return this.bridge.call(...args);},ready:async(...args)=>{await ensureReady();return this.bridge.ready(...args);}}:this.bridge;
   const directSellPlan=(seed,slippagePromise)=>manualDirectSell(this.rpc,tradeBridge,intent,seed,{scan:this.openingScan,preparation:this.openingPreparation,slippagePromise});
   // Buying always targets the explicitly supplied token CA. Audit and quote
   // are independent reads; both still complete before preview/submission.
   let [p,audit]=await Promise.all([
-   intent.side==='mint'?mintPlan(this.rpc,this.bridge,intent,resolved.address,resolved,this.experience,{officialPreview:true}):(intent.openingOnly?(context.openingRecovery?openingRecoveryPlan(this.rpc,this.bridge,intent,this.get(context.openingRecovery.sourceId),{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation}):openingPlan(this.rpc,this.bridge,intent,{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation,holdingHint:context.openingHoldingHint,failedPreviews:recentOpeningPreviewFailures(this.list(),intent)})):tradePlan(this.rpc,tradeBridge,intent,resolved.address,resolved.platform,{...this.tradePlanOptions,directSellPlan})),
+   intent.side==='mint'?mintPlan(this.rpc,this.bridge,intent,resolved.address,resolved,this.experience,{officialPreview:true,quantityCeiling:context.mintCeiling??500}):(intent.openingOnly?(context.openingRecovery?openingRecoveryPlan(this.rpc,this.bridge,intent,this.get(context.openingRecovery.sourceId),{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation}):openingPlan(this.rpc,this.bridge,intent,{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation,holdingHint:context.openingHoldingHint,failedPreviews:recentOpeningPreviewFailures(this.list(),intent)})):tradePlan(this.rpc,tradeBridge,intent,resolved.address,resolved.platform,{...this.tradePlanOptions,directSellPlan})),
    intent.side==='sell'?measure('tokenAudit',()=>this.sellAudit(resolved.address)):intent.side==='buy'?measure('tokenAudit',()=>this.auditFn(resolved.address)).catch(e=>({available:false,reason:e.message})):null,
    ensureReady()
   ]);
@@ -209,6 +213,12 @@ export class Engine{
   if(!o.plan.stagedTrade&&o.intent.side==='sell'&&(error?o.plan.steps?.[index]?.kind==='sell'&&searchableSellPreviewError(error):fees?.required||fees?.blocked)){
    const alternative=await findLowFeeSell(o,{rpc:this.rpc,bridge:this.bridge,scan:this.openingScan,preparation:this.openingPreparation,preview:this.preview.bind(this),...(this.feeRoutePlanner?{planFn:this.feeRoutePlanner}:{}),minimumOutput});
    if(alternative){o.plan=JSON.parse(json(alternative.plan));p=alternative.preview;o.nextStep=0;o.needsReview=false;o.needsFeeReview=false;error=null;p={...p,rerouted:true};}
+  }
+  if(error&&o.plan.route==='stars:mint'&&o.intent.referral!=='none'&&!o.plan.referral?.fallback&&!o.steps?.length&&invitationFailure(error)){
+   const fresh=await this.plan({...o.intent,referral:'none'},{mintCeiling:o.plan.fill?.targetQuantity||o.plan.quantity||500});
+   if(!same(fresh.token,o.plan.token)||fresh.resolved?.address!==o.plan.resolved?.address)throw Error('邀请回退时 Mint 目标发生变化，未提交');
+   fresh.referral={...fresh.referral,active:false,fallback:true,note:'邀请未生效，已改为不带邀请重新模拟'};
+   o.plan=JSON.parse(json(fresh));p=await this.preview(o.plan,{...o.intent,referral:'none'},0);error=null;
   }
   if(error)throw error;
   if(p){this.previews.set(o.id,{...p,rerouted:false});o.preview=p.review;o.previewAt=p.at;if(p.approvalPrewarmed)(o.timing??={}).approvalPreviewReused=true;}
@@ -277,7 +287,7 @@ export class Engine{
     if(!mayContinue())return cancelled();
     if(o.status==='PREPARED'&&!o.nextStep&&(o.plan.freshBeforeExecute||o.plan.refreshQuoteBeforeExecute||Date.now()-o.timing.preparedAt>15000)){
      const refreshIntent=o.plan.route==='binancians:mint'&&o.targetQuantity?{...o.intent,quantity:o.targetQuantity}:o.intent;
-     const fresh=await this.plan(refreshIntent,o.intent.openingOnly&&o.plan.recovery?{openingRecovery:{sourceId:o.plan.recovery.originalId}}:{});
+     const fresh=await this.plan(refreshIntent,o.intent.openingOnly&&o.plan.recovery?{openingRecovery:{sourceId:o.plan.recovery.originalId}}:o.plan.route==='stars:mint'?{mintCeiling:o.plan.quantity}:{});
      if(!same(fresh.token,o.plan.token)||fresh.resolved?.address!==o.plan.resolved?.address)throw Error('预览期间目标资产发生变化，停止提交');
      if(o.plan.refreshQuoteBeforeExecute&&(fresh.route!==o.plan.route||!same(fresh.inputToken,o.plan.inputToken)||fresh.quantity!==o.plan.quantity||fresh.fill?.targetQuantity!==o.targetQuantity||BigInt(fresh.minOutput)<BigInt(o.plan.minOutput)))throw Error('最新报价的份数、付款币或最低到账已超出本次预览，请重新核对');
      if(o.plan.freshBeforeExecute&&(fresh.quantity!==o.plan.quantity||BigInt(fresh.amountIn)>BigInt(o.plan.amountIn)||BigInt(fresh.minOutput)<BigInt(o.plan.minOutput)))throw Error('动态 Mint 的份数、费用或最低到账已超出本次预览，请重新核对');
@@ -301,6 +311,9 @@ export class Engine{
       if(!mayContinue())return cancelled();
       if(o.plan.route==='bagent:mint'&&o.plan.steps[index].kind==='mint'){
        o.plan=await refreshBagentMint(this.rpc,o.plan,o.intent);this.previews.delete(id);this.write(o);
+      }
+      if(o.plan.route==='stars:mint'&&o.plan.steps[index].kind==='mint'){
+       o.plan=await refreshStarsMint(this.rpc,o.plan,o.plan.mintFunding?.effectiveIntent||{...o.intent,...(o.plan.referral?.fallback?{referral:'none'}:{})});this.previews.delete(id);this.write(o);
       }
       // Fresh identity checks and quote/official preview reads are independent.
       // Capture THIS plan: a fee-search reroute restarts the loop and checks the
@@ -476,6 +489,7 @@ export class Engine{
      if(asset?.kind==='Erc1155')received=erc1155Received(receipt.logs,asset.token,plan.wallet);
      const expected=asset?.amount?BigInt(asset.amount):1n;if(received<expected)throw Error('Mint 到账未达到预期，未继续后续步骤');entry.received=String(received);
      if(plan.route==='bagent:mint')entry.settlement=verifyBagentReceipt(receipt,plan);
+     if(plan.route==='stars:mint')entry.settlement=verifyStarsReceipt(receipt,plan);
     }
     delete entry.settlementError;this.clearResolvedErrors(o);entry.status='CONFIRMED';entry.confirmedAt??=Date.now();break;
     }catch(e){if(e.code==='ORIGINAL_READ_UNAVAILABLE')throw e;this.confirmedReview(o,entry,e);break;}

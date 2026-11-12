@@ -1,7 +1,7 @@
 import {describeError} from './error-message.mjs';
 export const isReady=o=>['PREPARED','READY_TO_CONTINUE'].includes(o.status);
 export const canExecute=(o,ack=false)=>isReady(o)&&(ack||!o.review?.length);
-export const independentOrder=o=>['buy','sell'].includes(o.intent.side)||o.intent.side==='mint'&&(o.plan?.resolved?.platform==='corla'&&['corla:mint','corla:claim','corla:refund'].includes(o.plan?.route)||o.plan?.resolved?.platform==='binancians'&&o.plan?.route==='binancians:mint');
+export const independentOrder=o=>['buy','sell'].includes(o.intent.side)||o.intent.side==='mint'&&(o.plan?.resolved?.platform==='corla'&&['corla:mint','corla:claim','corla:refund'].includes(o.plan?.route)||o.plan?.resolved?.platform==='binancians'&&o.plan?.route==='binancians:mint'||o.plan?.resolved?.platform==='stars'&&o.plan?.route==='stars:mint');
 
 // Receipt tracking has no submit callback, new ID, or trade construction path.
 export async function followSubmittedOrder(order,follow,{onUpdate=()=>{},wait=ms=>new Promise(r=>setTimeout(r,ms)),attempts=30}={}){

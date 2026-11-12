@@ -15,6 +15,7 @@ import {discoverCorla,corlaInput} from './corla.mjs';
 import {discoverBinancians} from './binancians.mjs';
 import {binanciansInput} from '../public/binancians-input.mjs';
 import {normalizeAssetInput} from '../public/asset-input.mjs';
+import {starsInput,discoverStars} from './stars.mjs';
 import {bagentInput,discoverBagent} from './bagent.mjs';
 import {htmlAddressPairs} from './html-addresses.mjs';
 const memory=new Map(),pending=new Map(),scopeIds=new WeakMap();let nextScope=0;
@@ -81,6 +82,10 @@ export async function discover(asset,options={}){
  try{return structuredClone(await task);}finally{if(pending.get(key)===task)pending.delete(key);}
 }
 async function discoverImpl(asset,{rpc,fetchText=publicText,sourceLoader=sourceFor,chainFallback=false,learn=false,chainLearner=null,corlaRouting=true}={}){
+ if(rpc&&corlaRouting&&starsInput(asset))return measure('starsDiscovery',()=>discoverStars(rpc,asset));
+ if(rpc&&corlaRouting&&(chainFallback||learn)&&/^0x[\da-f]{40}$/i.test(asset)){
+  const stars=await measure('starsDiscovery',()=>discoverStars(rpc,asset));if(stars)return stars;
+ }
  if(rpc&&corlaRouting&&bagentInput(asset))return measure('bagentDiscovery',()=>discoverBagent(rpc,asset));
  if(rpc&&corlaRouting&&binanciansInput(asset)?.explicit)return measure('binanciansDiscovery',()=>discoverBinancians(rpc,asset));
  // Platform dispatch precedes generic source/ABI/history discovery. A verified

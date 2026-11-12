@@ -27,6 +27,8 @@ import {sourceSalePlan} from './source-sale.mjs';
 import {protectedSalePlan} from './protected-sale.mjs';
 import {corlaPlan} from './corla.mjs';
 import {binanciansPlan} from './binancians.mjs';
+import {starsPlan} from './stars.mjs';
+import {fundedMintPlan,balanceMint} from './mint-funding.mjs';
 import {bagentPlan} from './bagent.mjs';
 import {probeFreeBatch} from './free-mint-probe.mjs';
 const REGISTRY='0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F';
@@ -36,7 +38,8 @@ const templates=[
  {name:'bianren_core',detect:['e38fd349','fd326592'],signature:'mintWithBnb(uint256,address,uint256)',price:'costOf(uint256)'}
 ];
 function selects(code){const b=Buffer.from(code.slice(2),'hex'),set=new Set();for(let i=0;i<b.length;i++){const op=b[i];if(op>=0x60&&op<=0x7f){if(op===0x63)set.add(b.subarray(i+1,i+5).toString('hex'));i+=op-0x5f;}}return set;}
-export async function mintPlan(rpc,bridge,intent,target,resolved={source:'用户输入 CA'},experienceStore=null,{sourceLoader=sourceFor,chainLearner=null,officialPreview=false}={}){
+export async function mintPlan(rpc,bridge,intent,target,resolved={source:'用户输入 CA'},experienceStore=null,{sourceLoader=sourceFor,chainLearner=null,officialPreview=false,quantityCeiling=500}={}){
+ if(resolved.platform==='stars')return measure('starsMintPlan',()=>fundedMintPlan(rpc,intent,wallet(intent.account),next=>starsPlan(rpc,next,wallet(intent.account),{balanceFill:balanceMint(intent),resolved}),{quantityCeiling}));
  if(resolved.platform==='bagent')return measure('bagentMintPlan',()=>bagentPlan(rpc,intent,wallet(intent.account),resolved,{officialPreview}));
  if(resolved.platform==='corla')return measure('corlaMintPlan',()=>corlaPlan(rpc,intent,wallet(intent.account),resolved,{officialPreview}));
  if(resolved.platform==='binancians')return measure('binanciansMintPlan',()=>binanciansPlan(rpc,intent,wallet(intent.account),resolved,{officialPreview,wallets:bindings()}));

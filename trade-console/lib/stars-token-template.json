@@ -1,0 +1,28 @@
+{
+  "source": "https://sourcify.dev/server/v2/contract/56/0x81c3ab2c7ee773af2ac823b8cef3c430ef11f039",
+  "runtimeLength": 3851,
+  "immutableSlots": {
+    "hub": [
+      264,
+      728,
+      1500,
+      2555,
+      2820,
+      3166,
+      3348,
+      3584
+    ],
+    "marketing2": [
+      1012
+    ],
+    "router": [
+      574
+    ],
+    "wbnb": [
+      1340
+    ]
+  },
+  "router": "0x1b81d678ffb9c0263b24a97847620c99d213eb14",
+  "wbnb": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+  "normalizedHash": "0xbc90329db7673bbcf00d02e860a300af88f4475429de1bec8a1944525d595920"
+}

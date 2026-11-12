@@ -20,7 +20,7 @@ export class Batches{
    // not hide another wallet's verified independent platform. Generic mints
    // retain their inviter ordering; every actual run still validates its plan.
    const prepared=intent.side==='mint'&&execute&&this.engine.live?await Promise.all(sorted.map(async account=>{try{return await this.engine.prepare({...intent,account},`${id}-a${account}`);}catch{return null;}})):[];
-   const independent=prepared.some(o=>o&&(independentOrder(o)||['corla','binancians'].includes(o.project?.platform)))&&prepared.every(o=>!o?.plan||independentOrder(o));
+   const independent=prepared.some(o=>o&&(independentOrder(o)||['corla','binancians','stars'].includes(o.project?.platform)))&&prepared.every(o=>!o?.plan||independentOrder(o));
    if(intent.side!=='mint'||!execute||!this.engine.live||independent){
     row.orders=await Promise.all(sorted.map(async account=>{try{return await this.engine.run({...intent,account},`${id}-a${account}`,{execute,authorization,acknowledgeReview});}catch(e){return {id:`${id}-a${account}`,intent:{...intent,account},status:'BLOCKED',error:publicError(e)};}}));
     const active=row.orders.filter(o=>o.status!=='SKIPPED');

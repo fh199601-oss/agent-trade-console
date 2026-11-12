@@ -28,6 +28,7 @@ import {recognizeSourceSale,sourceSaleState} from './source-sale.mjs';
 import {recognizeProtectedSale,protectedSaleState} from './protected-sale.mjs';
 import {inspectCorla} from './corla.mjs';
 import {inspectBinancians} from './binancians.mjs';
+import {inspectStars} from './stars.mjs';
 import {inspectBagent} from './bagent.mjs';
 let defaultExperience;
 export async function inspectProject(rpc,bridge,asset,{experience=defaultExperience??=new ExperienceStore(),learn=false}={}){
@@ -38,6 +39,7 @@ async function inspectImpl(rpc,bridge,asset,experience,learn,resolvedOverride=nu
   if(resolved.platform==='corla')return resolved.address?inspectCorla(rpc,resolved,bindings()):resolved;
   if(resolved.platform==='binancians')return inspectBinancians(rpc,resolved,bindings());
   if(resolved.platform==='bagent')return inspectBagent(rpc,resolved,bindings());
+  if(resolved.platform==='stars')return inspectStars(rpc,resolved,bindings());
   resolvedOverride=resolved;
  }
  const resolved=resolvedOverride||await measure('projectDiscovery',()=>discover(asset,{rpc,chainFallback:true,learn}));if(!resolved.address)return {...resolved,quotas:[],inputExperience:experience.lookupInput(resolved.source||asset),needAiDeep:failureKind(resolved.failure)==='adapter_needed',referral:await resolveReferral(rpc,bridge,resolved,{})};

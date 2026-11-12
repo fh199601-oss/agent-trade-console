@@ -2,6 +2,7 @@ import {normalizeMintQuantity} from './mint-quantity.mjs';
 // Pure exact arithmetic shared by the dashboard and regression tests.
 function decimal(raw,places){const s=raw.toString().padStart(places+1,'0');return places?(s.slice(0,-places)+'.'+s.slice(-places)).replace(/\.?0+$/,''):s;}
 export function corlaBudget(project,accounts,scope,quantity){
+ if(project?.budgetPolicy==='stars-fixed-quote')return stagedBudget(project,accounts,scope,quantity);
  if(project?.budgetPolicy==='current-wallet-quote')return currentWalletBudget(project,accounts,scope,quantity);
  if(project?.budgetPolicy==='verified-staged-quote')return stagedBudget(project,accounts,scope,quantity);
  if(project?.platform==='binancians')return binanciansBudget(project,accounts,scope,quantity);

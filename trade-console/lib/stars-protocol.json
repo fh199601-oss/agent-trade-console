@@ -1,0 +1,53 @@
+{
+  "origin": "https://starsagent.org",
+  "auditedAt": "2026-11-12T08:56:58.085Z",
+  "config": {
+    "factory": "0xD637dffD418505004a3D5541C7DFF64cc995E55C",
+    "token": "0x81c3ab2c7ee773af2ac823b8cef3c430ef11f039",
+    "registry": "0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F",
+    "owner": "0x30d261b5A708C444EF7e70CFA09B780D679b1111",
+    "marketing1": "0xa03B0D7e68557e982dda421B11a13B4D0E578d0c",
+    "marketing2": "0x4EcC82f1D066156e00856c549306673d748A059E",
+    "seeder": "0xFa13E44A9968B681E4998242B431c9c49F56350d",
+    "quickSeeder": "0x58b947765A0C022fe68E1Ee5bE9EE39e79293Aa7",
+    "tokenDeployer": "0xEFfdF9dd11D3376917689F699467F6ACF9134092"
+  },
+  "identities": {
+    "factory": {
+      "target": "0xD637dffD418505004a3D5541C7DFF64cc995E55C",
+      "implementation": "0x9e3eb9063b7517259fd399fe0d44520434319708",
+      "fingerprint": "d988f58037f3ce23964c3e1c367f2719f6f0c44146447886ed83367c5c86ae04",
+      "codeHash": "0xeeab1eca36f9bd814ef7c7e24ca2223bea10c6b5d8f007abe74673f9d47c26b4"
+    },
+    "token": {
+      "target": "0x81c3ab2c7ee773af2ac823b8cef3c430ef11f039",
+      "implementation": null,
+      "fingerprint": "afa089a2e9e5741602e3dcaeaea6a16a286106c745683705ffbcaba3cdff4a3a",
+      "codeHash": "0x76a485ab673166a8b7317d793e8105d3ca6a4e93bd2d0a4eae28c0bad83eebb3"
+    },
+    "registry": {
+      "target": "0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F",
+      "implementation": null,
+      "fingerprint": "7eda8c89c4c3cee620eda9a6b58452e9448a41b1b4686eaf32e5bc19b84829f5",
+      "codeHash": "0xc4006e6e6ffaaf6996116617392beabe4f5f0a0795841322f91c2ceac34d6ace"
+    },
+    "seeder": {
+      "target": "0xFa13E44A9968B681E4998242B431c9c49F56350d",
+      "implementation": null,
+      "fingerprint": "353484b45d3910ff418ae8019925639810f718e8776a4510775a0d93b77cff5f",
+      "codeHash": "0x8b6e57efa7ed30359dc2373191a141bfb2a4e0e12101f007306f20fe324ad9c4"
+    },
+    "quickSeeder": {
+      "target": "0x58b947765A0C022fe68E1Ee5bE9EE39e79293Aa7",
+      "implementation": null,
+      "fingerprint": "0309ec1b5becb11b3c373a14c10879a73eb7220ada7481c3cfb4e3833c1012cf",
+      "codeHash": "0x6de9523171df3b21a8b36a755b0668302a63bd3552acdfe4a1fa806cb59932ab"
+    },
+    "tokenDeployer": {
+      "target": "0xEFfdF9dd11D3376917689F699467F6ACF9134092",
+      "implementation": null,
+      "fingerprint": "025525a0c077cde8042073ea282f66322264c37685746a79757c161e5b9d77d6",
+      "codeHash": "0x65ddc18d10644d0d476a6fbece4dd52a8e501e33e480c0208e5f97a69444ddfe"
+    }
+  }
+}
