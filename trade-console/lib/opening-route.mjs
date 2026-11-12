@@ -42,7 +42,7 @@ export async function refreshOpeningSell(rpc,plan){
  const step={...plan.steps.at(-1),data:saleData(d,pool,plan.token,plan.wallet,amount,minimum,same(plan.outputToken,BNB))};
  return {...plan,opening:freshPool,state:freshPool,poolFees:poolFeeProof(freshPool,d.kind==='v2'?quoted[0]:null,plan.token,batch.block),minOutput:String(minimum),quote:{...plan.quote,toCoinAmount:formatUnits(output,plan.outputDecimals??18)},quoteRefreshedAt:Date.now(),steps:[...plan.steps.slice(0,-1),step]};
 }
-export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPools(rpc).scan(t,o),snapshot,preparation,identityFor,failedPreviews=[],excludedRoutes=[],lowFeeOnly=false,expand=false,outputToken,minimumOutput,slippagePromise}={}){
+export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPools(rpc).scan(t,o),snapshot,preparation,identityFor,holdingHint,failedPreviews=[],excludedRoutes=[],lowFeeOnly=false,expand=false,outputToken,minimumOutput,slippagePromise}={}){
  // Pool discovery and token/holding reads are independent. Only metadata is
  // cached: the balance and every allowance are read afresh for this operation.
  // Box a concurrently requested policy now, including on an early scan error.
@@ -56,24 +56,38 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
  const candidates=snapshot.pools.filter(p=>p.liquid&&matchesCurrency(p,intent.currency)&&dexFor(p)&&!excludedRoutes.includes(poolRouteKey(p))&&(!outputToken||same(p.quote,same(outputToken,BNB)?WBNB:outputToken)));
  if(!candidates.length)throw Object.assign(Error(snapshot.routeIssue||(excludedRoutes.length?'本轮已核验的池子中，没有符合原到账币种的其他路线':intent.openingOnly?'等待可核验的外盘卖出池子；不会提前使用内盘卖出':'当前未找到可成交的卖出池：可能流动性尚未开放、已移除，或池型尚未支持；未提交，钱包可继续操作')),{code:intent.openingOnly?'OPENING_WAIT':'SELL_ROUTE_UNAVAILABLE'});
  const dexes=[...new Map(candidates.map(p=>{const d=dexFor(p);return [d.id,d];})).values()];
+ const poolQuote=(pool,amount)=>{const d=dexFor(pool);return d.kind==='infinity-cl'?infinityQuote(rpc,pool,intent.asset,amount):d.kind==='v2'?read(rpc,d.router,ROUTER,'getAmountsOut',[amount,pool.path||[intent.asset,pool.quote]],pool.block??'latest'):read(rpc,d.quoter,QUOTER,'quoteExactInputSingle',[[intent.asset,pool.quote,amount,pool.fee,0]],pool.block??'latest');};
+ // After a verified opening, a recent warm holding may predict a READ-ONLY
+ // quote amount so balance + allowance + quote share one RPC round-trip.
+ // It never sets the sell amount: consume only after a fresh balance and
+ // identity match. Any mismatch discards it and quotes the fresh amount.
+ const predicted=new Map(),age=Date.now()-holdingHint?.at;
+ if(intent.openingOnly&&age>=0&&age<=6000&&same(holdingHint?.token,intent.asset)&&same(holdingHint?.wallet,w)&&holdingHint?.fingerprint&&/^\d{1,78}$/.test(holdingHint.balance)&&BigInt(holdingHint.balance)>0n&&BigInt(holdingHint.balance)<2n**256n){
+  let amount;try{amount=sellAmount(BigInt(holdingHint.balance),intent.percent);}catch{/* Dust in an old hint is not the live holding. */}
+  if(amount)for(const p of candidates.slice(0,8))if(p.kind!=='infinity-cl')predicted.set(p,poolQuote(p,amount).then(value=>({value}),error=>({error})));
+ }
  // Warm data never authorizes an amount or approval. Both remain fresh reads.
- const [tokenResult,allowanceRows,openingBalance]=await Promise.all([tokenReads,Promise.allSettled(dexes.map(d=>d.kind==='infinity-cl'?Promise.resolve([0n]):read(rpc,intent.asset,ERC20,'allowance',[w,d.router]))),intent.openingOnly?read(rpc,intent.asset,ERC20,'balanceOf',[w]):null]);if(tokenResult.error)throw tokenResult.error;const [meta,earlyBalance]=tokenResult.value,[balance]=openingBalance||earlyBalance;
- const amount=sellAmount(balance,intent.percent),allowances=new Map(dexes.map((d,n)=>[d.id,allowanceRows[n].status==='fulfilled'?allowanceRows[n].value[0]:null]));
+ // Don't make every venue wait for the slowest allowance endpoint. Each
+ // bounded candidate waits for its own fresh allowance alongside its quote.
+ // Box failures immediately, including when a zero holding ends planning.
+ const allowances=new Map(dexes.map(d=>[d.id,(d.kind==='infinity-cl'?Promise.resolve([0n]):read(rpc,intent.asset,ERC20,'allowance',[w,d.router])).then(value=>({value:value[0]}),error=>({error}))]));
+ const [tokenResult,openingBalance]=await Promise.all([tokenReads,intent.openingOnly?read(rpc,intent.asset,ERC20,'balanceOf',[w]):null]);if(tokenResult.error)throw tokenResult.error;const [meta,earlyBalance]=tokenResult.value,[balance]=openingBalance||earlyBalance;
+ const amount=sellAmount(balance,intent.percent);
  const failed=p=>failedPreviews.some(f=>same(f.pool,p.pool)&&f.fingerprint===meta.identity?.fingerprint&&f.amountIn===String(amount)&&f.holdingBefore===String(balance));
  candidates.sort((a,b)=>{
   const high=p=>['v3','infinity-cl'].includes(p.kind)&&p.fee>=HIGH_FEE_PPM;
   if(high(a)!==high(b))return high(a)?1:-1;
   if(failed(a)!==failed(b))return failed(a)?1:-1;
-  const approved=p=>allowances.get(dexFor(p).id)!==null&&allowances.get(dexFor(p).id)>=amount;
-  const score=p=>{const index=QUOTES.findIndex(q=>same(q,p.quote));return (p.declaredByToken?50:0)+(p.kind==='v2'?10:0)+(index<0?0:QUOTES.length-index)+(approved(p)?1:0);};
+  const score=p=>{const index=QUOTES.findIndex(q=>same(q,p.quote));return (p.declaredByToken?50:0)+(p.kind==='v2'?10:0)+(index<0?0:QUOTES.length-index);};
   const diff=score(b)-score(a);if(diff)return diff;
   const depth=p=>BigInt(p.kind==='v2'?(same(p.token0,intent.asset)?p.reserve1:p.reserve0)||'0':p.liquidity||'0');return depth(b)>depth(a)?1:depth(b)<depth(a)?-1:0;
  });
  // Try independent candidates only before any preview or submission. Keep the
  // fast first batch, but do not hide a low-fee route behind eight bad quotes.
  const quoteCandidate=async pool=>{const d=dexFor(pool);
-  const allowance=allowances.get(d.id);if(allowance===null)throw Error('无法读取当前授权额度');
-  const [venue,quoted,outputMeta]=await Promise.all([prep.venue(d),d.kind==='infinity-cl'?infinityQuote(rpc,pool,intent.asset,amount):d.kind==='v2'?read(rpc,d.router,ROUTER,'getAmountsOut',[amount,pool.path||[intent.asset,pool.quote]],pool.block??'latest'):read(rpc,d.quoter,QUOTER,'quoteExactInputSingle',[[intent.asset,pool.quote,amount,pool.fee,0]],pool.block??'latest'),QUOTES.some(q=>same(q,pool.quote))?{decimals:18}:prep.quote(pool.quote)]);
+  const hinted=predicted.get(pool)&&holdingHint.balance===String(balance)&&holdingHint.fingerprint===meta.identity?.fingerprint?predicted.get(pool).then(r=>{if(r.error)throw r.error;return r.value;}):null;
+  const [venue,quoted,outputMeta,approval]=await Promise.all([prep.venue(d),hinted||poolQuote(pool,amount),QUOTES.some(q=>same(q,pool.quote))?{decimals:18}:prep.quote(pool.quote),allowances.get(d.id)]);
+  if(approval.error)throw Error('无法读取当前授权额度');const allowance=approval.value;
   const output=d.kind==='infinity-cl'?quoted.output:d.kind==='v2'?quoted[0].at(-1):quoted[0];if(output<=0n||d.kind==='v2'&&(quoted[0].length!==(pool.path?.length||2)||quoted[0][0]!==amount))throw Error('开盘卖出报价无效');
   if(minimumOutput!==undefined&&output<BigInt(minimumOutput))throw Error('备用路线报价不足原最低到账');
   return {pool,d,allowance,venue,output,failed:failed(pool),outputDecimals:outputMeta.decimals,fees:d.kind==='infinity-cl'?quoted.fees:poolFeeProof(pool,d.kind==='v2'?quoted[0]:null,intent.asset,pool.block)};

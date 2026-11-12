@@ -10,6 +10,7 @@ import {executeIndependent,runInstantTrades,isReady,independentOrder,tradeResult
 import {normalizeAssetInput,mintTradeCA,pasteAsset,resolvedTradeAsset} from './asset-input.mjs';
 import {binanciansInput} from './binancians-input.mjs';
 import {createConsoleClient} from './session-client.mjs';
+import {createTradeWarmup} from './trade-warmup.mjs';
 const $=id=>document.getElementById(id);
 let boot,ca=null,settings,selected=new Set(),busy=false,reviewOrders=[],refreshing=false,holdingsRows=[],nativeRows=[],walletRequest=null,project=null,generation=0,tradeRevision=0,tradeManual=false,tradeKind=null;
 let budgetManual=false;
@@ -42,6 +43,8 @@ for(const [id,target] of [['asset','mintNotice'],['tradeCA','tradeNotice']]){
  });
 }
 const client=createConsoleClient({onSession:applySession}),api=client.request;
+const warmTrade=createTradeWarmup({api,allowed:()=>!!boot?.capabilities?.tradeWarmupVersion&&!busy&&!document.hidden});
+for(const id of ['tradeCA','asset'])$(id).addEventListener('input',()=>warmTrade($(id).value));
 createUpdateDialog({api});
 createRpcDialog({api});
 const mintQuantity=createMintQuantityControl({onChange:()=>{budgetManual=false;applyAutoBudget();}});
@@ -138,7 +141,7 @@ $('mintRoute').addEventListener('change',()=>{renderCorlaAction();renderWallets(
 $('copyInvite').addEventListener('click',async()=>{noticeTarget='mintNotice';const url=project?.referral?.url;if(!url)return;try{await navigator.clipboard.writeText(url);if(project?.referral?.url===url){$('copyInvite').textContent='已复制 ✓';note('1 号邀请链接已复制。');}}catch{note('自动复制失败，请选中邀请链接手动复制：'+url,true);}});
 function clearTrade(){ca=null;tradeKind=null;holdingsRows=[];tradeRevision++;$('tokenCA').textContent='等待加载';$('tokenName').textContent='等待加载';for(const id of ['mcap','price','holders','liquidity'])$(id).textContent='—';$('holdingBlock').textContent='代币持仓待加载';$('change').textContent='24h —';$('volume').textContent='24h 成交 —';$('holdersSource').textContent='暂无数据';$('updated').textContent='行情尚未加载';}
 function checkedTradeCA(){const raw=$('tradeCA').value.trim();if(!/^0x[0-9a-f]{40}$/i.test(raw)||/^0x0{40}$/i.test(raw))throw Error('请在快捷交易卡片填写完整的 42 字符代币 CA');return raw;}
-function activateTrade(address,kind=null,name=null){$('tradeFeedback').replaceChildren();feedbackRows=[];$('tradeNotice').hidden=true;clearTrade();ca=address;tradeKind=kind;$('tradeCA').value=address;$('tokenCA').textContent=address;$('tokenName').textContent=name||'正在读取代币';}
+function activateTrade(address,kind=null,name=null){$('tradeFeedback').replaceChildren();feedbackRows=[];$('tradeNotice').hidden=true;clearTrade();ca=address;tradeKind=kind;$('tradeCA').value=address;$('tokenCA').textContent=address;$('tokenName').textContent=name||'正在读取代币';warmTrade(address);}
 async function loadTrade(){noticeTarget='tradeNotice';try{const address=checkedTradeCA();tradeManual=true;activateTrade(address);note('正在读取此 CA 的行情和钱包持仓…');await refreshAsset(true);if(ca===address)note('已加载交易 CA；买卖使用此地址，卖出按点击时实时持仓计算。');}catch(e){note(e.message,true);$('tradeCA').focus();}}
 $('tradeCA').addEventListener('input',()=>{noticeTarget='tradeNotice';tradeManual=true;clearTrade();renderWallets();note('交易 CA 已改变；可加载持仓。买卖按钮按下方确认设置执行。');});
 $('tradeCA').addEventListener('keydown',e=>{if(e.key==='Enter')loadTrade();});$('loadTradeCA').addEventListener('click',loadTrade);

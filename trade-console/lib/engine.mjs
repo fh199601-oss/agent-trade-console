@@ -1,3 +1,4 @@
+import {OpeningApprovalPreviews} from './opening-approval-previews.mjs';
 import {diagnoseRevert} from './revert-reason.mjs';
 import {describeError} from '../public/error-message.mjs';
 import {SellCoordinator,sellLane} from './sell-coordinator.mjs';
@@ -94,7 +95,8 @@ export function verifyPreview(p,plan,step){
 }
 export class Engine{
  constructor({rpc,bridge,data=DATA,live=false,planFn=null,auditFn=auditToken,tradePlanOptions={}}){Object.assign(this,{rpc,bridge,data,live,planFn,auditFn,tradePlanOptions});this.experience=new ExperienceStore(data);this.running=new Set();this.sellCoordinator=new SellCoordinator();this.mintSequences=new Map();this.previews=new Map();this.ordersDir=path.join(data,'orders');fs.mkdirSync(this.ordersDir,{recursive:true,mode:0o700});
-  this.orderIndex=new OrderIndex(this.ordersDir);this.following=new Map();
+  this.orderIndex=new OrderIndex(this.ordersDir);this.following=new Map();this.openingRefreshes=new Map();
+  this.openingApprovalPreviews=new OpeningApprovalPreviews({preview:(plan,intent)=>this.preview(plan,intent,0,{background:true}),busy:account=>this.running.has(account)||this.bridge.queues?.has(account)});
   for(const row of this.list()){if(this.repairRefusal(row))continue;if(row.status==='SUBMITTING'){row.status='SUBMISSION_UNKNOWN';row.error={message:'服务在提交过程中退出，只能核对原单'};this.write(row);}else{try{this.experience.record(row);}catch{}}}
  }
  file(id){if(typeof id!=='string'||!/^[a-zA-Z0-9_.:-]{1,160}$/.test(id))throw Error('订单 ID 只能包含字母、数字、下划线、点、冒号、横线');return path.join(this.ordersDir,hash(id)+'.json');}
@@ -151,7 +153,7 @@ export class Engine{
   // Buying always targets the explicitly supplied token CA. Audit and quote
   // are independent reads; both still complete before preview/submission.
   let [p,audit]=await Promise.all([
-   intent.side==='mint'?mintPlan(this.rpc,this.bridge,intent,resolved.address,resolved,this.experience,{officialPreview:true}):(intent.openingOnly?(context.openingRecovery?openingRecoveryPlan(this.rpc,this.bridge,intent,this.get(context.openingRecovery.sourceId),{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation}):openingPlan(this.rpc,this.bridge,intent,{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation,failedPreviews:recentOpeningPreviewFailures(this.list(),intent)})):tradePlan(this.rpc,tradeBridge,intent,resolved.address,resolved.platform,{...this.tradePlanOptions,directSellPlan})),
+   intent.side==='mint'?mintPlan(this.rpc,this.bridge,intent,resolved.address,resolved,this.experience,{officialPreview:true}):(intent.openingOnly?(context.openingRecovery?openingRecoveryPlan(this.rpc,this.bridge,intent,this.get(context.openingRecovery.sourceId),{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation}):openingPlan(this.rpc,this.bridge,intent,{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation,holdingHint:context.openingHoldingHint,failedPreviews:recentOpeningPreviewFailures(this.list(),intent)})):tradePlan(this.rpc,tradeBridge,intent,resolved.address,resolved.platform,{...this.tradePlanOptions,directSellPlan})),
    intent.side==='sell'?measure('tokenAudit',()=>this.sellAudit(resolved.address)):intent.side==='buy'?measure('tokenAudit',()=>this.auditFn(resolved.address)).catch(e=>({available:false,reason:e.message})):null,
    ensureReady()
   ]);
@@ -170,11 +172,32 @@ export class Engine{
   return p;
   }catch(e){project.address=resolved.address;e.project=project;throw e;}
  }
- async preview(plan,intent,index=0){
+ async warmOpeningApprovals(config,preflight,snapshot,allowed){return this.openingApprovalPreviews.warm(config,preflight,snapshot,this.openingPreparation,allowed);}
+ openingRefreshKey(plan){return hash({wallet:plan.wallet,token:plan.token,amount:plan.amountIn,balance:plan.holdingBefore,slippage:plan.slippage,opening:plan.opening,steps:plan.steps,minimum:plan.authorizationMinOutput});}
+ primeOpeningRefresh(o,entry,plan){
+  // Only AFTER the successful, exact original approval receipt is verified.
+  // Overlap fresh pool/holding reads with the independent allowance check.
+  // This performs no official preview/signature and grants no continuation.
+  if(o.intent.side!=='sell'||!plan.opening||entry.step.kind!=='approve'||plan.steps.at(-1)?.kind!=='sell')return;
+  const key=this.openingRefreshKey(plan),old=this.openingRefreshes.get(o.id);if(old?.key===key&&Date.now()-old.startedAt<1000)return;
+  const pending={key,startedAt:Date.now(),promise:refreshOpeningSell(this.rpc,{...plan,account:o.intent.account}).then(value=>({value,at:Date.now()}),error=>({error}))};
+  this.openingRefreshes.set(o.id,pending);while(this.openingRefreshes.size>32)this.openingRefreshes.delete(this.openingRefreshes.keys().next().value);
+ }
+ async freshOpeningSale(o,{repriced=false}={}){
+  const pending=this.openingRefreshes.get(o.id);this.openingRefreshes.delete(o.id);
+  if(!repriced&&pending?.key===this.openingRefreshKey(o.plan)&&Date.now()-pending.startedAt<1000){
+   const result=await pending.promise;
+   if(result.value&&Date.now()-result.at<1000){o.timing.postApprovalReadsOverlapped=true;return result.value;}
+  }
+  return refreshOpeningSell(this.rpc,{...o.plan,account:o.intent.account});
+ }
+ async preview(plan,intent,index=0,{background=false}={}){
   if(plan.kind==='swap')return null;
-  await this.bridge.ready(intent.account,{external:true});
+  await this.bridge.ready(intent.account,{external:true,...(background?{background:true}:{})});
   const s=plan.steps[index];let p;
-  try{p=await this.bridge.call(intent.account,['contract-call','preview','--binanceChainId','56','--from',plan.wallet,'--to',s.to,'--value',String(s.value),'--inputData',s.data,...sellGasArgs(intent,s)]);}
+  const warmed=!background&&this.openingApprovalPreviews?.take(plan,intent,index);
+  if(warmed){const review=verifyPreview(warmed.raw,plan,s);return {...warmed,review};}
+  try{p=await this.bridge.call(intent.account,['contract-call','preview','--binanceChainId','56','--from',plan.wallet,'--to',s.to,'--value',String(s.value),'--inputData',s.data,...sellGasArgs(intent,s)],background?{background:true,readOnlyTimeoutMs:1500}:{});}
   catch(e){if(String(e.code)==='351805'&&e.responseReceived===true)e.details={...e.details,officialSimulationFailed:true};throw e;}
   const review=verifyPreview(p,plan,s);return {raw:p,review,at:Date.now()};
  }
@@ -188,7 +211,7 @@ export class Engine{
    if(alternative){o.plan=JSON.parse(json(alternative.plan));p=alternative.preview;o.nextStep=0;o.needsReview=false;o.needsFeeReview=false;error=null;p={...p,rerouted:true};}
   }
   if(error)throw error;
-  if(p){this.previews.set(o.id,{...p,rerouted:false});o.preview=p.review;o.previewAt=p.at;}
+  if(p){this.previews.set(o.id,{...p,rerouted:false});o.preview=p.review;o.previewAt=p.at;if(p.approvalPrewarmed)(o.timing??={}).approvalPreviewReused=true;}
   return p;
  }
  async prepare(input,id=randomUUID(),context={}){
@@ -306,7 +329,7 @@ export class Engine{
       // Preserve the original amount, venue, recipient and slippage percentage.
       const fastSale=o.intent.side==='sell'&&o.plan.opening&&o.plan.steps[index].kind==='sell';
       if(fastSale&&(repriced||o.steps.some(e=>e.step.kind==='approve'&&e.status==='CONFIRMED')||Date.now()-(o.previewAt||0)>1000)){
-       o.plan=await refreshOpeningSell(this.rpc,{...o.plan,account:o.intent.account});this.previews.delete(id);this.write(o);
+       o.plan=await this.freshOpeningSale(o,{repriced});this.previews.delete(id);this.write(o);
       }
       if(laneKey&&o.plan.route==='gang-modern'&&(repriced||o.steps.some(e=>e.step.kind==='approve'&&e.status==='CONFIRMED')||Date.now()-(o.previewAt||0)>1000)){
        o.plan=await refreshGangSell(this.rpc,o.plan,index);this.previews.delete(id);this.write(o);
@@ -330,7 +353,8 @@ export class Engine{
        if(e.dispatched===false){entry.submissionOutcome={accepted:false,source:'local-wallet'};o.timing.finishedAt=Date.now();if(o.intent.side==='mint'&&o.steps.slice(0,-1).some(x=>x.status==='CONFIRMED'&&x.step.kind==='mint'))o.status='PARTIAL';}
        return this.write(o);
       }
-      entry.result=result;entry.txHash=result?.txHash||result?.transactionHash||null;entry.orderId=result?.orderId||null;entry.status=entry.txHash?'PENDING':'SUBMISSION_UNKNOWN';entry.submittedAt=Date.now();o.status=entry.status;o.timing.submittedAt??=Date.now();o.timing.toSubmitMs=o.timing.submittedAt-o.createdAt;this.write(o);
+      entry.result=result;entry.txHash=result?.txHash||result?.transactionHash||null;entry.orderId=result?.orderId||null;entry.status=entry.txHash?'PENDING':'SUBMISSION_UNKNOWN';entry.submittedAt=Date.now();o.status=entry.status;o.timing.submittedAt??=Date.now();o.timing.toSubmitMs=o.timing.submittedAt-o.createdAt;
+      if(step.kind==='sell'){o.timing.saleSubmittedAt=entry.submittedAt;o.timing.toSaleSubmitMs=entry.submittedAt-o.createdAt;}this.write(o);
       await this.observeContract(o,entry,(step.kind==='sell'||o.plan.route==='corla:claim')&&swapReceiptWaitMs===0?0:10000);
       if(entry.status!=='CONFIRMED')return this.write(o);
       o.nextStep=index+1;o.status='READY_TO_CONTINUE';this.write(o);
@@ -424,6 +448,7 @@ export class Engine{
      // Diagnostics never delay wallet release or dispatch another transaction.
      this.write(o);void diagnoseRevert(this.rpc,tx,receipt).then(reason=>{if(!reason)return;const current=this.get(o.id);if(current?.status!=='FAILED'||current.steps?.at(-1)?.txHash!==entry.txHash)return;current.steps.at(-1).revertDiagnosis=reason;current.error={code:'TRANSACTION_REVERTED',...reason};this.write(current);}).catch(()=>{});break;}
     try{if(entry.step.kind==='approve'){
+     this.primeOpeningRefresh(o,entry,plan);
      if(entry.step.approvalType==='infinity-permit2')await verifyInfinityAllowance(this.rpc,entry.step,plan,originalRead);
      else{const [allowance]=await originalRead(()=>read(this.rpc,entry.step.to,ERC20,'allowance',[plan.wallet,entry.step.spender]));if(allowance<BigInt(entry.step.allowance))throw Error('当前授权额度不足，后续步骤未执行');}
     }else if(settlements[entry.step.tradeLeg?.settlementRoute||plan.route]){
@@ -452,7 +477,7 @@ export class Engine{
      const expected=asset?.amount?BigInt(asset.amount):1n;if(received<expected)throw Error('Mint 到账未达到预期，未继续后续步骤');entry.received=String(received);
      if(plan.route==='bagent:mint')entry.settlement=verifyBagentReceipt(receipt,plan);
     }
-    delete entry.settlementError;this.clearResolvedErrors(o);entry.status='CONFIRMED';break;
+    delete entry.settlementError;this.clearResolvedErrors(o);entry.status='CONFIRMED';entry.confirmedAt??=Date.now();break;
     }catch(e){if(e.code==='ORIGINAL_READ_UNAVAILABLE')throw e;this.confirmedReview(o,entry,e);break;}
    }
    if(Date.now()>=end)break;await sleep(200);

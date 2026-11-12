@@ -9,12 +9,12 @@ export const POOL=new Interface(['function token0() view returns(address)','func
 const checkedSnapshots=new WeakSet();
 export function freshOpeningSnapshot(s,token,maxAge=1200){return !!s&&checkedSnapshots.has(s)&&same(s.token,token)&&Date.now()-s.at>=0&&Date.now()-s.at<=maxAge;}
 export class OpeningPools{
- constructor(rpc,{dexes=DEXES,quotes=QUOTES,quoteDiscovery=new OpeningQuotes(rpc),infinity=typeof rpc.send==='function'?new InfinityPools(rpc):null}={}){Object.assign(this,{rpc,dexes,quotes,quoteDiscovery,infinity});this.known=new Map();this.inflight=new Map();this.discoveryAfter=new Map();this.paths=new Map();}
- async scan(input,{currency='AUTO',expand=false}={}){
-  const token=address(input),key=token.toLowerCase()+':'+currency+(expand?':expanded':'');if(this.inflight.has(key))return this.inflight.get(key);
-  const task=this.inspect(token,currency,{expand});this.inflight.set(key,task);try{return await task;}finally{this.inflight.delete(key);}
+ constructor(rpc,{dexes=DEXES,quotes=QUOTES,quoteDiscovery=new OpeningQuotes(rpc),infinity=typeof rpc.send==='function'?new InfinityPools(rpc):null}={}){Object.assign(this,{rpc,dexes,quotes,quoteDiscovery,infinity});this.known=new Map();this.inflight=new Map();this.discoveryAfter=new Map();this.paths=new Map();this.infinityRecent=new Map();this.infinityStarts=new WeakMap();}
+ async scan(input,{currency='AUTO',expand=false,watch=false}={}){
+  const token=address(input),key=token.toLowerCase()+':'+currency+(expand?':expanded':'')+(watch?':watch':'');if(this.inflight.has(key))return this.inflight.get(key);
+  const task=this.inspect(token,currency,{expand,watch});this.inflight.set(key,task);try{return await task;}finally{this.inflight.delete(key);}
  }
- async inspect(token,currency,{expand=false}={}){
+ async inspect(token,currency,{expand=false,watch=false}={}){
   await this.rpc.verifyChain();
   const cachedPath=expand?null:await this.refreshPaths(token,currency);if(cachedPath)return cachedPath;
   const quotes=[...new Map([...this.quotes,...(this.quoteDiscovery?.known(token)||[])].map(q=>[q.toLowerCase(),q])).values()];
@@ -22,13 +22,22 @@ export class OpeningPools{
   const key=token.toLowerCase()+':'+currency;
   const discoverDue=expand||Date.now()>=(this.discoveryAfter.get(key)||0);
   const hints=this.quoteDiscovery&&discoverDue?this.quoteDiscovery.discover(token).catch(()=>[]):Promise.resolve(this.quoteDiscovery?.known(token)||[]);
+  const infinityStarted=Date.now();
   const infinity=this.infinity?.scan(token,{expand,deep:expand}).catch(e=>({pools:[],errors:['Infinity 查询暂不可用：'+e.message]}));
+  if(infinity)void infinity.then(found=>{
+   // Several scans can join the same provider work. Keep its earliest observed
+   // start, not the newest waiter, so joining never makes old data look fresh.
+   if(!this.infinityStarts.has(found))this.infinityStarts.set(found,infinityStarted);
+   const startedAt=this.infinityStarts.get(found),old=this.infinityRecent.get(token.toLowerCase());
+   if(!old||old.startedAt<startedAt)this.infinityRecent.set(token.toLowerCase(),{startedAt,found});
+   while(this.infinityRecent.size>128)this.infinityRecent.delete(this.infinityRecent.keys().next().value);
+  }).catch(()=>{});
   const base=await this.inspectQuotes(token,expand?'AUTO':currency,quotes);
   // Normal liquid routes never wait for slow third-party hints. Empty scans
   // also have a fixed discovery wait; outstanding reads populate the next scan.
   let learned=[];
   if(expand||!base.pools.some(p=>p.liquid)){
-   let timer;try{learned=await Promise.race([hints,new Promise(r=>timer=setTimeout(()=>r([]),expand?750:300))]);}finally{clearTimeout(timer);}
+   let timer;try{learned=await Promise.race([hints,new Promise(r=>timer=setTimeout(()=>r([]),watch?0:expand?750:300))]);}finally{clearTimeout(timer);}
   }
   const fees=this.quoteDiscovery?.knownRoutes?.(token)||[];
   const changed=fees.filter(p=>p.kind==='v3'&&!before.some(x=>same(x.pool,p.pool))).map(p=>p.quote);
@@ -39,7 +48,15 @@ export class OpeningPools{
   const errors=[...base.errors,...(extra?.errors||[])];
   if(infinity){
    const discovery=infinity.then(async found=>!expand&&!pools.some(p=>p.liquid)&&!found.pools.length?this.infinity.scan(token,{deep:true}).catch(e=>({pools:[],errors:['Infinity 历史查询暂不可用：'+e.message]})):found);
-   let timer;try{const found=await Promise.race([discovery,new Promise(r=>timer=setTimeout(()=>r(null),expand||!pools.some(p=>p.liquid)?5000:80))]);
+   // A slow history scan must never blind a live watcher to a V2/V3 opening
+   // for five seconds. Discovery keeps running/coalescing and warms its own
+   // verified pool-ID cache; later ticks read liquidity afresh, not stale data.
+   let timer;try{let found=await Promise.race([discovery,new Promise(r=>timer=setTimeout(()=>r(null),watch?80:expand||!pools.some(p=>p.liquid)?5000:80))]);
+    if(!found&&watch){const recent=this.infinityRecent.get(token.toLowerCase());
+     // Consume a recently completed background read even if the next poll has
+     // already started. Otherwise a provider slower than 80 ms can be starved.
+     if(recent&&Date.now()-recent.startedAt>=0&&Date.now()-recent.startedAt<=1200&&recent.found.pools.every(p=>Number.isSafeInteger(p.block)&&p.block<=base.block))found=recent.found;
+    }
     if(found){pools.push(...found.pools);errors.push(...found.errors);}else errors.push('Infinity 池查询仍在进行，再次预览会复用发现结果');
    }finally{clearTimeout(timer);}
   }

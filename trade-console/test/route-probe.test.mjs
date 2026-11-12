@@ -55,8 +55,15 @@ test('buy quote starts before token balance completes, but failed balance cannot
   rpc.call=async tx=>{if(tx.to!==token)return registryCall(tx);await new Promise(r=>{const old=release;release=()=>{old?.();r();};});if(failure)throw Error('balance read failed');const f=ERC20.parseTransaction(tx);return ERC20.encodeFunctionResult(f.fragment,[f.name==='decimals'?18n:0n]);};
   const bridge={call:async(a,args)=>{assert.deepEqual(args.slice(0,2),['market-order','quote']);assert.equal(args[args.indexOf('--fromTokenQty')+1],'0.01');quoted++;return {toCoinAmount:'10'};}};
   const task=tradePlan(rpc,bridge,{account:bindings()[0].account,side:'buy',amount:'0.01',currency:'BNB',slippageMode:'fixed',slippageBps:100},token);
-  await new Promise(r=>setImmediate(r));assert.equal(quoted,1);release();if(failure)await assert.rejects(task,/balance read failed/);else{const plan=await task;assert.equal(plan.holdingBefore,'0');assert.equal(plan.amountIn,'10000000000000000');}assert.equal(quoted,1);
+  await new Promise(r=>setImmediate(r));assert.equal(quoted,1);assert.equal(rpc.calls.length,7,'buy registration must start before balance resolves');release();if(failure)await assert.rejects(task,/balance read failed/);else{const plan=await task;assert.equal(plan.holdingBefore,'0');assert.equal(plan.amountIn,'10000000000000000');}assert.equal(quoted,1);
  }
+});
+test('buy warm metadata skips only output precision; balance and registration remain fresh',async()=>{
+ const rpc=mock(),registryCall=rpc.call;let held=0n,reads=0;
+ rpc.call=async tx=>{if(tx.to!==token)return registryCall(tx);const f=ERC20.parseTransaction(tx);assert.equal(f.name,'balanceOf');reads++;return ERC20.encodeFunctionResult(f.name,[held]);};
+ const bridge={call:async()=>({toCoinAmount:'10'})},i={account:bindings()[0].account,side:'buy',amount:'0.01',currency:'BNB',slippageMode:'fixed',slippageBps:100};
+ const options={tokenMetadata:()=>({decimals:6})};assert.equal((await tradePlan(rpc,bridge,i,token,undefined,options)).decimals,6);
+ held=123n;assert.equal((await tradePlan(rpc,bridge,i,token,undefined,options)).holdingBefore,'123');assert.equal(reads,2);assert.equal(rpc.calls.length,14);
 });
 test('cold trade preflight overlaps public reads but failed wallet or chain guards prevent official quote and plan',async()=>{
  for(const failing of [null,'wallet','chain']){

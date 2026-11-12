@@ -1,6 +1,13 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {Wallets} from '../lib/wallet.mjs';import {bindings} from '../lib/common.mjs';
 const w=bindings()[0],cached=()=>({...w,status:'CONNECTED',validUntil:Date.now()+30000,checkedAt:Date.now()-30000});
+test('optional approval warming never starts cold readiness or waits behind foreground checks',async()=>{
+ const bridge=new Wallets();bridge.call=async()=>assert.fail('no wallet call');bridge.readyInflight.set(w.account,new Promise(()=>{}));
+ await assert.rejects(bridge.ready(w.account,{background:true}),{code:'WARM_YIELDED'});
+ const c={...cached(),devMode:{enabled:true,expiresAt:new Date(Date.now()+60000).toISOString()}};bridge.readyCache.set(w.account,c);
+ assert.equal(await bridge.ready(w.account,{external:true,background:true}),c);
+ c.validUntil=Date.now()-1;await assert.rejects(bridge.ready(w.account,{external:true,background:true}),{code:'WARM_YIELDED'});
+});
 test('optional warm timeout preserves the original valid cache but never extends its expiry',async()=>{
  const bridge=new Wallets(),c=cached();bridge.readyCache.set(w.account,c);
  bridge.call=async(a,args,opts)=>{assert.equal(opts.readOnlyTimeoutMs,1000);assert.equal(opts.background,true);throw Error('network timeout');};

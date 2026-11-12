@@ -86,3 +86,63 @@ test('a freshly registered live curve wins over an already prepared speculative 
  };
  const p=await f.run();assert.equal(f.seen.scan,1);assert.equal(p.route,'flap');assert.equal(p.steps.at(-1).to,flap.portal);assert.equal(f.seen.quote,0);
 });
+test('opening quote proceeds during slow allowance read but exact approval still waits for it',async()=>{
+ const f=fixture({mode:'fixed'}),gate=deferred(),original=f.rpc.call;let quotes=0,done=false;
+ f.rpc.call=async tx=>{if(same(tx.to,token)&&ERC20.parseTransaction(tx).name==='allowance'){await gate.promise;return ERC20.encodeFunctionResult('allowance',[0n]);}if(same(tx.to,d.router))quotes++;return original(tx);};
+ const work=openingPlan(f.rpc,{}, {...f.intent,openingOnly:true},{scan:f.scan,preparation:f.preparation}).then(p=>{done=true;return p;});await tick();
+ assert.equal(quotes,1);assert.equal(done,false);gate.resolve();const p=await work;assert.equal(p.steps[0].kind,'approve');assert.equal(p.steps[0].allowance,'500');
+});
+test('one stuck venue allowance cannot block a healthy opening sell venue', {timeout:3500},async()=>{
+ const f=fixture({mode:'fixed'}),other=DEXES.filter(v=>v.kind==='v2')[1],original=f.rpc.call;
+ f.rpc.call=async tx=>{if(same(tx.to,token)){const call=ERC20.parseTransaction(tx);if(call.name==='allowance'&&same(call.args[1],other.router))return new Promise(()=>{});}if(same(tx.to,other.router))return V2_ROUTER_ABI.encodeFunctionResult('getAmountsOut',[[500n,997n]]);return original(tx);};
+ const scan=async()=>{const s=await f.scan();s.pools.push({...s.pools[0],...other,pool:'0x'+'94'.repeat(20)});return s;};
+ const p=await openingPlan(f.rpc,{}, {...f.intent,openingOnly:true},{scan,preparation:f.preparation});assert.equal(p.opening.factory,d.factory);assert.equal(p.routeSearch.quoted,2);assert.equal(p.steps.length,1);
+});
+test('failed allowance never means zero approval, even when its pool quote succeeds',async()=>{
+ const f=fixture({mode:'fixed'}),original=f.rpc.call;
+ f.rpc.call=async tx=>{if(same(tx.to,token)&&ERC20.parseTransaction(tx).name==='allowance')throw Error('RPC unavailable');return original(tx);};
+ await assert.rejects(openingPlan(f.rpc,{}, {...f.intent,openingOnly:true},{scan:f.scan,preparation:f.preparation}),e=>e.code==='OPENING_WAIT'&&/授权额度/.test(e.message));
+});
+test('opening warm holding overlaps quote with fresh balance; changed holdings reprice instead of using the hint',async()=>{
+ for(const holding of [1000n,500n,0n]){
+  const f=fixture({mode:'fixed',holding}),gate=deferred(),original=f.rpc.call,quoted=[];let done=false;
+  f.rpc.call=async tx=>{if(same(tx.to,token)&&ERC20.parseTransaction(tx).name==='balanceOf')await gate.promise;if(same(tx.to,d.router))quoted.push(String(V2_ROUTER_ABI.parseTransaction(tx).args[0]));return original(tx);};
+  const holdingHint={at:Date.now(),token,wallet:w.address,balance:'1000',fingerprint:'mock'};
+  const result=openingPlan(f.rpc,{}, {...f.intent,openingOnly:true},{scan:f.scan,preparation:f.preparation,holdingHint}).then(p=>({p}),e=>({e})).finally(()=>done=true);
+  await tick();assert.deepEqual(quoted,['500']);assert.equal(done,false);gate.resolve();const {p,e}=await result;
+  if(!holding){assert.equal(e.code,'NO_HOLDINGS');continue;}
+  assert.equal(p.amountIn,String(holding/2n));assert.deepEqual(quoted,holding===1000n?['500']:['500','250']);
+ }
+});
+test('wrong wallet/token, stale or dust hints cannot affect opening quantity or start an early quote',async()=>{
+ for(const change of [h=>h.wallet=token,h=>h.token=d.router,h=>h.at-=7000,h=>h.at+=10000,h=>h.balance='1',h=>h.balance='bad',h=>h.balance=String(2n**256n)]){
+  const f=fixture({mode:'fixed'}),gate=deferred(),original=f.rpc.call;let quotes=0;
+  f.rpc.call=async tx=>{if(same(tx.to,token)&&ERC20.parseTransaction(tx).name==='balanceOf')await gate.promise;if(same(tx.to,d.router))quotes++;return original(tx);};
+  const holdingHint={at:Date.now(),token,wallet:w.address,balance:'1000',fingerprint:'mock'};change(holdingHint);
+  const result=openingPlan(f.rpc,{}, {...f.intent,openingOnly:true},{scan:f.scan,preparation:f.preparation,holdingHint});await tick();assert.equal(quotes,0);gate.resolve();assert.equal((await result).amountIn,'500');assert.equal(quotes,1);
+ }
+});
+test('changed identity or failed speculative quote cannot bypass the real quote checks',async()=>{
+ for(const changed of [true,false]){
+  const f=fixture({mode:'fixed'}),original=f.rpc.call;let quotes=0;
+  f.rpc.call=async tx=>{if(same(tx.to,d.router)){quotes++;if(quotes===1)throw Error('synthetic quote rejected');}return original(tx);};
+  const holdingHint={at:Date.now(),token,wallet:w.address,balance:'1000',fingerprint:changed?'old-code':'mock'};
+  const result=openingPlan(f.rpc,{}, {...f.intent,openingOnly:true},{scan:f.scan,preparation:f.preparation,holdingHint});
+  if(changed){assert.equal((await result).amountIn,'500');assert.equal(quotes,2);}else{await assert.rejects(result,e=>e.code==='OPENING_WAIT');assert.equal(quotes,1);}
+ }
+});
+test('Flap quote and exact allowance query overlap without losing approval',async()=>{
+ // A separate token avoids the earlier test's positive route cache.
+ const asset='0x'+'95'.repeat(20),gate=deferred();let allowanceStarted=false,quoteStarted=false,finished=false;
+ const rpc={getCode:async()=> '0x6000',getBalance:async()=>10n**18n,call:async tx=>{
+  if(same(tx.to,asset)){const f=ERC20.parseTransaction(tx);return ERC20.encodeFunctionResult(f.name,f.name==='symbol'?['TEST']:[f.name==='decimals'?18n:f.name==='allowance'?0n:1000n]);}
+  const isFlap=same(tx.to,flap.portal),pad=gang.PADS.find(p=>same(p.address,tx.to)),abi=isFlap?flap.portalAbi:pad.kind==='soft'?gang.SOFT_ABI:pad.id==='s'?gang.S_ABI:gang.V2_ABI;
+  const f=abi.parseTransaction(tx),values=f.fragment.outputs.map(zero);
+  if(f.name==='getTokenV8Safe')values[0][0]=1;
+  if(f.name==='quoteExactInput'){quoteStarted=true;await gate.promise;values[0]=997n;}
+  return abi.encodeFunctionResult(f.name,values);
+ }};
+ const call=rpc.call;rpc.call=async tx=>{if(same(tx.to,asset)&&ERC20.parseTransaction(tx).name==='allowance'&&quoteStarted)allowanceStarted=true;return call(tx);};
+ const p=tradePlan(rpc,{ready:async()=>{}},{account:w.account,side:'sell',percent:'50',currency:'AUTO',slippageBps:100},asset).then(p=>{finished=true;return p;});await tick();
+ assert.equal(quoteStarted,true);assert.equal(allowanceStarted,true);assert.equal(finished,false);gate.resolve();assert.equal((await p).steps[0].allowance,'500');
+});

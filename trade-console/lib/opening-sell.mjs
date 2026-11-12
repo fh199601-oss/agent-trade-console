@@ -164,12 +164,14 @@ export class OpeningSell{
    this.persist();
   }finally{this.followBusy.delete(j.id);}
  }
- warm(j){if(!this.preparation||this.warmBusy.has(j.id)||this.now()-(j.preflight?.at||0)<5000)return;
+ warm(j,snapshot){if(!this.preparation||this.warmBusy.has(j.id)||this.now()-(j.preflight?.at||0)<5000)return;
   // Read-only fee audit coalesces across wallets while waiting for opening.
   void this.engine.sellAudit?.(j.config.asset).catch(()=>{});
   const revision=j.revision||0;this.warmBusy.add(j.id);void this.preparation.warm(j.config).then(p=>{
    if(j.cancelRequested||this.closed||!ACTIVE.has(j.status)||(j.revision||0)!==revision)return;
-   if(j.preflight?.fingerprint&&j.preflight.fingerprint!==p.fingerprint){j.status='PAUSED';j.message='等待期间代币代码已变化，请重新检查';}else{j.preflight=p;delete j.preflightError;}this.persist();
+   if(j.preflight?.fingerprint&&j.preflight.fingerprint!==p.fingerprint){j.status='PAUSED';j.message='等待期间代币代码已变化，请重新检查';}else{j.preflight=p;delete j.preflightError;
+    void this.engine.warmOpeningApprovals?.(j.config,p,snapshot,()=>!this.closed&&j.status==='ARMED'&&!j.cancelRequested&&(j.revision||0)===revision).catch(()=>{});
+   }this.persist();
   }).catch(e=>{j.preflightError=e.message;}).finally(()=>this.warmBusy.delete(j.id));
  }
  async tick(id){
@@ -186,11 +188,11 @@ export class OpeningSell{
    if(this.now()>j.expiresAt)for(const r of j.rows)if(WATCHING.has(r.status))r.status='EXPIRED';
    const waiting=j.rows.filter(r=>WATCHING.has(r.status));
    if(waiting.length){
-    let s;try{s=await this.detector.scan(j.config.asset,{currency:j.config.currency});}catch(e){j.message=e.message;j.lastScanAt=this.now();return j;}
+    let s;try{s=await this.detector.scan(j.config.asset,{currency:j.config.currency,watch:true});}catch(e){j.message=e.message;j.lastScanAt=this.now();return j;}
     if(j.cancelRequested||this.closed||!ACTIVE.has(j.status))return j;
     if(this.now()>j.expiresAt){j.status='EXPIRED';j.message='监测已到期';this.persist();return j;}
     j.lastScanAt=this.now();j.lastBlock=s.block;j.scanMs=this.now()-started;j.partial=s.partial;
-    if(!s.open){this.warm(j);j.message=s.routeIssue||(s.partial?'部分池子查询失败，继续监测':'等待链上加池开盘');return j;}
+    if(!s.open){this.warm(j,s);j.message=s.routeIssue||(s.partial?'部分池子查询失败，继续监测':'等待链上加池开盘');return j;}
     j.detectedAt??=this.now();j.detectedBlock??=s.block;j.status='FIRING';j.message='检测到流动性，按当前持仓独立准备各钱包';this.persist();
     await Promise.all(waiting.map(r=>this.fire(j,r,s)));
    }
@@ -205,7 +207,9 @@ export class OpeningSell{
   r.attempts++;if(r.recovery)r.recoveryPreviews=(r.recoveryPreviews||0)+1;r.status='PREPARING';r.orderId='opening-'+j.id+'-a'+r.account+'-p'+r.attempts;this.persist();
   try{
    const intent={account:r.account,side:'sell',asset:config.asset,percent:config.percent,slippageBps:config.slippageBps,slippageMode:'fixed',currency:config.currency,openingOnly:true,...(config.gasLimit===undefined?{}:{gasLimit:config.gasLimit})};
-   let o=await this.engine.prepare(intent,r.orderId,{openingSnapshot:snapshot,...(r.recovery?{openingRecovery:r.recovery}:{})});
+   const warmed=j.preflight?.rows?.find(p=>p.account===r.account);
+   const openingHoldingHint=warmed?{at:j.preflight.at,token:config.asset,wallet:warmed.address,balance:warmed.balance,fingerprint:j.preflight.fingerprint}:undefined;
+   let o=await this.engine.prepare(intent,r.orderId,{openingSnapshot:snapshot,openingHoldingHint,...(r.recovery?{openingRecovery:r.recovery}:{})});
    if(j.cancelRequested||this.closed||!ACTIVE.has(j.status)||this.now()>j.expiresAt){r.status=j.status==='PAUSED'?'PAUSED':'CANCELLED';return;}
    if((j.revision||0)!==revision&&editableSaleRow(r)){r.status='WAITING';r.retryAt=this.now();r.error={message:'设置已修改，按新比例重新准备'};return;}
    // Unknown fees are a route-policy rejection, not a transient opening state.

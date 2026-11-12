@@ -81,6 +81,21 @@ class InstallerSafety(unittest.TestCase):
         with patch.object(bridge,'invoke',side_effect=[addr(),ok({'orderId':'test-only'})]) as invoke:
             result=bridge.dispatch(self.entry(),['market-order','swap','--json'],True)
         self.assertEqual(result['data']['orderId'],'test-only');self.assertEqual(invoke.call_args_list[-1].args[0],self.entry())
+    def test_background_approval_preview_is_read_only_and_bounded(self):
+        with patch.object(bridge,'account_lock') as lock,patch.object(bridge,'invoke',return_value=ok({'requestId':'synthetic-preview'})) as invoke:
+            bridge.dispatch(self.entry(),['contract-call','preview'],False,background=True,read_only_timeout_ms=1500)
+        self.assertEqual(lock.call_args.kwargs['timeout'],0)
+        self.assertEqual(invoke.call_count,1)
+        self.assertEqual(invoke.call_args.args[1],['contract-call','preview'])
+        self.assertEqual(invoke.call_args.kwargs['timeout'],1.5)
+    def test_read_deadline_never_shortens_or_bypasses_write_identity_check(self):
+        for action in [['contract-call','execute'],['market-order','swap']]:
+            with patch.object(bridge,'account_lock') as lock,patch.object(bridge,'invoke',side_effect=[addr(),ok({'orderId':'synthetic-write'})]) as invoke:
+                bridge.dispatch(self.entry(),action,True,background=True,read_only_timeout_ms=1500)
+            self.assertEqual(lock.call_args.kwargs['timeout'],90)
+            self.assertEqual(invoke.call_args_list[0].args[1],['wallet','address'])
+            self.assertEqual(invoke.call_args_list[1].args[1],action)
+            self.assertEqual(invoke.call_args_list[1].kwargs['timeout'],100)
     def test_wrapper_always_uses_json_and_drops_raw_errors(self):
         result=type('R',(),{'stdout':'sensitive provider response','stderr':'sensitive provider stderr','returncode':1})()
         with patch.object(bridge,'run_command',return_value=result) as run:

@@ -55,21 +55,23 @@ export async function detectRoute(rpc,token,w,platform){
  if(platform)throw Error(`未能核验 ${platform} 代币注册；不猜测交易入口`);
  return {route:'aggregate',diagnostics:checks.filter(r=>r.status==='rejected').map(r=>r.reason.message)};
 }
-export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=true,overlapRouteReads=false,coldQuoteOverlap=true,earlyBuyQuote=true,directSellPlan}={}){
+export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=true,overlapRouteReads=false,coldQuoteOverlap=true,earlyBuyQuote=true,earlyBuyRoute=true,tokenMetadata,directSellPlan}={}){
  const w=wallet(intent.account).address,hints=hintMap(rpc),hintKey=token.toLowerCase();
- // Opt-in benchmark only: on the current RPC, putting registry and balance
- // reads in the same batch increased latency. Production starts the balance
- // first, then overlaps the quote and registry reads (see round 3 evidence).
+ // Sell starts with fresh holdings, then overlaps registry and quote. A buy
+ // already has a known input amount and can resolve its route immediately.
  const warm=intent.side==='sell'&&!platform&&!routeCache.has(hintKey)&&(hints.get(hintKey)||0)>Date.now();
  const knownGang=gangClient(rpc).known.has(hintKey);
- const pendingRoute=(knownGang||warm&&overlapRouteReads)?measure('tradeRoute',()=>detectRoute(rpc,token,w,platform)).then(route=>({route}),error=>({error})):null;
+ const pendingRoute=(knownGang||intent.side==='buy'&&earlyBuyRoute||warm&&overlapRouteReads)?measure('tradeRoute',()=>detectRoute(rpc,token,w,platform)).then(route=>({route}),error=>({error})):null;
  // Buy input is already known; quote can run while token metadata/holdings are
  // read. This is read-only speculation; registry, audit and balance checks still
  // gate the final plan. Never do this for sell: its amount needs a fresh balance.
  const canSpeculate=overlapQuotes&&intent.currency!=='QUOTE'&&!platform&&!gangClient(rpc).known.has(hintKey)&&!/888[0-9a-f]$/i.test(token)&&!routeCache.has(hintKey)&&(coldQuoteOverlap||(hints.get(hintKey)||0)>Date.now());
  const earlyArgs=earlyBuyQuote&&canSpeculate&&intent.side==='buy'?['--binanceChainId','56','--fromToken',intent.currency==='USDT'?USDT:intent.currency==='WBNB'?WBNB:BNB,'--toToken',token,'--fromTokenQty',formatUnits(parseUnits(intent.amount,18),18),'--slippage',intent.slippageMode==='auto'?'auto':String(intent.slippageBps/100)]:null;
  const early=earlyArgs?measure('tradeQuote',()=>bridge.call(intent.account,['market-order','quote',...earlyArgs])).then(value=>({value}),error=>({error})):null;
- const [[d],[balance]]=await measure('tradeBalance',()=>Promise.all([knownGang?gangClient(rpc).meta(token).then(m=>[m.decimals]):read(rpc,token,ERC20,'decimals'),read(rpc,token,ERC20,'balanceOf',[w])]));
+ // Only output-token metadata may be reused for buys; input amounts, wallet
+ // balances, registration, eligibility and pricing are never taken from it.
+ const metadata=intent.side==='buy'?tokenMetadata?.(token):null;
+ const [[d],[balance]]=await measure('tradeBalance',()=>Promise.all([metadata?[metadata.decimals]:knownGang?gangClient(rpc).meta(token).then(m=>[m.decimals]):read(rpc,token,ERC20,'decimals'),read(rpc,token,ERC20,'balanceOf',[w])]));
  const decimals=Number(d);if(decimals>36)throw Error('代币精度不支持');
  const amount=intent.side==='sell'?sellAmount(balance,intent.percent):null;
  const aggregateInput=intent.side==='sell'?token:intent.currency==='USDT'?USDT:intent.currency==='WBNB'?WBNB:BNB;
@@ -130,10 +132,14 @@ export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=
   else if(!same(requested,s.quoteToken))throw Error(`此曲线需 ${s.quoteSymbol}，请选择 QUOTE；不会额外自动兑换`);
  }
  const amountIn=amount??parseUnits(intent.amount,native(input)?18:s.quoteDecimals);
- const q=await a[intent.side==='buy'?'quoteBuy':'quoteSell']({rpc,token,wallet:w,amountIn,state:s,inputToken:input});
+ // Allowance and quote are independent reads. Neither result authorizes a
+ // transaction; both must complete before constructing the exact approval.
+ const [q,allowance]=await Promise.all([
+  a[intent.side==='buy'?'quoteBuy':'quoteSell']({rpc,token,wallet:w,amountIn,state:s,inputToken:input}),
+  native(input)?amountIn:read(rpc,input,ERC20,'allowance',[w,s.spender]).then(r=>r[0])
+ ]);
  const min=q.amountOut*BigInt(10000-intent.slippageBps)/10000n;if(min<=0n)throw Error('最低到账为零');
  const tx=await a[intent.side==='buy'?'buildBuy':'buildSell']({token,wallet:w,amountIn,minAmountOut:min,state:s,inputToken:input});
- const allowance=native(input)?amountIn:(await read(rpc,input,ERC20,'allowance',[w,s.spender]))[0];
  const approval=allowance<amountIn?[{kind:'approve',to:input,value:'0',data:ERC20.encodeFunctionData('approve',[s.spender,amountIn]),spender:s.spender,allowance:String(amountIn)}]:[];
  return {kind:'contract',route:a.id,wallet:w,token,amountIn:String(amountIn),inputToken:input,outputToken:intent.side==='buy'?token:s.quoteToken,holdingBefore:String(balance),decimals,minOutput:String(min),quote:q,review:[],state:s,steps:[...approval,{kind:intent.side,...tx,value:String(tx.value)}]};
 }

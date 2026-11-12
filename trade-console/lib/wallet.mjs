@@ -50,11 +50,12 @@ export class Wallets{
    w.process.stdin.write(JSON.stringify({id,args:args.includes('--json')?args:[...args,'--json'],...(options.readOnlyTimeoutMs?{readOnlyTimeoutMs:options.readOnlyTimeoutMs}:{}),...(options.background?{background:true}:{})})+'\n',e=>{if(e){clearTimeout(timer);w.pending.delete(id);reject(Object.assign(e,{dispatched:false}));}});
   });});this.queues.set(account,op);op.finally(()=>{if(this.queues.get(account)===op)this.queues.delete(account);}).catch(()=>{});return op;
  }
- async ready(account,{external=false,force=false}={}){
+ async ready(account,{external=false,force=false,background=false}={}){
   if(force)this.warmBackoff.delete(account);
   const expected=wallet(account).address,c=this.readyCache.get(account);
   const checkExternal=result=>{if(external&&(!result.devMode?.enabled||!(Date.parse(result.devMode.expiresAt)>Date.now())))throw Error('请在币安 App → Agentic Wallet → 设置中启用 Developer Mode');return result;};
   if(!force&&c&&c.validUntil>Date.now()&&same(expected,c.address))return checkExternal(c);
+  if(background)throw Object.assign(Error('钱包预检尚未就绪，跳过本轮只读预热'),{code:'WARM_YIELDED',dispatched:false});
   if(this.readyInflight.has(account))return checkExternal(await this.readyInflight.get(account));
   const pending=this.checkReady(account,expected);this.readyInflight.set(account,pending);
   try{return checkExternal(await pending);}catch(e){if(e.code==='WALLET_READINESS_INVALID')this.readyCache.delete(account);throw e;}finally{if(this.readyInflight.get(account)===pending)this.readyInflight.delete(account);}
