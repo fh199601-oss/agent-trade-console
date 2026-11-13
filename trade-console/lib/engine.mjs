@@ -4,6 +4,7 @@ import {OpeningApprovalPreviews} from './opening-approval-previews.mjs';
 import {diagnoseRevert} from './revert-reason.mjs';
 import {describeError} from '../public/error-message.mjs';
 import {SellCoordinator,sellLane} from './sell-coordinator.mjs';
+import {queuedSellEligible,reusableQueuedSell} from './queued-sell-preview.mjs';
 import {refreshGangSell} from './gang-modern.mjs';
 import {INFINITY,verifyInfinityApproval,verifyInfinityAllowance} from './infinity.mjs';
 import {tradeLegPlan} from './trade-leg.mjs';
@@ -195,6 +196,14 @@ export class Engine{
   }
   return refreshOpeningSell(this.rpc,{...o.plan,account:o.intent.account});
  }
+ async queuedSellPreview(o,index,allowed){
+  try{
+   const plan=await refreshOpeningSell(this.rpc,{...o.plan,account:o.intent.account});
+   if(!allowed())return null;
+   const preview=await this.preview(plan,o.intent,index,{background:true});
+   return {plan,preview};
+  }catch{return null;} // Optional read-only preparation cannot block a sale.
+ }
  async preview(plan,intent,index=0,{background=false}={}){
   if(plan.kind==='swap')return null;
   await this.bridge.ready(intent.account,{external:true,...(background?{background:true}:{})});
@@ -319,24 +328,41 @@ export class Engine{
       // Capture THIS plan: a fee-search reroute restarts the loop and checks the
       // new target again. Every guard must finish before execute can be called.
       const laneKey=o.intent.side==='sell'?sellLane(o.plan,o.plan.steps[index]):null;
-      const lane=await this.sellCoordinator.enter(laneKey);
+      const laneStarted=Date.now();
+      // No signing while queued. A later fresh quote and every normal guard
+      // still gate consumption of this exact, wallet-specific official preview.
+      let warmingAllowed=true,queuedPreview=null;
+      if(laneKey&&this.sellCoordinator.tails.has(laneKey)&&queuedSellEligible(o.plan,index))void this.queuedSellPreview(o,index,()=>warmingAllowed&&mayContinue()).then(result=>{if(warmingAllowed)queuedPreview=result;});
+      const lane=await this.sellCoordinator.enter(laneKey).catch(e=>{warmingAllowed=false;throw e;});
       try{
+      const stepTiming={kind:o.plan.steps[index].kind,queueMs:Date.now()-laneStarted};
+      (o.timing.executionSteps??=[]).push(stepTiming);
       // A previous fast-return submit may still be on-chain. Follow that exact
       // original before quoting another wallet against the same pool.
       const prior=laneKey?this.orderIndex.find(r=>r.id!==o.id&&unresolved.has(r.status)&&r.intent?.side==='sell'&&sellLane(r.plan,r.steps?.at(-1)?.step)===laneKey):null;
       let repriced=lane.waited||!!(laneKey&&this.orderIndex.find(r=>r.id!==o.id&&r.intent?.side==='sell'&&r.updatedAt>=o.createdAt&&r.steps?.some(e=>e.status==='CONFIRMED'&&sellLane(e.plan||r.plan,e.step)===laneKey)));
-      if(prior){let original=this.get(prior.id);const until=Date.now()+8000;
+      if(prior){const originalWaitStarted=Date.now();let original=this.get(prior.id);const until=Date.now()+8000;
        // Share the normal original-order follower and account lock. A separate
        // observer could overwrite a newer background confirmation with stale data.
        while(original.steps?.at(-1)?.txHash&&original.steps.at(-1).status!=='CONFIRMED'&&unresolved.has(original.status)&&Date.now()<until){
         try{original=await this.follow(prior.id,{receiptTimeoutMs:Math.max(0,until-Date.now())});}catch(e){if(e.code!=='WALLET_BUSY')throw e;original=this.get(prior.id);}
         if(original.steps?.at(-1)?.status!=='CONFIRMED'&&unresolved.has(original.status))await sleep(100);
        }
+       stepTiming.originalWaitMs=Date.now()-originalWaitStarted;
        if(original.steps?.at(-1)?.status!=='CONFIRMED'&&unresolved.has(original.status))throw Object.assign(Error('同一池子前一笔卖出尚未确认，本次尚未提交；后台继续核对原单'),{code:'SELL_POOL_BUSY'});
        repriced=true;
       }
       const identityPlan=o.plan;
+      const refreshStarted=Date.now();
       const identityCheck=measure('executionIdentity',()=>Promise.all([verifyIdentity(this.rpc,identityPlan.identity),...(identityPlan.protocolIdentities||[]).map(identity=>verifyIdentity(this.rpc,identity))])).then(()=>({}),error=>({error}));
+      warmingAllowed=false;
+      const warmedSale=queuedPreview;
+      // Refresh the exact sender/calldata at the latest chain state as well as
+      // the pool quote. Phase changes, transfer restrictions and tax changes can
+      // invalidate a recent wallet preview without changing router getAmountsOut.
+      let queuedCallPassed=false;
+      if(warmedSale)void Promise.resolve().then(()=>{const s=warmedSale.plan.steps[index];return this.rpc.call({from:o.plan.wallet,to:s.to,data:s.data,value:'0x'+BigInt(s.value).toString(16)},'latest');}).then(()=>{queuedCallPassed=true;},()=>{});
+      const auditRefresh=o.intent.side==='sell'&&o.plan.steps[index].kind==='sell'&&o.plan.audit?.checkedAt&&Date.now()-o.plan.audit.checkedAt>5000?this.sellAudit(o.plan.token):null;
       // Authorization can take several blocks. Refresh the automatic sale's
       // quote and deadline AFTER approval, then obtain a new official preview.
       // Preserve the original amount, venue, recipient and slippage percentage.
@@ -347,14 +373,23 @@ export class Engine{
       if(laneKey&&o.plan.route==='gang-modern'&&(repriced||o.steps.some(e=>e.step.kind==='approve'&&e.status==='CONFIRMED')||Date.now()-(o.previewAt||0)>1000)){
        o.plan=await refreshGangSell(this.rpc,o.plan,index);this.previews.delete(id);this.write(o);
       }
-      const step=o.plan.steps[index];let p=o.steps.length===0?this.previews.get(id):null;
-      if(o.intent.side==='sell'&&step.kind==='sell'&&o.plan.audit?.checkedAt&&Date.now()-o.plan.audit.checkedAt>5000)o.plan.audit=await this.sellAudit(o.plan.token);
-      p=await this.previewWithFeeSearch(o,index,{cached:p&&Date.now()-p.at<=(fastSale?1000:15000)?p:null,minimumOutput:o.plan.minOutput});
+      if(auditRefresh)o.plan.audit=await auditRefresh;
+      stepTiming.refreshMs=Date.now()-refreshStarted;
+      let p=o.steps.length===0?this.previews.get(id):null,queuedHit=null;
+      if(warmedSale&&queuedCallPassed){queuedHit=reusableQueuedSell(o.plan,warmedSale);if(queuedHit){
+       // Re-run the asset/authority checks against the retained exact calldata.
+       queuedHit.preview.review=verifyPreview(queuedHit.preview.raw,queuedHit.plan,queuedHit.plan.steps[index]);
+       o.plan=queuedHit.plan;p=queuedHit.preview;stepTiming.queuedPreviewReused=true;stepTiming.queuedPreviewAgeMs=queuedHit.ageMs;
+      }}
+      const step=o.plan.steps[index],previewStarted=Date.now();
+      p=await this.previewWithFeeSearch(o,index,{cached:p&&(queuedHit||Date.now()-p.at<=(fastSale?1000:15000))?p:null,minimumOutput:o.plan.minOutput});
+      stepTiming.previewMs=Date.now()-previewStarted;
       if(p?.rerouted){this.previews.set(id,{...p,rerouted:false});o.review=[...(o.plan.review||[])];o.nextStep=0;this.write(o);index=-1;continue;}
       if(hasPreviewRisks(p.raw.risks)&&(rejectRisks||!acknowledgeReview))throw Error('新的钱包预览包含风险，需要查看并确认');
       o.preview=p.review;o.previewAt=p.at;
       const held=feeGate(step.kind==='sell'?p.review:null,step.kind==='sell');if(held){o.nextStep=index;return this.write({...held,nextStep:index});}
       const [identityResult,readyResult]=await Promise.all([identityCheck,executionReady]);if(readyResult.error)throw readyResult.error;if(identityResult.error)throw identityResult.error;
+      stepTiming.guardsMs=Date.now()-refreshStarted;
       if(!mayContinue())return cancelled();
       const entry={index,stage:o.stage||0,plan:o.plan,step,preview:p.review,requestId:p.raw.requestId,status:'SUBMITTING',submitStartedAt:Date.now()};
       o.steps.push(entry);o.status='SUBMITTING';this.write(o);
@@ -371,7 +406,7 @@ export class Engine{
       await this.observeContract(o,entry,(step.kind==='sell'||o.plan.route==='corla:claim')&&swapReceiptWaitMs===0?0:10000);
       if(entry.status!=='CONFIRMED')return this.write(o);
       o.nextStep=index+1;o.status='READY_TO_CONTINUE';this.write(o);
-      }finally{lane.release();}
+      }finally{warmingAllowed=false;lane.release();}
      }
      if(o.intent.side!=='mint')return this.finish(o);
      if(o.settledStage!==(o.stage||0)){

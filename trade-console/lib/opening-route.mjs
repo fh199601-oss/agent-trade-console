@@ -42,7 +42,7 @@ export async function refreshOpeningSell(rpc,plan){
  const step={...plan.steps.at(-1),data:saleData(d,pool,plan.token,plan.wallet,amount,minimum,same(plan.outputToken,BNB))};
  return {...plan,opening:freshPool,state:freshPool,poolFees:poolFeeProof(freshPool,d.kind==='v2'?quoted[0]:null,plan.token,batch.block),minOutput:String(minimum),quote:{...plan.quote,toCoinAmount:formatUnits(output,plan.outputDecimals??18)},quoteRefreshedAt:Date.now(),steps:[...plan.steps.slice(0,-1),step]};
 }
-export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPools(rpc).scan(t,o),snapshot,preparation,identityFor,holdingHint,failedPreviews=[],excludedRoutes=[],lowFeeOnly=false,expand=false,outputToken,minimumOutput,slippagePromise}={}){
+export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPools(rpc).scan(t,o),snapshot,preparation,identityFor,holdingHint,initialHolding,failedPreviews=[],excludedRoutes=[],lowFeeOnly=false,expand=false,outputToken,minimumOutput,slippagePromise}={}){
  // Pool discovery and token/holding reads are independent. Only metadata is
  // cached: the balance and every allowance are read afresh for this operation.
  // Box a concurrently requested policy now, including on an early scan error.
@@ -51,7 +51,9 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
  const reused=freshOpeningSnapshot(snapshot,intent.asset)&&(!expand||snapshot.expanded);
  // An opening/claim-linked task may receive its tokens during detection. Keep
  // that holding read AFTER detection so pre-opening zero cannot skip a sale.
- const tokenReads=Promise.all([prep.token(intent.asset),...(intent.openingOnly?[]:[read(rpc,intent.asset,ERC20,'balanceOf',[w])])]).then(value=>({value}),error=>({error}));
+ const initialAge=Date.now()-initialHolding?.at;
+ const sameOperationHolding=!intent.openingOnly&&initialAge>=0&&initialAge<=750&&same(initialHolding?.token,intent.asset)&&same(initialHolding?.wallet,w)&&/^\d{1,78}$/.test(initialHolding?.balance)&&BigInt(initialHolding.balance)<2n**256n;
+ const tokenReads=Promise.all([prep.token(intent.asset),...(intent.openingOnly?[]:[sameOperationHolding?[BigInt(initialHolding.balance)]:read(rpc,intent.asset,ERC20,'balanceOf',[w])])]).then(value=>({value}),error=>({error}));
  snapshot=reused?snapshot:await scan(intent.asset,{currency:intent.currency,expand});
  const candidates=snapshot.pools.filter(p=>p.liquid&&matchesCurrency(p,intent.currency)&&dexFor(p)&&!excludedRoutes.includes(poolRouteKey(p))&&(!outputToken||same(p.quote,same(outputToken,BNB)?WBNB:outputToken)));
  if(!candidates.length)throw Object.assign(Error(snapshot.routeIssue||(excludedRoutes.length?'本轮已核验的池子中，没有符合原到账币种的其他路线':intent.openingOnly?'等待可核验的外盘卖出池子；不会提前使用内盘卖出':'当前未找到可成交的卖出池：可能流动性尚未开放、已移除，或池型尚未支持；未提交，钱包可继续操作')),{code:intent.openingOnly?'OPENING_WAIT':'SELL_ROUTE_UNAVAILABLE'});

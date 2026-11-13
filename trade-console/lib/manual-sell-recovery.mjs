@@ -14,7 +14,10 @@ export async function manualDirectSell(rpc,bridge,intent,aggregate,options){
  const currency=same(aggregate.outputToken,BNB)?'BNB':same(aggregate.outputToken,USDT)?'USDT':same(aggregate.outputToken,WBNB)?'WBNB':null;
  if(intent.side!=='sell'||aggregate.kind!=='swap'||!currency||!Number.isInteger(aggregate.slippage?.bps)||aggregate.slippage.bps>intent.slippageBps)throw Error('无法保留本次卖出约束，未切换路线');
  const auto=intent.currency==='AUTO'&&!options?.fixedOutput;
- const plan=await openingPlan(rpc,bridge,{...intent,currency:auto?'AUTO':currency,slippageBps:aggregate.slippage.bps},options);
+ // This is the fresh balance from THIS planning call, not the dashboard cache.
+ // The planner discards old/mismatched hints; execute checks holdings again.
+ const initialHolding={token:aggregate.token,wallet:aggregate.wallet,balance:aggregate.holdingBefore,at:aggregate.holdingCheckedAt};
+ const plan=await openingPlan(rpc,bridge,{...intent,currency:auto?'AUTO':currency,slippageBps:aggregate.slippage.bps},{...options,initialHolding});
  if(!same(plan.wallet,aggregate.wallet)||!same(plan.inputToken,aggregate.inputToken)||!auto&&!same(plan.outputToken,aggregate.outputToken)||plan.amountIn!==aggregate.amountIn||plan.holdingBefore!==aggregate.holdingBefore)throw Error('切换卖出路线期间持仓或交易资产已变化，请重新预览');
  return {...plan,slippage:options?.slippagePromise?plan.slippage:aggregate.slippage,manualRouteRecovery:true};
 }

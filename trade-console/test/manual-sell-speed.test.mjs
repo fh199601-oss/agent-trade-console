@@ -30,7 +30,7 @@ function fixture({mode='auto',quoteCurrency=WBNB,holding=1000n}={}){
 test('first manual sell overlaps scan, metadata, fresh holdings, official policy and registration; all gates must finish',async()=>{
  const f=fixture();f.gates.quote=deferred();f.gates.registry=deferred();f.gates.scan=deferred();f.gates.meta=deferred();let done=false;
  const result=f.run().then(p=>{done=true;return p;});await tick();
- assert.equal(f.seen.quote,1);assert.equal(f.seen.scan,1);assert.equal(f.seen.meta,1);assert.equal(f.seen.balance,2);assert.equal(f.seen.registry,7);
+ assert.equal(f.seen.quote,1);assert.equal(f.seen.scan,1);assert.equal(f.seen.meta,1);assert.equal(f.seen.balance,1);assert.equal(f.seen.registry,7);
  f.gates.scan.resolve();f.gates.meta.resolve();await tick();assert.equal(f.seen.venue,1);assert.equal(done,false);
  f.gates.quote.resolve();await tick();assert.equal(done,false);f.gates.registry.resolve();
  const p=await result;assert.equal(p.manualRouteRecovery,true);assert.equal(p.outputToken,BNB);assert.equal(p.amountIn,'500');assert.equal(p.minOutput,'897');assert.deepEqual(p.slippage,{mode:'auto',bps:1000,capBps:2000});
@@ -63,6 +63,16 @@ test('opening tasks read holdings after discovery so tokens arriving during dete
  const original=f.rpc.call;f.rpc.call=async tx=>{if(same(tx.to,token)&&ERC20.parseTransaction(tx).name==='balanceOf')assert.equal(detected,true);return original(tx);};
  const p=openingPlan(f.rpc,f.bridge,{...f.intent,openingOnly:true},{preparation:f.preparation,scan:async()=>{await gate.promise;detected=true;return f.scan();}});
  await tick();assert.equal(f.seen.balance,0);gate.resolve();assert.equal((await p).amountIn,'500');assert.equal(f.seen.balance,1);
+});
+test('only the same-operation fresh holding is reused; stale, foreign and invalid hints are re-read',async()=>{
+ for(const override of [{},{at:Date.now()-1000},{at:Date.now()+10000},{wallet:token},{token:WBNB},{balance:'-1'},{balance:String(2n**256n)}]){
+  const f=fixture({mode:'fixed'}),initialHolding={token,wallet:w.address,balance:'1000',at:Date.now(),...override};
+  const p=await openingPlan(f.rpc,f.bridge,f.intent,{scan:f.scan,preparation:f.preparation,initialHolding});
+  assert.equal(p.amountIn,'500');assert.equal(f.seen.balance,Object.keys(override).length?1:0);
+ }
+ const f=fixture({mode:'fixed'});
+ await openingPlan(f.rpc,f.bridge,{...f.intent,openingOnly:true},{scan:f.scan,preparation:f.preparation,initialHolding:{token,wallet:w.address,balance:'1000',at:Date.now()}});
+ assert.equal(f.seen.balance,1,'opening/claim-linked workflows must see tokens arriving during detection');
 });
 test('warmup is read-only, bounded, coalesced, throttled and yields to foreground work',async()=>{
  let busy=false,now=1000,scans=0,meta=0,venues=0;const gate=deferred();

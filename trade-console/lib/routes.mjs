@@ -68,10 +68,10 @@ export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=
  const canSpeculate=overlapQuotes&&intent.currency!=='QUOTE'&&!platform&&!gangClient(rpc).known.has(hintKey)&&!/888[0-9a-f]$/i.test(token)&&!routeCache.has(hintKey)&&(coldQuoteOverlap||(hints.get(hintKey)||0)>Date.now());
  const earlyArgs=earlyBuyQuote&&canSpeculate&&intent.side==='buy'?['--binanceChainId','56','--fromToken',intent.currency==='USDT'?USDT:intent.currency==='WBNB'?WBNB:BNB,'--toToken',token,'--fromTokenQty',formatUnits(parseUnits(intent.amount,18),18),'--slippage',intent.slippageMode==='auto'?'auto':String(intent.slippageBps/100)]:null;
  const early=earlyArgs?measure('tradeQuote',()=>bridge.call(intent.account,['market-order','quote',...earlyArgs])).then(value=>({value}),error=>({error})):null;
- // Only output-token metadata may be reused for buys; input amounts, wallet
- // balances, registration, eligibility and pricing are never taken from it.
- const metadata=intent.side==='buy'?tokenMetadata?.(token):null;
- const [[d],[balance]]=await measure('tradeBalance',()=>Promise.all([metadata?[metadata.decimals]:knownGang?gangClient(rpc).meta(token).then(m=>[m.decimals]):read(rpc,token,ERC20,'decimals'),read(rpc,token,ERC20,'balanceOf',[w])]));
+ // Verified token decimals are reusable for either direction. Holdings and
+ // every execution identity remain fresh; metadata never supplies an amount.
+ const metadata=tokenMetadata?.(token);let holdingCheckedAt;
+ const [[d],[balance]]=await measure('tradeBalance',()=>Promise.all([metadata?[metadata.decimals]:knownGang?gangClient(rpc).meta(token).then(m=>[m.decimals]):read(rpc,token,ERC20,'decimals'),read(rpc,token,ERC20,'balanceOf',[w]).then(r=>{holdingCheckedAt=Date.now();return r;})]));
  const decimals=Number(d);if(decimals>36)throw Error('代币精度不支持');
  const amount=intent.side==='sell'?sellAmount(balance,intent.percent):null;
  const aggregateInput=intent.side==='sell'?token:intent.currency==='USDT'?USDT:intent.currency==='WBNB'?WBNB:BNB;
@@ -90,7 +90,7 @@ export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=
   const policy=intent.slippageMode==='auto'?(speculative||quoteOnly().then(value=>({value}),error=>({error}))).then(result=>directSlippage(intent,result)):Promise.resolve(quotedSlippage(intent,{}));
   // All work here is read-only speculation. A registered curve still wins;
   // a rejected speculative plan never escapes as an unhandled rejection.
-  const seed={kind:'swap',wallet:w,token,inputToken:aggregateInput,outputToken:aggregateOutput,amountIn:String(aggregateAmount),holdingBefore:String(balance),slippage:{mode:'fixed',bps:intent.slippageBps,capBps:intent.slippageBps}};
+  const seed={kind:'swap',wallet:w,token,inputToken:aggregateInput,outputToken:aggregateOutput,amountIn:String(aggregateAmount),holdingBefore:String(balance),holdingCheckedAt,slippage:{mode:'fixed',bps:intent.slippageBps,capBps:intent.slippageBps}};
   return Promise.all([directSellPlan(seed,policy),policy]).then(([plan])=>({plan}),error=>({error}));
  };
  const speculativeDirect=directEnabled&&canSpeculate?startDirect():null;
