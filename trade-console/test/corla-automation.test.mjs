@@ -202,6 +202,22 @@ test('sale route warming overlaps claim, never waits for a slow pool or hands of
  const j=h.m.enroll(h.parent);h.open();await h.m.tick(j.id);assert.equal(j.status,'CLAIMING');assert.equal(scans,1);assert.equal(tokenReads,1);assert.equal(h.calls().handoffs,0);
  h.advance(4000);await h.m.tick(j.id);assert.equal(scans,1);release();h.confirm(j);await h.m.tick(j.id);assert.equal(h.calls().handoffs,1);
 });
+test('sale topology and fee audit warm before opening, shared across wallets and isolated by token/currency',async t=>{
+ const h=harness(t);let scans=0,tokens=0,audits=0;const options=[];
+ h.engine.openingPreparation={venue:async()=>{},token:async()=>{tokens++;}};h.engine.sellAudit=async()=>{audits++;};h.opening.detector={scan:async(t,o)=>{scans++;options.push(o);}};
+ const j=h.m.enroll(h.parent);await h.m.tick(j.id);await new Promise(r=>setImmediate(r));
+ assert.equal(j.status,'WATCHING');assert.equal(h.calls().execs,0);assert.equal(h.calls().prepares,0);assert.equal(scans,1);assert.equal(audits,1);
+ h.m.warmSale({...j,id:'other-wallet',account:2});await new Promise(r=>setImmediate(r));assert.equal(scans,1);assert.equal(tokens,1);
+ h.m.warmSale({...j,policy:{...j.policy,sell:{...j.policy.sell,currency:'USDT'}}});await new Promise(r=>setImmediate(r));assert.equal(scans,2);
+ h.m.warmSale(j,addr(4));await new Promise(r=>setImmediate(r));assert.equal(scans,3);assert.ok(options.every(o=>o.watch&&o.reuseMs===250));
+ h.m.pause(j.id);h.advance(4000);h.m.warmSale(j);assert.equal(scans,3);assert.equal(h.calls().handoffs,0);
+});
+test('automatic claim opts into immediate guards but still waits for verified credit before selling',async t=>{
+ const h=harness(t),base=h.engine.prepare;let context;
+ h.engine.prepare=async(i,id,c)=>{context=c;return base(i,id);};const j=h.m.enroll(h.parent);h.open();await h.m.tick(j.id);
+ assert.equal(context.instantExecution,true);assert.equal(h.calls().handoffs,0);assert.equal(j.status,'CLAIMING');
+ h.confirm(j);await h.m.tick(j.id);assert.equal(h.calls().handoffs,1);
+});
 test('explicit resume continues paused linked sale with the original ID and pending order',async t=>{
  const h=harness(t),bound=bindings()[0];let now=Date.now(),executions=0;
  const options={engine:{live:true,get:()=>({status:'PENDING'}),execute:()=>{executions++;assert.fail('resume cannot sign');}},rpc:{},bridge:{},detector:{},data:h.options.data,autoSchedule:false,now:()=>now};

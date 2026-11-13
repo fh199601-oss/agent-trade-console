@@ -65,9 +65,9 @@ test('proven sale revert schedules one alternate, keeps original evidence and ne
  for(let i=0;i<5;i++)await h.m.tick(h.j.id);assert.equal(h.execs(),2);
 });
 test('recovery quote/read failures retry preflight only and do not spend another submission until ready',async t=>{
- const h=harness(t);await h.m.tick(h.j.id);let blocked=true;const prepare=h.engine.prepare;
- h.engine.prepare=async(...args)=>blocked?{status:'BLOCKED',steps:[],error:{code:'RPC_UNAVAILABLE'}}:prepare(...args);
- for(let i=0;i<3;i++){await h.m.tick(h.j.id);h.advance(501);}assert.equal(h.execs(),1);assert.equal(h.j.rows[0].status,'WAITING');
+ const h=harness(t);await h.m.tick(h.j.id);let blocked=true,code='RPC_UNAVAILABLE';const prepare=h.engine.prepare;
+ h.engine.prepare=async(...args)=>blocked?{status:'BLOCKED',steps:[],error:{code}}:prepare(...args);
+ for(const failure of ['RPC_UNAVAILABLE','RPC_READ_FAILED','RPC_READ_TIMEOUT']){code=failure;await h.m.tick(h.j.id);h.advance(501);}assert.equal(h.execs(),1);assert.equal(h.j.rows[0].status,'WAITING');
  blocked=false;await h.m.tick(h.j.id);assert.equal(h.execs(),2);assert.equal(h.j.rows[0].recoveryAttempts,1);
  const b=harness(t);await b.m.tick(b.j.id);b.engine.prepare=async()=>({status:'BLOCKED',steps:[],error:{code:'OPENING_QUOTE_UNAVAILABLE'}});for(let i=0;i<12;i++){await b.m.tick(b.j.id);b.advance(501);}assert.equal(b.execs(),1);assert.equal(b.j.rows[0].status,'BLOCKED');assert.equal(b.j.rows[0].recoveryPreviews,10);
 });

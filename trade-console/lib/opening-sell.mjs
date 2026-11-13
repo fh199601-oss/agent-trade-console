@@ -124,7 +124,11 @@ export class OpeningSell{
   const job={id,...(late?{lateRequestHash:late.requestHash,name:late.name,sourceMint:late.parent}:{}),config:c.config,bindings:c.rows.map(({account,address})=>({account,address})),recoveryVersion:1,status:'ARMED',mode:c.mode,createdAt:this.now(),expiresAt:this.now()+86400000,
    preflight:c.preflight,authorization:'用户在本地看板点击启动开盘卖出：'+JSON.stringify(c.config)+'；检测到支持的外盘流动性后按实时持仓卖出一次，必要时仅授权本次数量。',
    rows:c.rows.map(r=>({account:r.account,status:'WAITING',attempts:0})),message:c.snapshot.open?'已检测到流动性，正在检查可卖出路线':c.snapshot.routeIssue||'等待链上加池开盘'};
-  this.jobs.set(id,job);try{this.persist();}catch(e){this.jobs.delete(id);throw e;}this.schedule(job,0);this.scheduleFollow(job);return job;
+  this.jobs.set(id,job);try{this.persist();}catch(e){this.jobs.delete(id);throw e;}
+  // Use the just-checked state immediately rather than waiting five seconds
+  // for maintenance. This only creates read-only approval previews.
+  if(!c.snapshot.open&&c.preflight)void this.engine.warmOpeningApprovals?.(job.config,c.preflight,c.snapshot,()=>!this.closed&&job.status==='ARMED'&&!job.cancelRequested&&!(job.revision||0)).catch(()=>{});
+  this.schedule(job,0);this.scheduleFollow(job);return job;
  }
  schedule(job,ms=this.pollMs){if(!this.autoSchedule||this.closed||!ACTIVE.has(job.status)||this.timers.has(job.id))return;
   const t=setTimeout(()=>{this.timers.delete(job.id);const start=this.now();this.tick(job.id).catch(e=>{job.message=e.message;this.persist();}).finally(()=>this.schedule(job,Math.max(25,this.pollMs-(this.now()-start))));},ms);t.unref?.();this.timers.set(job.id,t);
@@ -188,7 +192,7 @@ export class OpeningSell{
    if(this.now()>j.expiresAt)for(const r of j.rows)if(WATCHING.has(r.status))r.status='EXPIRED';
    const waiting=j.rows.filter(r=>WATCHING.has(r.status));
    if(waiting.length){
-    let s;try{s=await this.detector.scan(j.config.asset,{currency:j.config.currency,watch:true});}catch(e){j.message=e.message;j.lastScanAt=this.now();return j;}
+    let s;try{s=await this.detector.scan(j.config.asset,{currency:j.config.currency,watch:true,reuseMs:250});}catch(e){j.message=e.message;j.lastScanAt=this.now();return j;}
     if(j.cancelRequested||this.closed||!ACTIVE.has(j.status))return j;
     if(this.now()>j.expiresAt){j.status='EXPIRED';j.message='监测已到期';this.persist();return j;}
     j.lastScanAt=this.now();j.lastBlock=s.block;j.scanMs=this.now()-started;j.partial=s.partial;
@@ -207,9 +211,9 @@ export class OpeningSell{
   r.attempts++;if(r.recovery)r.recoveryPreviews=(r.recoveryPreviews||0)+1;r.status='PREPARING';r.orderId='opening-'+j.id+'-a'+r.account+'-p'+r.attempts;this.persist();
   try{
    const intent={account:r.account,side:'sell',asset:config.asset,percent:config.percent,slippageBps:config.slippageBps,slippageMode:'fixed',currency:config.currency,openingOnly:true,...(config.gasLimit===undefined?{}:{gasLimit:config.gasLimit})};
-   const warmed=j.preflight?.rows?.find(p=>p.account===r.account);
+   const warmed=j.preflight?.rows?.find(p=>p.account===r.account&&!p.unavailable);
    const openingHoldingHint=warmed?{at:j.preflight.at,token:config.asset,wallet:warmed.address,balance:warmed.balance,fingerprint:j.preflight.fingerprint}:undefined;
-   let o=await this.engine.prepare(intent,r.orderId,{openingSnapshot:snapshot,openingHoldingHint,...(r.recovery?{openingRecovery:r.recovery}:{})});
+   let o=await this.engine.prepare(intent,r.orderId,{instantExecution:this.engine.live,openingSnapshot:snapshot,openingHoldingHint,...(r.recovery?{openingRecovery:r.recovery}:{})});
    if(j.cancelRequested||this.closed||!ACTIVE.has(j.status)||this.now()>j.expiresAt){r.status=j.status==='PAUSED'?'PAUSED':'CANCELLED';return;}
    if((j.revision||0)!==revision&&editableSaleRow(r)){r.status='WAITING';r.retryAt=this.now();r.error={message:'设置已修改，按新比例重新准备'};return;}
    // Unknown fees are a route-policy rejection, not a transient opening state.
@@ -217,7 +221,7 @@ export class OpeningSell{
    if(o.error?.code==='SELL_FEES_UNVERIFIABLE'){this.result(r,o);return;}
    if(o.status==='BLOCKED'&&!o.steps?.length){
     const lowGas=j.config.gasLimit!==undefined&&String(o.error?.code)==='351805'&&/out of gas|gas limit/i.test(o.error?.providerMessage||o.error?.message||'');
-    const transientRecovery=r.recovery&&['RPC_UNAVAILABLE','ORIGINAL_READ_UNAVAILABLE','WALLET_BUSY','OFFICIAL_SIMULATION_FAILED','OPENING_QUOTE_UNAVAILABLE'].includes(o.error?.code);
+    const transientRecovery=r.recovery&&['RPC_UNAVAILABLE','RPC_READ_FAILED','RPC_READ_TIMEOUT','ORIGINAL_READ_UNAVAILABLE','WALLET_BUSY','OFFICIAL_SIMULATION_FAILED','OPENING_QUOTE_UNAVAILABLE'].includes(o.error?.code);
     r.status=lowGas||r.recovery&&!transientRecovery?'BLOCKED':'WAITING';r.retryAt=this.now()+500;r.error=lowGas?{...o.error,message:'本次设置的卖出 Gas 上限 '+j.config.gasLimit+' 不足，已停止；请调整上限后新建任务。'}:o.error;return;
    }
    if(o.status!=='PREPARED'||o.review?.length){this.result(r,o);return;}

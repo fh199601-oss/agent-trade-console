@@ -71,6 +71,20 @@ export class RpcEndpoints{
   if(!state.verifying)state.verifying=(async()=>{const r=await this.request(url,[{jsonrpc:'2.0',id:2000000056,method:'eth_chainId',params:[]}]),v=(Array.isArray(r)?r:[r])[0];if(v.error||!/^0x[\da-f]+$/i.test(v.result||''))throw Error('RPC chain probe unavailable');if(BigInt(v.result)!==56n)throw Error('RPC_CHAIN_MISMATCH');state.verifiedAt=this.now();})().finally(()=>{state.verifying=null;});
   return withSignal(state.verifying,signal);
  }
+ async warm(){
+  // Resolve and verify backup connections before an order needs them. No
+  // account data, quotes, signing or broadcast; at most one chain probe per
+  // endpoint per refresh. Share only verification, not a caller's cancellation.
+  const now=this.now(),urls=[...new Set([this.custom,this.primary,...this.publicUrls].filter(Boolean))];
+  return Promise.allSettled(urls.filter(url=>{const s=this.state(url);return s.until<=now&&(s.warmAfter||0)<=now&&(!s.verifiedAt||now-s.verifiedAt>=240000);}).map(async url=>{
+   const s=this.state(url);s.warmAfter=now+30000;
+   try{await this.verify(url);}catch(error){
+    if(error.message==='RPC_CHAIN_MISMATCH'){s.failure='chain';s.until=this.now()+300000;}
+    // Ordinary probe failures do not invalidate another completed read or
+    // rewrite RPC settings. Foreground still tries the configured failover.
+   }
+  }));
+ }
  async configure(value){
   if(this.saving)throw Error('正在保存 RPC，请稍候');this.saving=true;
   try{
@@ -90,10 +104,15 @@ export class RpcEndpoints{
    const task=(async()=>{
     try{
      await this.verify(url,signal);signal.throwIfAborted();
-     const result=await this.request(url,Array.isArray(q)?pending:pending[0],signal);
+     // verify() has already established this endpoint's chain. Re-querying it
+     // for each isolated scanner added a whole network round trip (and could
+     // fail after successful verification). Reuse that same bounded proof.
+     const chainRows=pending.filter(x=>x.method==='eth_chainId').map(x=>({jsonrpc:'2.0',id:x.id,result:'0x38'}));
+     const remote=pending.filter(x=>x.method!=='eth_chainId');
+     const result=remote.length?await this.request(url,Array.isArray(q)?remote:remote[0],signal):[];
      signal.throwIfAborted();
      this.state(url).until=0;this.state(url).failure=null;
-     return {url,rows:Array.isArray(result)?result:[result]};
+     return {url,rows:[...chainRows,...(Array.isArray(result)?result:[result])]};
     }catch(e){
      // Loser cancellation and caller deadlines say nothing about RPC health.
      if(!signal.aborted){const state=this.state(url);state.failure=e.message==='RPC_CHAIN_MISMATCH'?'chain':'transport';state.until=this.now()+(state.failure==='chain'?300000:3000);}

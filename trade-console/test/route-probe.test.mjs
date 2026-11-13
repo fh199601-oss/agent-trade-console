@@ -4,6 +4,7 @@ import {GANG_ENTRY,GANG_ABI} from '../lib/gang-modern.mjs';
 import * as flap from '../support/curve-trader/adapters/flap.mjs';import * as gang from '../support/curve-trader/adapters/gang.mjs';
 import {ZeroAddress,Interface} from 'ethers';
 import {ERC20,bindings} from '../lib/common.mjs';
+import {MULTICALL,MULTI} from '../lib/opening-read.mjs';
 import {Engine} from '../lib/engine.mjs';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 const token='0x'+'a'.repeat(40),wallet='0x'+'b'.repeat(40);
 const zero=p=>p.baseType==='tuple'?p.components.map(zero):p.type==='address'?ZeroAddress:p.type==='bool'?false:p.type==='bytes32'?'0x'+'0'.repeat(64):0n;
@@ -30,6 +31,25 @@ test('only exact official TokenNotFound for the queried token proves absence',as
   const rpc=mock(),call=rpc.call;rpc.call=tx=>tx.to===flap.portal?Promise.reject(Object.assign(Error('execution reverted'),{data,code:3})):call(tx);
   assert.equal((await probeRegistrations(rpc,token)).flap,expected);
  }
+});
+function batched(inner){let batches=0;return {multicallReads:true,getBlockNumber:async()=>123,batches:()=>batches,call:async tx=>{
+ assert.equal(tx.to,MULTICALL);batches++;const f=MULTI.parseTransaction(tx);
+ const rows=await Promise.all(f.args[1].map(async c=>{try{return [true,await inner.call({to:c.target,data:c.callData})];}catch(e){return [false,e.data||'0x'];}}));
+ return MULTI.encodeFunctionResult(f.name,[123,'0x'+'0'.repeat(64),rows]);
+}};}
+test('four simultaneous wallets share one pinned registry read; next plan checks registration again',async()=>{
+ const rpc=batched(mock()),all=await Promise.all(Array.from({length:4},()=>probeRegistrations(rpc,token)));
+ assert.equal(rpc.batches(),1);assert.ok(all.every(r=>r.flap===false&&r.gang===false));
+ await probeRegistrations(rpc,token);assert.equal(rpc.batches(),2);
+});
+test('batched registration preserves exact not-found proof, unknown reverts and canonical result checks',async()=>{
+ const errors=new Interface(['error TokenNotFound(address)']);
+ for(const [raw,expected]of [[errors.encodeErrorResult('TokenNotFound',[token]),false],[errors.encodeErrorResult('TokenNotFound',[wallet]),null],['0x',null]]){
+  const inner=mock(),call=inner.call;inner.call=tx=>tx.to===flap.portal?Promise.reject(Object.assign(Error('reverted'),{data:raw})):call(tx);
+  assert.equal((await probeRegistrations(batched(inner),token)).flap,expected);
+ }
+ assert.deepEqual(await probeRegistrations(batched(mock({malformed:true})),token),{flap:null,gang:null});
+ assert.deepEqual(await probeRegistrations(batched(mock({flapStatus:2,gangCreator:wallet})),token),{flap:true,gang:true});
 });
 test('warm sell overlaps readonly quote with FRESH registration reads and recomputes remaining percentage',async()=>{
  const rpc=mock(),registryCall=rpc.call;let held=1000n,delay=false,release,quoteStarted=false,reads=0;const amounts=[];

@@ -22,4 +22,5 @@ export class OrderIndex {
  }
  list(limit=Infinity,project=x=>x){this.sync();return [...this.rows.values()].map(x=>x.row).sort((a,b)=>b.createdAt-a.createdAt).slice(0,limit).map(x=>structuredClone(project(x)));}
  find(predicate){this.sync();for(const {row} of this.rows.values())if(predicate(row))return structuredClone(row);return undefined;}
+ filter(predicate){this.sync();return [...this.rows.values()].map(x=>x.row).filter(predicate).map(row=>structuredClone(row));}
 }

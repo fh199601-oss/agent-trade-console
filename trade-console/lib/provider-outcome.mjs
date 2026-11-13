@@ -1,10 +1,12 @@
+import {highRiskBlockText,highRiskBlockMessage} from '../public/error-message.mjs';
 // A CLI command being dispatched is not proof that the provider accepted it.
 // Keep the allowlist deliberately exact; generic codes/timeouts remain unknown.
 const appRiskText='This token has been flagged as potentially risky. Please open the Binance app to review the risk warning and decide whether to proceed.';
 const invalidParametersText='The transaction failed due to invalid parameters. Please review the parameters then submit again.';
 const insufficientBnbText='The transaction failed because your BNB balance is insufficient to cover this trade. Please top up your BNB balance and retry.';
-const swapRefusals=new Map([[appRiskText,'APP_RISK_REVIEW'],[invalidParametersText,'INVALID_PARAMETERS'],[insufficientBnbText,'INSUFFICIENT_BNB']]);
+const swapRefusals=new Map([[appRiskText,'APP_RISK_REVIEW'],[invalidParametersText,'INVALID_PARAMETERS'],[insufficientBnbText,'INSUFFICIENT_BNB'],[highRiskBlockText,'HIGH_RISK_BLOCKED']]);
 export function providerRefusalMessage(evidence){
+ if(evidence?.kind==='HIGH_RISK_BLOCKED')return highRiskBlockMessage;
  if(evidence?.kind==='APP_RISK_REVIEW')return '币安未接受本次交易：请先在 App 查看该代币风险提示。可重新点击发起新操作，不会自动重发。';
  if(evidence?.kind==='INVALID_PARAMETERS')return '官方明确返回交易参数错误，本次未成功；可重新预览发起新操作，不会自动重发原单。';
  if(evidence?.kind==='INSUFFICIENT_BNB')return 'BNB 余额不足，币安已拒绝本次交易。钱包已解除本笔占用；请检查交易金额和 Gas 余额后重新点击。';

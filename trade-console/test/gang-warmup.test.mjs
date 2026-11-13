@@ -1,6 +1,18 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {GangWarmup} from '../lib/gang-warmup.mjs';import {TradeConversions} from '../lib/trade-conversion.mjs';import {BNB,WBNB,USDT,ERC20,bindings,same} from '../lib/common.mjs';import {DEXES,V2_ROUTER_ABI} from '../lib/opening-dex.mjs';import {MULTI,MULTICALL} from '../lib/opening-read.mjs';import {POOL} from '../lib/opening-pools.mjs';
 const token='0x'+'c1'.repeat(20),quote='0x'+'c2'.repeat(20),pair='0x'+'c3'.repeat(20),owner=bindings()[0].address;
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
+import {shareTradeMetadata} from '../lib/gang-warmup.mjs';
+import {gangClient} from '../lib/gang-modern.mjs';
+import {conversions} from '../lib/trade-conversion.mjs';
+test('foreground consumes completed background metadata without joining its RPC queue or live probes',()=>{
+ const foreground={},background={};shareTradeMetadata(foreground,background);
+ const a=gangClient(foreground),b=gangClient(background),ca=conversions(foreground),cb=conversions(background);
+ b.metadata.set(token,{value:{decimals:18},until:Date.now()+10000});b.known.add(token);b.identities.set(token,{value:[]});
+ assert.equal(a.metadata.get(token).value.decimals,18);assert.ok(a.known.has(token));assert.ok(a.identities.has(token));
+ assert.notEqual(a.pending,b.pending);assert.notEqual(a.warmAfter,b.warmAfter);
+ assert.equal(ca.topologies,cb.topologies);assert.equal(ca.prep.entries,cb.prep.entries);assert.notEqual(ca.preparing,cb.preparing);
+ b.pending.set('probe:'+token,new Promise(()=>{}));assert.equal(a.pending.size,0);
+});
 test('Gang preload is bounded, no wallet calls, paused by foreground and reusable after failures',async()=>{let now=1,busy=false,probes=0;const gate=deferred(),calls=[];const client={probe:async()=>{probes++;await gate.promise;return {quoteToken:quote,pad:token};},meta:async t=>calls.push(['meta',t]),identity:async()=>calls.push(['identity'])};const converter={warm:async(a,b)=>calls.push(['route',a,b])};const w=new GangWarmup({client,converter,busy:()=>busy,now:()=>now});const p=w.request(token);assert.equal(w.request(quote),null);busy=true;gate.resolve();await p;assert.equal(calls.length,0);busy=false;now+=15001;await w.request(token);assert.deepEqual(calls.filter(x=>x[0]==='route'),[['route',BNB,quote],['route',USDT,quote]]);assert.equal(probes,2);w.close();assert.equal(w.request(quote),null);});
 test('conversion topology avoids factory rescans; reserves, quote and allowance remain fresh; TTL expires',async()=>{
  const dex=DEXES.find(d=>d.kind==='v2');let now=1,scans=0,quotes=0,allowances=0,reserve=2000000000000000000000000n,allowance=0n;

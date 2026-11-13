@@ -2,6 +2,7 @@ import test from 'node:test';import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import {createTradeWarmup,createSellPreparationWarmup} from '../public/trade-warmup.mjs';
 import {ManualSellPreparation} from '../lib/manual-sell-preparation.mjs';
+import {TradePreparation} from '../lib/trade-preparation.mjs';
 import {OpeningPreparation} from '../lib/opening-preparation.mjs';
 import {createServer} from '../server.mjs';import {ERC20,bindings} from '../lib/common.mjs';
 const token='0x'+'23'.repeat(20),other='0x'+'45'.repeat(20),wait=ms=>new Promise(r=>setTimeout(r,ms));
@@ -24,7 +25,7 @@ test('cached output metadata expires and never includes a wallet holding',async(
 });
 test('warm HTTP entry is authenticated, read-only and bounded while trading is busy',async t=>{
  const data=fs.mkdtempSync(path.join(os.tmpdir(),'trade-warm-test-'));let writes=0;
- const warmer=new ManualSellPreparation({plan:()=>assert.fail('busy prefetch must not start'),preview:()=>assert.fail('busy prefetch must not start')});
+ const warmer=new TradePreparation({plan:()=>assert.fail('busy prefetch must not start'),preview:()=>assert.fail('busy prefetch must not start')});
  const app=createServer({data,rpc:{},bridge:{call:()=>writes++},engine:{list:()=>[],running:new Set(['busy']),run:()=>writes++,manualSellPreparation:warmer}});
  await new Promise(r=>app.server.listen(0,'127.0.0.1',r));t.after(async()=>{await new Promise(r=>{app.server.close(r);app.server.closeAllConnections();});fs.rmSync(data,{recursive:true,force:true});});
  const base='http://127.0.0.1:'+app.server.address().port,post=(payload,auth=true)=>fetch(base+'/api/trade-warm',{method:'POST',headers:{'content-type':'application/json',...(auth?{'x-console-token':app.token}:{})},body:JSON.stringify(payload)});
@@ -42,6 +43,11 @@ test('warm HTTP entry is authenticated, read-only and bounded while trading is b
  assert.equal((await sell({intents:[i]},false)).status,401);
  for(const b of [{intents:[i],execute:true},{intents:[i,{...i,execute:true}]},{intents:Array(9).fill(i)},{intents:[{...i,side:'buy'}]}])assert.equal((await sell(b)).status,400);
  assert.deepEqual(await (await sell({intents:[i]})).json(),{scheduled:0});assert.equal(writes,0);
+ const buy={side:'buy',account:bindings()[0].account,asset:token,amount:'0.02',currency:'BNB',slippageBps:100};
+ const prepare=(payload,auth=true)=>fetch(base+'/api/trade-prepare-warm',{method:'POST',headers:{'content-type':'application/json',...(auth?{'x-console-token':app.token}:{})},body:JSON.stringify(payload)});
+ assert.equal((await prepare({intents:[buy]},false)).status,401);
+ for(const b of [{intents:[buy],execute:true},{intents:[{...buy,go:true}]},{intents:Array(9).fill(buy)}])assert.equal((await prepare(b)).status,400);
+ assert.deepEqual(await (await prepare({intents:[buy,i]})).json(),{scheduled:0});assert.equal(writes,0);
 });
 test('sell prefetch debounces current wallet/settings, throttles, yields on click/hide and cannot place an order',async()=>{
  const calls=[];let now=0,allowed=true,rows=[{percent:'100'}];const warm=createSellPreparationWarmup({api:async(...args)=>{calls.push(args);throw Error('optional offline');},intents:()=>rows,allowed:()=>allowed,now:()=>now,delayMs:1});

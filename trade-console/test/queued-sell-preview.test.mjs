@@ -32,15 +32,17 @@ test('large movement, higher current minimum, unknown/high/increased fees, or ch
 
 const tick=()=>new Promise(r=>setImmediate(r));
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
-async function queuedFixture(t,{failedWarm=false,changedHolding=false,unknown=false,stalledWarm=false,callFailed=false,fastReturn=false,callDelayed=false,callStalled=false,cancelSecond=false}={}){
+async function queuedFixture(t,{failedWarm=false,changedHolding=false,unknown=false,stalledWarm=false,callFailed=false,fastReturn=false,callDelayed=false,callStalled=false,cancelSecond=false,reserveUnits=1000,slippageBps=2000,projection=true,externalDrop=false,latency=0}={}){
  const data=fs.mkdtempSync(path.join(os.tmpdir(),'queued-sell-'));t.after(()=>fs.rmSync(data,{recursive:true,force:true}));
  const wallets=bindings().slice(0,4),unit=10n**18n,amount=5n*unit;
- let ri=1000n*unit,ro=1000n*unit,seq=0,confirmed=0;const ids=new Map(),seen=[],first=deferred(),release=deferred();
+ let ri=BigInt(reserveUnits)*unit,ro=1000n*unit,seq=0,confirmed=0;const ids=new Map(),seen=[],first=deferred(),release=deferred();
+ const wait=()=>latency?new Promise(r=>setTimeout(r,latency)):Promise.resolve();
  const output=(x=amount)=>x*9975n*ro/(ri*10000n+x*9975n);
  const state=()=>({...d,pool:pair,token,token0:token,token1:WBNB,quote:WBNB,reserve0:String(ri),reserve1:String(ro),block:100});
- const plan=intent=>{const wallet=wallets.find(w=>w.account===intent.account),pool=state(),quote=output(),min=quote*80n/100n;
-  return {kind:'contract',route:d.id+'-opening',account:wallet.account,wallet:wallet.address,token,inputToken:token,outputToken:WBNB,amountIn:String(amount),holdingBefore:String(amount),decimals:18,outputDecimals:18,minOutput:String(min),quote:{toCoinAmount:formatUnits(quote,18)},opening:pool,state:pool,poolFees:poolFeeProof(pool,[amount,quote],token,100),requireSellCredit:true,slippage:{mode:'fixed',bps:2000,capBps:2000},review:[],steps:[{kind:'sell',to:d.router,value:'0',data:V2_ROUTER_ABI.encodeFunctionData('swapExactTokensForTokensSupportingFeeOnTransferTokens',[amount,min,[token,WBNB],wallet.address,Math.floor(Date.now()/1000)+120])}]};};
+ const plan=intent=>{const wallet=wallets.find(w=>w.account===intent.account),pool=state(),quote=output(),min=quote*BigInt(10000-slippageBps)/10000n;
+  return {kind:'contract',route:d.id+'-opening',account:wallet.account,wallet:wallet.address,token,inputToken:token,outputToken:WBNB,amountIn:String(amount),holdingBefore:String(amount),decimals:18,outputDecimals:18,minOutput:String(min),quote:{toCoinAmount:formatUnits(quote,18)},opening:pool,state:pool,poolFees:poolFeeProof(pool,[amount,quote],token,100),requireSellCredit:true,slippage:{mode:'fixed',bps:slippageBps,capBps:slippageBps},review:[],steps:[{kind:'sell',to:d.router,value:'0',data:V2_ROUTER_ABI.encodeFunctionData('swapExactTokensForTokensSupportingFeeOnTransferTokens',[amount,min,[token,WBNB],wallet.address,Math.floor(Date.now()/1000)+120])}]};};
  const rpc={getBlockNumber:async()=>100,call:async tx=>{
+  await wait();
   if(same(tx.to,d.router)&&V2_ROUTER_ABI.parseTransaction(tx).name.startsWith('swap')){if(callStalled)return new Promise(()=>{});if(callDelayed)await new Promise(r=>setTimeout(r,25));}
   const encode=tx=>{const abi=same(tx.to,token)?ERC20:same(tx.to,pair)?POOL:V2_ROUTER_ABI,f=abi.parseTransaction(tx);
    if(f.name.startsWith('swap')){assert.ok(wallets.some(w=>same(w.address,tx.from)));assert.equal(tx.value,'0x0');seen.push({kind:'latestCall'});if(callFailed||f.args[1]>output())throw Error('latest call reverted');return '0x';}
@@ -50,19 +52,20 @@ async function queuedFixture(t,{failedWarm=false,changedHolding=false,unknown=fa
  const bridge={ready:async()=>{},call:async(account,args,options={})=>{
   if(args[1]==='preview'){
    const transaction=V2_ROUTER_ABI.parseTransaction({data:args[args.indexOf('--inputData')+1]}),id='synthetic-'+(++seq),raw={requestId:id,simulationResult:{simulationCode:'000000000',balanceChanges:[{owner:wallets.find(w=>w.account===account).address,contractAddress:WBNB,change:String(output())}]}};
-   seen.push({kind:'preview',account,background:!!options.background,confirmed});
+   seen.push({kind:'preview',account,background:!!options.background,confirmed});await wait();
    if(failedWarm&&options.background)throw Error('optional read timeout');
    ids.set(id,{account,transaction,uses:0});return raw;
   }
   const request=ids.get(args.at(-1));assert.equal(request.account,account);assert.equal(request.uses++,0,'never reuse a request for signing');assert.ok(request.transaction.args[1]<=output(),'original minimum still achievable');
-  seen.push({kind:'execute',account});return {txHash:'0x'+String(seq+account).padStart(64,'0')};
+  seen.push({kind:'execute',account});await wait();return {txHash:'0x'+String(seq+account).padStart(64,'0')};
  }};
  const e=new Engine({rpc,bridge,data,live:true,planFn:async i=>plan(i)});
  if(stalledWarm)e.queuedSellPreview=()=>new Promise(()=>{});
- e.observeContract=async(o,entry,wait)=>{if(fastReturn&&wait===0)return;if(!confirmed){first.resolve();await release.promise;}if(unknown){entry.status=o.status='SUBMISSION_UNKNOWN';return;}const out=output();ri+=amount;ro-=out;confirmed++;entry.status='CONFIRMED';};
+ if(!projection){const prepare=e.queuedSellPreview.bind(e);e.queuedSellPreview=(...args)=>prepare(...args.slice(0,3));}
+ e.observeContract=async(o,entry,timeout)=>{if(fastReturn&&timeout===0)return;if(!confirmed){first.resolve();await release.promise;}if(unknown){entry.status=o.status='SUBMISSION_UNKNOWN';return;}await wait();const out=output();ri+=amount;ro-=out;confirmed++;if(externalDrop&&confirmed===1)ro=ro*80n/100n;entry.status='CONFIRMED';};
  // Prevent the unknown-original test from waiting for the real 8s follower.
  if(unknown)e.follow=async id=>{const o=e.get(id);o.steps.at(-1).txHash=null;return o;};
- const intents=wallets.map(w=>({side:'sell',account:w.account,asset:token,percent:'100',currency:'WBNB',slippageBps:2000}));
+ const intents=wallets.map(w=>({side:'sell',account:w.account,asset:token,percent:'100',currency:'WBNB',slippageBps}));
  for(let n=0;n<intents.length;n++)await e.prepare(intents[n],'queued-'+n);
  seen.length=0;
  let cancelled=false;const initial=[];
@@ -71,9 +74,10 @@ async function queuedFixture(t,{failedWarm=false,changedHolding=false,unknown=fa
  await first.promise;
  for(let n=0;n<100&&!seen.filter(s=>s.background).length;n++)await tick();
  for(let n=0;n<20;n++)await tick();
+ if(latency)await new Promise(r=>setTimeout(r,latency*3));
  assert.equal(seen.filter(s=>s.background&&s.confirmed===0).length,stalledWarm?0:3,'three wallets prepare while the first is settling');
- cancelled=cancelSecond;release.resolve();const results=(await running).map(o=>e.get(o.id));
- return {e,results,seen};
+ cancelled=cancelSecond;const started=Date.now();release.resolve();const results=(await running).map(o=>e.get(o.id));
+ return {e,results,seen,settlementMs:Date.now()-started};
 }
 test('four wallets pipeline previews while queued, keep same-pool settlement ordering, and execute exactly once',async t=>{
  const {e,results,seen}=await queuedFixture(t);assert.ok(results.every(o=>o.status==='CONFIRMED'),JSON.stringify(results.map(o=>o.error)));
@@ -114,4 +118,26 @@ test('stalled exact-call RPC has a bounded wait, then uses normal official simul
 test('cancelling a warmed queued wallet cannot submit it or prevent the other wallets selling',async t=>{
  const {results,seen}=await queuedFixture(t,{cancelSecond:true});assert.equal(results[1].status,'CANCELLED');
  assert.equal(seen.filter(s=>s.kind==='execute').length,3);assert.ok(results.filter((_,n)=>n!==1).every(o=>o.status==='CONFIRMED'));
+});
+test('four high-impact V2 sells with 3% slippage prepare post-predecessor previews, retaining fresh minimums',async t=>{
+ const {results,seen}=await queuedFixture(t,{reserveUnits:60,slippageBps:300});
+ assert.ok(results.every(o=>o.status==='CONFIRMED'),JSON.stringify(results.map(o=>o.error)));
+ assert.equal(results.filter(o=>o.timing.executionSteps.some(s=>s.queuedProjectionReused)).length,3);
+ assert.equal(seen.filter(s=>s.kind==='preview'&&!s.background).length,0);
+ for(const o of results){assert.equal(o.plan.slippage.bps,300);assert.equal(o.steps.length,1);}
+});
+test('unpredicted external price fall discards forecast and refreshes normally without widening slippage',async t=>{
+ const {results,seen}=await queuedFixture(t,{reserveUnits:60,slippageBps:300,externalDrop:true});
+ assert.ok(results.every(o=>o.status==='CONFIRMED'),JSON.stringify(results.map(o=>o.error)));
+ assert.equal(seen.filter(s=>s.kind==='preview'&&!s.background).length,3);
+ assert.ok(results.every(o=>!o.timing.executionSteps.some(s=>s.queuedProjectionReused)));
+ assert.ok(results.every(o=>o.plan.slippage.bps===300));assert.equal(seen.filter(s=>s.kind==='execute').length,4);
+});
+test('simulated latency comparison covers four-wallet settlement, not only preparation',async t=>{
+ const legacy=await queuedFixture(t,{reserveUnits:60,slippageBps:300,latency:50,projection:false});
+ const improved=await queuedFixture(t,{reserveUnits:60,slippageBps:300,latency:50});
+ for(const r of [legacy,improved])assert.ok(r.results.every(o=>o.status==='CONFIRMED'));
+ assert.equal(legacy.seen.filter(s=>s.kind==='preview'&&!s.background).length,3);
+ assert.equal(improved.seen.filter(s=>s.kind==='preview'&&!s.background).length,0);
+ t.diagnostic(JSON.stringify({syntheticOnly:true,fromFirstReceiptToAllSettledMs:{legacy:legacy.settlementMs,improved:improved.settlementMs}}));
 });

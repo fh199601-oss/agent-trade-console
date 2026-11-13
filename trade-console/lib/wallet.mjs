@@ -67,7 +67,7 @@ export class Wallets{
   if(rows?.length!==1||!same(rows[0].address,expected))throw invalid('钱包地址与绑定不一致');
   const s=await call(account,['wallet','settings']);const session=Date.parse(s.sessionExpireTime);
   if(!Number.isFinite(session)||session<=Date.now())throw invalid('钱包会话已过期');
-  const result={account,address:expected,status:'CONNECTED',sessionExpireTime:s.sessionExpireTime,inactiveSignOutTime:s.inactiveSignOutTime,maxSigninDuration:s.maxSigninDuration,devMode:s.devMode,checkedAt:Date.now(),validUntil:Math.min(Date.now()+60000,session)};
+  const result={account,address:expected,status:'CONNECTED',sessionExpireTime:s.sessionExpireTime,inactiveSignOutTime:s.inactiveSignOutTime,maxSigninDuration:s.maxSigninDuration,devMode:s.devMode,checkedAt:Date.now(),validUntil:Math.min(Date.now()+300000,session)};
   this.readyCache.set(account,result);return result;
  }
  async warm(account){
@@ -77,12 +77,12 @@ export class Wallets{
   const epoch=this.foregroundEpoch.get(account)||0,expected=wallet(account).address;
   const call=(a,args)=>{
    if((this.foregroundEpoch.get(account)||0)!==epoch)throw Object.assign(Error('只读预热让位于当前操作'),{code:'WARM_YIELDED'});
-   return this.call(a,args,{background:true,readOnlyTimeoutMs:1000});
+   return this.call(a,args,{background:true,readOnlyTimeoutMs:2000});
   };
   const task=(async()=>{const cached=this.readyCache.get(account);try{
    // Refresh the complete check before expiry, while foreground ready() can
    // still use the original valid cache. Keepalive never extends that cache.
-   if(cached?.validUntil>Date.now()+15000&&same(cached.address,expected)){
+   if(cached?.validUntil>Date.now()+15000&&Date.now()-cached.checkedAt<45000&&same(cached.address,expected)){
     const status=await call(account,['wallet','status']);
     if(status.status!=='CONNECTED')throw Object.assign(Error('钱包会话未连接'),{code:'WALLET_READINESS_INVALID'});
     return cached; // No TTL extension from a keepalive or transport timeout.

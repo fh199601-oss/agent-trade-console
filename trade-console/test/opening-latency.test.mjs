@@ -48,6 +48,21 @@ test('watcher consumes late verified Infinity results without renewing stale dat
  const recent=f.detector.infinityRecent.get(token.toLowerCase());recent.startedAt-=1300;
  assert.equal((await f.detector.scan(token,{watch:true})).open,false);
 });
+test('near-simultaneous wallet handoffs share one verified positive watch snapshot, never misses or stale reads',async()=>{
+ const f=fixture();const opts={watch:true,reuseMs:250};let scans=0;const inspect=f.detector.inspect.bind(f.detector);f.detector.inspect=async(...a)=>{scans++;return inspect(...a);};
+ assert.equal((await f.detector.scan(token,opts)).open,false);f.open();const opened=await f.detector.scan(token,opts);assert.equal(opened.open,true);assert.equal(scans,2,'negative snapshot cannot hide newly opened pool');
+ for(let i=0;i<3;i++)assert.equal(await f.detector.scan(token,opts),opened);assert.equal(scans,2);
+ const entry=f.detector.watchRecent.values().next().value,at=entry.startedAt;assert.equal(entry.startedAt,at);
+ entry.startedAt-=251;assert.notEqual(await f.detector.scan(token,{...opts,reuseMs:60000}),opened);assert.equal(scans,3,'caller cannot extend the 250 ms cap');
+ await f.detector.scan(token,{...opts,currency:'BNB'});assert.equal(scans,4);await f.detector.scan(token);assert.equal(scans,5,'manual fresh scans are unaffected');
+ const latest=f.detector.watchRecent.get(token.toLowerCase()+':AUTO:watch');latest.snapshot={...latest.snapshot};await f.detector.scan(token,opts);assert.equal(scans,6,'unverified snapshot cannot be reused');
+});
+test('failed watch read invalidates completed cache and a slow scan cannot renew its start age',async()=>{
+ const f=fixture();f.open();const opts={watch:true,reuseMs:250};await f.detector.scan(token,opts);
+ const inspect=f.detector.inspect.bind(f.detector);f.detector.inspect=async()=>{throw Error('RPC unavailable');};await assert.rejects(f.detector.scan(token,{watch:true}),/unavailable/);assert.equal(f.detector.watchRecent.size,0);
+ f.detector.inspect=inspect;await f.detector.scan(token,opts);const entry=f.detector.watchRecent.values().next().value;entry.startedAt=Date.now()-1000;
+ const fresh=await f.detector.scan(token,opts);assert.notEqual(fresh,entry.snapshot);assert.ok(f.detector.watchRecent.values().next().value.startedAt>entry.startedAt);
+});
 async function warmFixture({risk=false}={}){
  const f=fixture(),snapshot=await f.detector.scan(token),calls=[];let now=Date.now(),allowed=true,busy=false;
  const identity={token,fingerprint:'fixed-contract-code'},venue={assets:[{token:d.router,codeHash:'router-code'}]};
@@ -103,6 +118,16 @@ test('the real opening planner consumes the exact warmed approval after fresh ba
  assert.equal(plan.steps.length,2);assert.equal(plan.amountIn,'500');assert.ok(f.cache.take(plan,f.intent,0));
  await f.warm();f.rpc.call=async tx=>same(tx.to,token)?ERC20.encodeFunctionResult(ERC20.parseTransaction(tx).name,[ERC20.parseTransaction(tx).name==='balanceOf'?800n:0n]):same(tx.to,d.router)?V2_ROUTER_ABI.encodeFunctionResult('getAmountsOut',[[400n,790n]]):base(tx);
  const changed=await openingPlan(f.rpc,{},f.intent,{snapshot,preparation:f.prep});assert.equal(changed.amountIn,'400');assert.equal(f.cache.take(changed,f.intent,0),null);
+});
+test('opening planning reads current token state while wallet readiness runs, but rejected readiness cannot reach preview',async()=>{
+ for(const fail of [false,true]){
+  const f=await warmFixture();f.open();const snapshot=await f.detector.scan(token),gate=deferred(),base=f.rpc.call;let reads=0,previews=0;const output=50000n*9975n*2000000n/(1000000n*10000n+50000n*9975n);
+  f.rpc.call=async tx=>{if(same(tx.to,token)){reads++;const fn=ERC20.parseTransaction(tx);return ERC20.encodeFunctionResult(fn.name,[fn.name==='balanceOf'?100000n:1000000n]);}if(same(tx.to,d.router))return V2_ROUTER_ABI.encodeFunctionResult('getAmountsOut',[[50000n,output]]);return base(tx);};
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'opening-readiness-')),e=new Engine({data:dir,rpc:f.rpc,bridge:{ready:async()=>{await gate.promise;if(fail)throw Error('wallet disconnected');}},live:false});e.openingPreparation=f.prep;e.auditFn=async()=>({available:true,taxes:{sellTax:'0'}});
+  e.preview=async plan=>{previews++;const raw={requestId:'synthetic',simulationResult:{simulationCode:'000000000',balanceChanges:[{owner:plan.wallet,contractAddress:plan.outputToken,change:String(output)}]}};return {raw,review:verifyPreview(raw,plan,plan.steps[0]),at:Date.now()};};
+  try{const {accounts,...intent}=f.intent;const pending=e.prepare(intent,'readiness',{openingSnapshot:snapshot});await tick();assert.ok(reads>0,'wallet readiness must not serialize independent RPC reads');assert.equal(previews,0);gate.resolve();const o=await pending;assert.equal(o.status,fail?'BLOCKED':'PREPARED',JSON.stringify(o.error));assert.equal(previews,fail?0:1);}
+  finally{gate.resolve();fs.rmSync(dir,{recursive:true,force:true});}
+ }
 });
 test('post-approval quote is overlapped, single-use, and never reused after repricing or amount change',async()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'opening-refresh-'));let reads=0,balance=1000n;

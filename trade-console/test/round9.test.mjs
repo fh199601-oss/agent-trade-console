@@ -36,8 +36,8 @@ function racingRoutes({approvedFirst=true}={}){
  const plan=()=>openingPlan(rpc,{}, {account:bindings()[0].account,asset:token,side:'sell',percent:'50',slippageBps:5000,currency:'AUTO'}, {preparation:{token:async()=>({decimals:18,identity:{fingerprint:'fake'}}),venue:async()=>({assets:[]})},scan:async()=>({at:Date.now(),pools})});
  return {plan,release,started,dexes};
 }
-test('unresponsive quote has a bounded comparison deadline; amount and slippage remain exact',async()=>{
- const h=racingRoutes();let timer;try{const p=await Promise.race([h.plan(),new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('Healthy route waited for slow pool')),1600))]);assert.equal(p.route,h.dexes[1].id+'-opening');assert.equal(p.amountIn,'500');assert.equal(p.minOutput,'100');assert.deepEqual(p.steps.map(s=>s.kind),['sell']);assert.equal(h.started.length,2);}finally{clearTimeout(timer);h.release();}
+test('unresponsive quote has a bounded comparison deadline even with unknown fee proofs; amount and slippage remain exact',async()=>{
+ const h=racingRoutes();let timer;try{const p=await Promise.race([h.plan(),new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('Quote comparison exceeded its bound')),3200))]);assert.equal(p.route,h.dexes[1].id+'-opening');assert.equal(p.poolFees.poolFeePpm,null);assert.equal(p.amountIn,'500');assert.equal(p.minOutput,'100');assert.deepEqual(p.steps.map(s=>s.kind),['sell']);assert.equal(h.started.length,2);}finally{clearTimeout(timer);h.release();}
 });
 test('parallel fee comparison does not let quote arrival order choose the pool',async()=>{
  const h=racingRoutes({approvedFirst:false});let done=false;const task=h.plan().then(p=>{done=true;return p;});await new Promise(r=>setImmediate(r));assert.equal(done,false);assert.deepEqual(h.started,h.dexes.map(d=>d.id));h.release();const p=await task;assert.equal(p.route,h.dexes[0].id+'-opening');assert.deepEqual(p.steps.map(s=>s.kind),['sell']);

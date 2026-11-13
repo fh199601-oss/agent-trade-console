@@ -19,13 +19,13 @@ test('real buy and sell planning reads the exact requested token, never Mint met
   const rpc={verifyChain:async()=>{},call:async tx=>{
    assert.ok(!same(tx.to,BAGENT.config.mint),'never query the issuance contract as a trade target');
    if(same(tx.to,BAGENT.config.token)){seen.push(tx.to);const f=ERC20.parseTransaction(tx);assert.ok(['decimals','balanceOf'].includes(f.name));throw Error('synthetic stop before quote');}
-   // Buys now overlap public registry reads. They must query this exact token,
+   // Buys and sells overlap public registry reads. They must query this exact token,
    // and must not reinterpret its known Mint contract as the traded asset.
    const pad=gang.PADS.find(p=>same(p.address,tx.to)),abi=same(tx.to,GANG_ENTRY)?GANG_ABI:same(tx.to,flap.portal)?flap.portalAbi:pad?.kind==='soft'?gang.SOFT_ABI:pad?.id==='s'?gang.S_ABI:gang.V2_ABI;
    const f=abi.parseTransaction(tx);assert.ok(same(f.args[0],BAGENT.config.token));registered.push(tx.to);return abi.encodeFunctionResult(f.name,f.fragment.outputs.map(zero));
   }};
   const engine=new Engine({data,rpc,bridge:{ready:async()=>({}),call:()=>assert.fail('no wallet command')},auditFn:async()=>({available:true,level:0}),live:false});
   await assert.rejects(engine.plan({account:bindings()[0].account,asset:BAGENT.config.token,side,percent:'100',amount:'0.1',currency:'BNB',slippageBps:100}),/synthetic stop/);
-  await new Promise(r=>setImmediate(r));assert.equal(seen.length,2);assert.equal(registered.length,side==='buy'?7:0);
+  await new Promise(r=>setImmediate(r));assert.equal(seen.length,2);assert.equal(registered.length,7);
  }
 });

@@ -13,7 +13,7 @@ function harness(t){
 test('custom RPC is validated, saved privately, preferred and shared by every server read lane',async t=>{
  const h=harness(t);await h.endpoints.configure(secret);h.calls.length=0;assert.equal(await h.rpc.getBlockNumber(),0x123);assert.equal(h.calls[0].url,secret);
  const state=h.endpoints.status();assert.equal(state.host,'private.example');assert.equal(state.active,'custom');assert.equal(JSON.stringify(state).includes('TEST'),false);
- /* Windows access control uses inherited ACLs, not POSIX mode bits. */if(process.platform!=='win32')assert.equal(fs.statSync(path.join(h.data,'rpc-settings.json')).mode&0o777,0o600);
+ assert.equal(fs.statSync(path.join(h.data,'rpc-settings.json')).mode&0o777,0o600);
  const app=createServer({rpc:new Rpc(primary,{fetchImpl:h.fetchImpl}),data:h.data,bridge:{},engine:{}});t.after(()=>{app.corla.close();app.opening.close();});
  assert.equal(app.rpc.fetch,app.readRpc.fetch);assert.equal(app.rpc.endpoints,app.readRpc.endpoints);assert.equal(app.opening.rpc.fetch,app.rpc.fetch);
  h.calls.length=0;await app.readRpc.getBlockNumber();assert.ok(h.calls.every(c=>c.url===secret));

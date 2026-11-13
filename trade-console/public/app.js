@@ -6,7 +6,7 @@ import {createTaskCenter} from './task-center.mjs';
 import {corlaBudget,refreshMintBudget} from './corla-budget.mjs';
 import {needsRoute,statusLabel,projectLabel,reviewSummary,totalTimeLabel,compactReviewGroups,trackingLabel} from './review-model.mjs';
 import {corlaProgress,corlaSummary} from './corla-view.mjs';
-import {executeIndependent,runInstantTrades,isReady,independentOrder,tradeResultMessage,followSubmittedOrder} from './trade-workflow.mjs';
+import {executeIndependent,runInstantTrades,isReady,independentOrder,tradeResultMessage,followSubmittedOrder,mergeTradeUpdate,canRetryTrade} from './trade-workflow.mjs';
 import {normalizeAssetInput,mintTradeCA,pasteAsset,resolvedTradeAsset} from './asset-input.mjs';
 import {binanciansInput} from './binancians-input.mjs';
 import {createConsoleClient} from './session-client.mjs';
@@ -44,12 +44,12 @@ for(const [id,target] of [['asset','mintNotice'],['tradeCA','tradeNotice']]){
 }
 const client=createConsoleClient({onSession:applySession}),api=client.request;
 const warmTrade=createTradeWarmup({api,allowed:()=>!!boot?.capabilities?.tradeWarmupVersion&&!busy&&!document.hidden});
-let warmSellPercent='100',lastSellActivity=Date.now();
-const warmSell=createSellPreparationWarmup({api,allowed:()=>!!boot?.capabilities?.manualSellPreparationVersion&&!busy&&!document.hidden&&document.hasFocus()&&Date.now()-lastSellActivity<60000,intents:()=>{
- const asset=checkedTradeCA(),slip=$('sellSlippage').value;if(!/^\d+(?:\.\d{1,2})?$/.test(slip)||Number(slip)>50)return [];
- return [...selected].slice(0,4).map(account=>({account,side:'sell',asset,percent:warmSellPercent,currency:$('receive').value,slippageBps:Math.round(Number(slip)*100),slippageMode:$('sellSlippageMode').value}));
+let warmSellPercent='100',warmBuyAmount=null,warmSide='sell',lastSellActivity=Date.now();
+const warmSell=createSellPreparationWarmup({api,endpoint:'trade-prepare-warm',delayMs:100,allowed:()=>!!boot?.capabilities?.tradePreparationVersion&&!busy&&!document.hidden&&document.hasFocus()&&Date.now()-lastSellActivity<60000,intents:()=>{
+ const asset=checkedTradeCA(),buy=warmSide==='buy',slip=$(buy?'slippage':'sellSlippage').value;if(!/^\d+(?:\.\d{1,2})?$/.test(slip)||Number(slip)>50)return [];
+ return [...selected].slice(0,4).map(account=>({account,side:warmSide,asset,...(buy?{amount:warmBuyAmount||settings.buy[0]}:{percent:warmSellPercent}),currency:$(buy?'currency':'receive').value,slippageBps:Math.round(Number(slip)*100),slippageMode:buy?'fixed':$('sellSlippageMode').value}));
 }});
-$('tradeCA').addEventListener('input',()=>{lastSellActivity=Date.now();warmSellPercent='100';warmSell();});
+$('tradeCA').addEventListener('input',()=>{lastSellActivity=Date.now();warmSide='sell';warmSellPercent='100';warmSell();});
 for(const event of ['pointermove','focusin','input'])$('sellButtons').closest('section')?.addEventListener(event,()=>lastSellActivity=Date.now());
 document.addEventListener('change',()=>{lastSellActivity=Date.now();warmSell();});
 for(const id of ['tradeCA','asset'])$(id).addEventListener('input',()=>warmTrade($(id).value));
@@ -84,7 +84,7 @@ function updateTradePreferences(save=false){
 }
 function loadTradePreferences(){try{const p=JSON.parse(localStorage.getItem(preferenceKey)||'null');if(p){if(typeof p.quick==='boolean')$('quick').checked=p.quick;if(['auto','fixed'].includes(p.sellSlippageMode))$('sellSlippageMode').value=p.sellSlippageMode;for(const [key,id]of [['sellSlippage','sellSlippage'],['buySlippage','slippage'],['openingSlippage','openingSlippage']])if(/^\d+(?:\.\d{1,2})?$/.test(String(p[key]))&&Number(p[key])<=50)$(id).value=p[key];if(/^\d+(?:\.\d{1,6})?$/.test(String(p.openingPercent))&&Number(p.openingPercent)>0&&Number(p.openingPercent)<=100)$('openingPercent').value=p.openingPercent;}}catch{}updateTradePreferences();}
 for(const id of ['quick','sellSlippageMode','sellSlippage','slippage','openingPercent','openingSlippage'])$(id).addEventListener('change',()=>updateTradePreferences(true));
-function buildButtons(){for(const [side,id]of [['buy','buyButtons'],['sell','sellButtons']]){$(id).replaceChildren();settings[side].forEach(value=>{const b=el('button',side==='buy'?value:value+'%');b.append(el('small',side==='buy'?$('currency').selectedOptions[0].textContent:'当前持仓'));if(side==='sell')for(const event of ['pointerenter','focus'])b.addEventListener(event,()=>{warmSellPercent=String(value);warmSell();});b.addEventListener('click',()=>act(side,value));$(id).append(b);});}}
+function buildButtons(){for(const [side,id]of [['buy','buyButtons'],['sell','sellButtons']]){$(id).replaceChildren();settings[side].forEach(value=>{const b=el('button',side==='buy'?value:value+'%');b.append(el('small',side==='buy'?$('currency').selectedOptions[0].textContent:'当前持仓'));for(const event of ['pointerenter','focus'])b.addEventListener(event,()=>{lastSellActivity=Date.now();warmSide=side;if(side==='sell')warmSellPercent=String(value);else warmBuyAmount=String(value);warmSell();});b.addEventListener('click',()=>act(side,value));$(id).append(b);});}}
 function renderWalletSelection(){
  applyAutoBudget();
  const count=boot.wallets.filter(w=>selected.has(w.account)).length;
@@ -250,7 +250,7 @@ async function act(side,value){noticeTarget=side==='mint'?'mintNotice':'tradeNot
  const requests=accounts.map(account=>({id:id+'-account'+account,intent:{...base,account},project:context}));const quickResults=new Map();
  const results=quick?await runInstantTrades(requests,o=>api('run',{id:o.id,intent:o.intent,execute:true,fastReturn:true,acknowledgeReview:true,authorization:`用户在本地看板开启免二次确认后点击：${JSON.stringify(o.intent)}`}),{onResult:o=>{quickResults.set(o.id,o);showTradeFeedback([...quickResults.values()]);trackSubmitted([o]);completed++;note(`${o.intent.account} 号：${statusLabel(o)}；已返回 ${completed}/${accounts.length} 个钱包`);refreshOrders().catch(()=>{});}}):await Promise.all(accounts.map(async account=>{try{const o=await api('prepare',{id:id+'-account'+account,intent:{...base,account}});if(context)o.project={...context,...o.project,name:o.project?.name||context.name};return o;}catch(e){return {id:id+'-account'+account,intent:{...base,account},project:context,status:'BLOCKED',error:{message:e.message,details:e.details,code:e.code}};}finally{completed++;progress.textContent=`已返回 ${completed}/${accounts.length} 个钱包；等待其余预览…`;}}));
  reviewOrders=results;refreshOrders().catch(e=>note('记录刷新失败：'+e.message,true));
- if(quick){showTradeFeedback(results);note(tradeResultMessage(results),results.some(o=>o.needsFeeReview||['BLOCKED','FAILED','REJECTED','SUBMISSION_UNKNOWN'].includes(o.status)));void Promise.allSettled([refreshOrders(),refreshAsset(true)]);}
+ if(quick){showTradeFeedback(results);note(tradeResultMessage(feedbackRows),results.some(o=>o.needsFeeReview||['BLOCKED','FAILED','REJECTED','SUBMISSION_UNKNOWN'].includes(o.status)));void Promise.allSettled([refreshOrders(),refreshAsset(true)]);}
  else showReviews(results);
  }catch(e){note(e.message,true);if($('review').open&&$('confirm').disabled){$('reviewBody').append(el('p',e.message,'error'));$('confirm').textContent='未提交 · 请重新预览';}}finally{setBusy(false);}}
 function renderReviewDetail(o){const div=el('div',undefined,'review-item');div.append(el('h3',`${o.intent.account} 号 · ${o.intent.side==='mint'?'铸造':o.intent.side==='buy'?'买入':'卖出'}`),el('span',statusLabel(o),'review-status'));
@@ -321,19 +321,19 @@ async function executeReviews(ack,{instant=false}={}){
    const results=new Map();for(const o of pending.sort((a,b)=>a.intent.account-b.intent.account)){const r=await submit(o,ack);results.set(o.id,r);if(boot.mode==='LIVE'&&r.status!=='CONFIRMED')break;}reviewOrders=snapshot.map(o=>results.get(o.id)||o);
   }
   if(!instant&&reviewOrders.some(o=>o.needsFeeReview||o.feeReview?.blocked))showReviews(reviewOrders);
-  else{$('review').close();showTradeFeedback(independent?reviewOrders:[]);note(tradeResultMessage(reviewOrders),reviewOrders.some(o=>['BLOCKED','FAILED','REJECTED','SUBMISSION_UNKNOWN'].includes(o.status)));}
+  else{$('review').close();showTradeFeedback(independent?reviewOrders:[]);note(tradeResultMessage(independent?feedbackRows:reviewOrders),reviewOrders.some(o=>['BLOCKED','FAILED','REJECTED','SUBMISSION_UNKNOWN'].includes(o.status)));}
   void Promise.allSettled([refreshOrders(),refreshAsset(true)]);
  }catch(e){note(e.message,true);}finally{setBusy(false);$('confirm').disabled=!reviewOrders.some(isReady);}
 }
 const trackedSubmitted=new Set(),tradeUpdates=new Map();let feedbackRows=[];
-function trackSubmitted(rows){for(const o of rows){if(o.status!=='PENDING'||!o.orderId&&!o.txHash&&!o.steps?.at(-1)?.txHash||trackedSubmitted.has(o.id))continue;trackedSubmitted.add(o.id);void followSubmittedOrder(o,id=>api('follow',{id}),{onUpdate:current=>{tradeUpdates.set(current.id,current);if(tradeUpdates.size>100)tradeUpdates.delete(tradeUpdates.keys().next().value);if(feedbackRows.some(r=>r.id===current.id))showTradeFeedback(feedbackRows);void refreshOrders().catch(()=>{});if(['CONFIRMED','CONFIRMED_REVIEW'].includes(current.status)&&!busy)void refreshAsset(true).catch(()=>{});}}).finally(()=>trackedSubmitted.delete(o.id));}}
+function trackSubmitted(rows){for(const o of rows){if(o.status!=='PENDING'||!o.orderId&&!o.txHash&&!o.steps?.at(-1)?.txHash||trackedSubmitted.has(o.id))continue;trackedSubmitted.add(o.id);void followSubmittedOrder(o,id=>api('follow',{id}),{onUpdate:current=>{tradeUpdates.set(current.id,mergeTradeUpdate(tradeUpdates.get(current.id)||current,current));if(tradeUpdates.size>100)tradeUpdates.delete(tradeUpdates.keys().next().value);if(feedbackRows.some(r=>r.id===current.id))showTradeFeedback(feedbackRows);void refreshOrders().catch(()=>{});if(['CONFIRMED','CONFIRMED_REVIEW'].includes(current.status)&&!busy)void refreshAsset(true).catch(()=>{});}}).finally(()=>trackedSubmitted.delete(o.id));}}
 let ordersRefresh=null,ordersDirty=false;
 function refreshOrders(){ordersDirty=true;if(ordersRefresh)return ordersRefresh;ordersRefresh=(async()=>{do{ordersDirty=false;await renderOrders();}while(ordersDirty);})().finally(()=>{ordersRefresh=null;});return ordersRefresh;}
 async function viewOrder(id,{follow=false}={}){
  noticeTarget='appNotice';try{const o=await api(follow?'follow':'order?id='+encodeURIComponent(id),follow?{id}:undefined);reviewOrders=[o];showReviews([o]);await refreshOrders();}catch(e){note(e.message,true);}
 }
 function showTradeFeedback(rows){
- rows=rows.map(o=>tradeUpdates.get(o.id)||o);feedbackRows=rows;
+ rows=rows.map(o=>mergeTradeUpdate(o,tradeUpdates.get(o.id)));feedbackRows=rows;
  const box=$('tradeFeedback');box.replaceChildren();const reasons=[...new Set(rows.flatMap(o=>[o.error?describeError(o.error):null,...(o.needsFeeReview?o.feeReview?.reasons||[]:[])]).filter(Boolean))];
  for(const o of rows){const r=el('div',undefined,'feedback-row');r.dataset.status=o.status;const text=el('span');text.append(el('b',`${o.intent.account} 号 · ${statusLabel(o)}`));if(o.error)text.append(el('small',describeError(o.error),'error'));r.append(text);
   const id=o.error?.details?.orderId||o.id,btn=el('button',o.error?.code==='ORDER_UNRESOLVED'?'核对原单':'详情','text-button');btn.addEventListener('click',()=>viewOrder(id,{follow:o.error?.code==='ORDER_UNRESOLVED'}));r.append(btn);box.append(r);
@@ -343,15 +343,27 @@ function showTradeFeedback(rows){
 }
 async function retryOrder(id){
  if(busy)return;noticeTarget='tradeNotice';setBusy(true);
- try{const old=await api('order?id='+encodeURIComponent(id));if(!['FAILED','REJECTED','BLOCKED'].includes(old.status)||!['buy','sell'].includes(old.intent.side))throw Error('原单尚未明确结束，请先核对原单');
+ try{const old=await api('order?id='+encodeURIComponent(id));if(!canRetryTrade(old))throw Error(['FAILED','REJECTED','BLOCKED'].includes(old.status)?describeError(old.error):'原单尚未明确结束，请先核对原单');
   const intent=old.intent,newId='manual-'+crypto.randomUUID()+'-account'+intent.account,quick=boot.mode==='LIVE'&&$('quick').checked;
   const o=quick?await api('run',{id:newId,intent,execute:true,fastReturn:true,acknowledgeReview:true,authorization:'用户点击重新发起，免二次确认已开启：'+JSON.stringify(intent)}):await api('prepare',{id:newId,intent});
-  reviewOrders=[o];trackSubmitted([o]);if(quick){showTradeFeedback([o]);note(tradeResultMessage([o]),o.needsFeeReview||['BLOCKED','FAILED','REJECTED'].includes(o.status));}else showReviews([o]);
+  reviewOrders=[o];trackSubmitted([o]);if(quick){showTradeFeedback([o]);note(tradeResultMessage(feedbackRows),o.needsFeeReview||['BLOCKED','FAILED','REJECTED'].includes(o.status));}else showReviews([o]);
   await refreshOrders();
  }catch(e){note(e.message,true);}finally{setBusy(false);}
 }
 async function renderOrders(){
  const rows=await api('orders?summary=1');$('orders').replaceChildren();
+ // Server-side reconciliation also handles unknown submissions. Keep the quick
+ // feedback in sync even when no identified PENDING order was polled by the UI.
+ const previousMessage=tradeResultMessage(feedbackRows);
+ for(const row of rows){tradeUpdates.set(row.id,mergeTradeUpdate(tradeUpdates.get(row.id)||row,row));}
+ while(tradeUpdates.size>100)tradeUpdates.delete(tradeUpdates.keys().next().value);
+ if(feedbackRows.length){
+  showTradeFeedback(feedbackRows);
+  const box=$('tradeNotice');
+  // Do not overwrite a later clipboard/holdings/user-action message.
+  if(box.textContent===previousMessage){box.textContent=tradeResultMessage(feedbackRows);}
+ }
+
  const pendingRows=rows.filter(o=>['PENDING','SUBMITTING','SUBMISSION_UNKNOWN','RECEIPT_REVIEW'].includes(o.status)),continuations=rows.filter(o=>['READY_TO_CONTINUE','APPROVAL_CONFIRMED'].includes(o.status));$('recoveryBar').hidden=!pendingRows.length&&!continuations.length;$('recoveryTitle').textContent=[pendingRows.length?`${pendingRows.length} 笔原单${boot?.capabilities?.originalTrackingVersion?'由后台自动核对':'待核对'}`:'',continuations.length?`${continuations.length} 笔后续步骤待处理`:''].filter(Boolean).join(' · ');
  if(!rows.length){const empty=el('div',undefined,'empty');empty.append(el('span','⌁'),el('b','交易从这里开始'),el('p','输入项目网址或代币 CA，操作记录将在这里显示。'));$('orders').append(empty);return;}
  for(const o of rows){const row=el('div',undefined,'order'),a=el('div'),b=el('div'),c=el('div'),actions=el('div',undefined,'order-actions');row.dataset.status=o.status;
@@ -361,7 +373,7 @@ async function renderOrders(){
   c.append(el('div',totalTimeLabel(o),'order-time'));if(o.error)c.append(el('small',needsRoute(o)?'请选择铸造方式后重新预览':describeError(o.error),o.status==='SKIPPED'?'muted':'error'));const progress=trackingLabel(o);if(progress)c.append(el('small',progress));if(o.followError)c.append(el('small',describeError(o.followError),'error'));
   if(o.txHash){const link=el('a','链上回执 ↗');link.href='https://bscscan.com/tx/'+o.txHash;link.target='_blank';link.rel='noopener';c.append(link);}
   const pending=['PENDING','SUBMITTING','SUBMISSION_UNKNOWN','RECEIPT_REVIEW'].includes(o.status),btn=el('button',pending?'核对原单':needsRoute(o)?'选择方式':isReady(o)?'查看预览':'详情','text-button');btn.addEventListener('click',()=>viewOrder(o.id,{follow:pending}));actions.append(btn);
-  if(['FAILED','REJECTED','BLOCKED'].includes(o.status)&&['buy','sell'].includes(o.intent.side)){const retry=el('button','重新发起','secondary');retry.addEventListener('click',()=>retryOrder(o.id));actions.append(retry);}
+  if(canRetryTrade(o)){const retry=el('button','重新发起','secondary');retry.addEventListener('click',()=>retryOrder(o.id));actions.append(retry);}
   if(boot?.capabilities?.originalTrackingVersion&&['READY_TO_CONTINUE','APPROVAL_CONFIRMED'].includes(o.status)){const stop=el('button','结束剩余步骤','secondary');stop.addEventListener('click',async()=>{stop.disabled=true;try{await api('stop-remaining',{id:o.id});note('剩余步骤已结束，已成功的交易保留，钱包可继续操作。');await refreshOrders();}catch(e){note(e.message,true);stop.disabled=false;}});actions.append(stop);}
   row.append(a,b,c,actions);$('orders').append(row);
  }

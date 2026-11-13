@@ -8,6 +8,7 @@ import {multiHopSettlement} from './opening-multihop.mjs';
 import {poolFeeProof,compareFeeRoutes,HIGH_FEE_PPM,feePercent} from './trade-fees.mjs';
 import {openingReads} from './opening-read.mjs';
 import {POOL} from './opening-pools.mjs';
+import {checkedRead,transientRead} from './read-failure.mjs';
 export const ROUTER=V2_ROUTER_ABI;
 function saleData(d,pool,token,owner,amount,minimum,receiveNative){
  if(d.kind==='infinity-cl')return infinitySaleData(pool,token,owner,amount,minimum,receiveNative);
@@ -17,13 +18,20 @@ function saleData(d,pool,token,owner,amount,minimum,receiveNative){
  const calls=[abi.encodeFunctionData('exactInputSingle',[params]),...(receiveNative?[abi.encodeFunctionData('unwrapWETH9',[minimum,owner])]:[])];
  return d.legacy?(calls.length===1?calls[0]:abi.encodeFunctionData('multicall(bytes[])',[calls])):abi.encodeFunctionData('multicall(uint256,bytes[])',[deadline,calls]);
 }
-export async function refreshOpeningSell(rpc,plan){
+export async function refreshOpeningSell(rpc,plan,{slippagePromise}={}){
+ const policy=slippagePromise?Promise.resolve(slippagePromise).then(value=>({value}),error=>({error})):null;
+ const refreshPolicy=async()=>{
+  if(!policy)return;
+  const r=await policy;if(r.error)throw r.error;
+  if(!Number.isInteger(r.value?.bps)||r.value.bps<0||r.value.bps>plan.slippage.capBps)throw Error('最新卖出滑点超过本次上限');
+  plan={...plan,slippage:r.value};
+ };
  const pool=plan.opening,d=dexFor(pool),amount=BigInt(plan.amountIn);
  if(!d||!plan.requireSellCredit||!same(plan.steps.at(-1)?.to,d.router)||!same(wallet(plan.account).address,plan.wallet))throw Error('开盘卖出刷新缺少可信路线');
  if(d.kind==='infinity-cl'){
   const [[balance],freshPool]=await Promise.all([read(rpc,plan.token,ERC20,'balanceOf',[plan.wallet]),new InfinityPools(rpc).state(plan.token,pool.pool)]);
   if(!freshPool||String(balance)!==plan.holdingBefore)throw Error('授权期间持仓或 Infinity 池身份已变化，请重新预览');
-  const {output,fees}=await infinityQuote(rpc,freshPool,plan.token,amount);let minimum=output*BigInt(10000-plan.slippage.bps)/10000n;
+  const {output,fees}=await infinityQuote(rpc,freshPool,plan.token,amount);await refreshPolicy();let minimum=output*BigInt(10000-plan.slippage.bps)/10000n;
   if(plan.authorizationMinOutput!==undefined&&BigInt(plan.authorizationMinOutput)>minimum)minimum=BigInt(plan.authorizationMinOutput);
   if(minimum<=0n||output<minimum)throw Error('Infinity 最新报价不足原最低到账');
   const step={...plan.steps.at(-1),data:saleData(d,freshPool,plan.token,plan.wallet,amount,minimum,same(plan.outputToken,BNB))};
@@ -35,7 +43,7 @@ export async function refreshOpeningSell(rpc,plan){
  const quoted=batch.results.at(-1).value,legs=d.kind==='v2'?(pool.legs||[pool]).map((p,i)=>({...p,block:batch.block,reserve0:String(batch.results[i].value[0]),reserve1:String(batch.results[i].value[1])})):null;
  const freshPool=legs?{...pool,...legs[0],...(pool.legs?{quote:pool.quote,path:pool.path,legs}:{})}:pool;
  if(String(balance)!==plan.holdingBefore)throw Error('授权期间持仓已变化，请重新预览');
- const output=d.kind==='v2'?quoted[0].at(-1):quoted[0];let minimum=output*BigInt(10000-plan.slippage.bps)/10000n;
+ await refreshPolicy();const output=d.kind==='v2'?quoted[0].at(-1):quoted[0];let minimum=output*BigInt(10000-plan.slippage.bps)/10000n;
  if(plan.authorizationMinOutput!==undefined&&BigInt(plan.authorizationMinOutput)>minimum)minimum=BigInt(plan.authorizationMinOutput);
  if(output<minimum)throw Error('备用路线刷新报价不足原最低到账');
  if(minimum<=0n||d.kind==='v2'&&(quoted[0].length!==(pool.path?.length||2)||quoted[0][0]!==amount))throw Error('开盘卖出刷新报价无效');
@@ -53,8 +61,8 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
  // that holding read AFTER detection so pre-opening zero cannot skip a sale.
  const initialAge=Date.now()-initialHolding?.at;
  const sameOperationHolding=!intent.openingOnly&&initialAge>=0&&initialAge<=750&&same(initialHolding?.token,intent.asset)&&same(initialHolding?.wallet,w)&&/^\d{1,78}$/.test(initialHolding?.balance)&&BigInt(initialHolding.balance)<2n**256n;
- const tokenReads=Promise.all([prep.token(intent.asset),...(intent.openingOnly?[]:[sameOperationHolding?[BigInt(initialHolding.balance)]:read(rpc,intent.asset,ERC20,'balanceOf',[w])])]).then(value=>({value}),error=>({error}));
- snapshot=reused?snapshot:await scan(intent.asset,{currency:intent.currency,expand});
+ const tokenReads=checkedRead('sellTokenState','卖出代币资料或持仓读取',()=>Promise.all([prep.token(intent.asset),...(intent.openingOnly?[]:[sameOperationHolding?[BigInt(initialHolding.balance)]:read(rpc,intent.asset,ERC20,'balanceOf',[w])])])).then(value=>({value}),error=>({error}));
+ snapshot=reused?snapshot:await checkedRead('sellPoolScan','卖出池子查询',()=>scan(intent.asset,{currency:intent.currency,expand}));
  const candidates=snapshot.pools.filter(p=>p.liquid&&matchesCurrency(p,intent.currency)&&dexFor(p)&&!excludedRoutes.includes(poolRouteKey(p))&&(!outputToken||same(p.quote,same(outputToken,BNB)?WBNB:outputToken)));
  if(!candidates.length)throw Object.assign(Error(snapshot.routeIssue||(excludedRoutes.length?'本轮已核验的池子中，没有符合原到账币种的其他路线':intent.openingOnly?'等待可核验的外盘卖出池子；不会提前使用内盘卖出':'当前未找到可成交的卖出池：可能流动性尚未开放、已移除，或池型尚未支持；未提交，钱包可继续操作')),{code:intent.openingOnly?'OPENING_WAIT':'SELL_ROUTE_UNAVAILABLE'});
  const dexes=[...new Map(candidates.map(p=>{const d=dexFor(p);return [d.id,d];})).values()];
@@ -73,6 +81,11 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
  // bounded candidate waits for its own fresh allowance alongside its quote.
  // Box failures immediately, including when a zero holding ends planning.
  const allowances=new Map(dexes.map(d=>[d.id,(d.kind==='infinity-cl'?Promise.resolve([0n]):read(rpc,intent.asset,ERC20,'allowance',[w,d.router])).then(value=>({value:value[0]}),error=>({error}))]));
+ // Verify shared venue metadata while the fresh holding/allowance reads run.
+ // Its latency is not a failed price quote, and must not start a second scan.
+ const boundedRead=async(pending,ms,code,message,signal)=>{let timer,abort;try{return await Promise.race([pending,new Promise((_,reject)=>{const fail=()=>reject(Object.assign(Error(message),{code}));timer=setTimeout(fail,ms);if(signal){abort=fail;if(signal.aborted)fail();else signal.addEventListener('abort',abort,{once:true});}})]);}finally{clearTimeout(timer);if(abort)signal.removeEventListener('abort',abort);}};
+ const readBudget=Math.max(2500,Number(rpc.timeoutMs)||0),checkBudget=Math.max(6000,Number(prep.rpc?.timeoutMs)||0);
+ const venues=new Map(dexes.map(d=>[d.id,boundedRead(checkedRead('sellVenueIdentity','卖出路由身份核验',()=>prep.venue(d)),checkBudget,'SELL_ROUTE_CHECK_TIMEOUT','卖出路由身份核验超时，未提交，可重新点击').then(value=>({value}),error=>({error}))]));
  const [tokenResult,openingBalance]=await Promise.all([tokenReads,intent.openingOnly?read(rpc,intent.asset,ERC20,'balanceOf',[w]):null]);if(tokenResult.error)throw tokenResult.error;const [meta,earlyBalance]=tokenResult.value,[balance]=openingBalance||earlyBalance;
  const amount=sellAmount(balance,intent.percent);
  const failed=p=>failedPreviews.some(f=>same(f.pool,p.pool)&&f.fingerprint===meta.identity?.fingerprint&&f.amountIn===String(amount)&&f.holdingBefore===String(balance));
@@ -86,29 +99,42 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
  });
  // Try independent candidates only before any preview or submission. Keep the
  // fast first batch, but do not hide a low-fee route behind eight bad quotes.
- const quoteCandidate=async pool=>{const d=dexFor(pool);
+ const quoteCandidate=async(pool,signal)=>{const d=dexFor(pool);
   const hinted=predicted.get(pool)&&holdingHint.balance===String(balance)&&holdingHint.fingerprint===meta.identity?.fingerprint?predicted.get(pool).then(r=>{if(r.error)throw r.error;return r.value;}):null;
-  const [venue,quoted,outputMeta,approval]=await Promise.all([prep.venue(d),hinted||poolQuote(pool,amount),QUOTES.some(q=>same(q,pool.quote))?{decimals:18}:prep.quote(pool.quote),allowances.get(d.id)]);
-  if(approval.error)throw Error('无法读取当前授权额度');const allowance=approval.value;
+  const quotedRead=boundedRead(hinted||poolQuote(pool,amount),Math.max(readBudget,pool.kind==='infinity-cl'?4000:0),'SELL_QUOTE_TIMEOUT','卖出报价查询超时，未提交，可重新点击',signal);
+  const checks=boundedRead(Promise.all([venues.get(d.id),QUOTES.some(q=>same(q,pool.quote))?{decimals:18}:prep.quote(pool.quote),allowances.get(d.id)]),Math.max(3000,readBudget,Number(prep.rpc?.timeoutMs)||0),'SELL_ROUTE_CHECK_TIMEOUT','卖出路由或授权核验超时，未提交，可重新点击',signal);
+  const [quoted,[venueResult,outputMeta,approval]]=await Promise.all([quotedRead,checks]);
+  if(venueResult.error)throw venueResult.error;const venue=venueResult.value;
+  if(approval.error)throw Object.assign(Error('当前授权额度读取失败，未提交，可重新点击'),{code:'SELL_ROUTE_READ_FAILED'});const allowance=approval.value;
   const output=d.kind==='infinity-cl'?quoted.output:d.kind==='v2'?quoted[0].at(-1):quoted[0];if(output<=0n||d.kind==='v2'&&(quoted[0].length!==(pool.path?.length||2)||quoted[0][0]!==amount))throw Error('开盘卖出报价无效');
   if(minimumOutput!==undefined&&output<BigInt(minimumOutput))throw Error('备用路线报价不足原最低到账');
   return {pool,d,allowance,venue,output,failed:failed(pool),outputDecimals:outputMeta.decimals,fees:d.kind==='infinity-cl'?quoted.fees:poolFeeProof(pool,d.kind==='v2'?quoted[0]:null,intent.asset,pool.block)};
  };
  // Compare bounded parallel quotes. Fast/previously approved is not evidence
  // of cheap. A hung quote cannot indefinitely block the remaining candidates.
- const bounded=async pool=>{let timer;try{return await Promise.race([quoteCandidate(pool),new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('报价超时')),pool.kind==='infinity-cl'?4000:1200))]);}finally{clearTimeout(timer);}};
  const results=[];let usable=[];
  for(let start=0;start<Math.min(candidates.length,32);start+=8){
-  results.push(...await Promise.allSettled(candidates.slice(start,start+8).map(bounded)));
+  // Once a fully verified low-fee route is ready, give remaining quotes a
+  // comparison grace instead of waiting six seconds on one stuck venue.
+  // No grace starts on an unverified/high-fee result or just a fast quote.
+  const group=new AbortController();let grace;
+  try{results.push(...await Promise.allSettled(candidates.slice(start,start+8).map(async pool=>{
+   const result=await quoteCandidate(pool,group.signal);
+   if(!grace&&result.fees.poolFeePpm!==null&&Math.max(result.fees.poolFeePpm,result.fees.quoteLossPpm||0)<HIGH_FEE_PPM&&!result.failed)grace=setTimeout(()=>group.abort(),1200);
+   return result;
+  })));}finally{clearTimeout(grace);}
   usable=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
   if(usable.some(r=>r.fees.poolFeePpm!==null&&Math.max(r.fees.poolFeePpm,r.fees.quoteLossPpm||0)<HIGH_FEE_PPM&&!r.failed))break;
+  if(!usable.length&&results.some(r=>r.status==='rejected'&&transientRead(r.reason)))break;
  }
  if(lowFeeOnly)usable=usable.filter(r=>r.fees.poolFeePpm!==null&&Math.max(r.fees.poolFeePpm,r.fees.quoteLossPpm||0)<HIGH_FEE_PPM);
  usable.sort(compareFeeRoutes);
  const chosen=usable[0],lastError=results.find(r=>r.status==='rejected')?.reason;
  // A quote failure can be a thin/closed pool, not the absence of all pools.
  // Expand once BEFORE any authorization/submission; fixed output stays fixed.
- if(!chosen&&!expand&&!intent.openingOnly)return openingPlan(rpc,bridge,intent,{scan,preparation:prep,failedPreviews,excludedRoutes,lowFeeOnly,expand:true,outputToken,minimumOutput,slippagePromise});
+ const transient=results.some(r=>r.status==='rejected'&&transientRead(r.reason));
+ if(!chosen&&!transient&&!expand&&!intent.openingOnly)return openingPlan(rpc,bridge,intent,{scan,preparation:prep,failedPreviews,excludedRoutes,lowFeeOnly,expand:true,outputToken,minimumOutput,slippagePromise});
+ if(!chosen&&transient)throw Object.assign(Error('卖出报价或路由核验暂未完成：'+(results.find(r=>r.status==='rejected'&&transientRead(r.reason))?.reason?.message||'网络读取失败')+'；本次未提交，可重新点击'),{code:'RPC_READ_FAILED'});
  if(!chosen)throw Object.assign(Error(lowFeeOnly?'本轮未找到池费低于 '+feePercent(HIGH_FEE_PPM)+' 且满足原到账约束的可核验路线':'可用池子尚无有效卖出报价：'+(lastError?.message||'没有可用报价')),{code:intent.openingOnly?'OPENING_WAIT':'SELL_QUOTE_UNAVAILABLE'});
  const resolvedPolicy=policy?await policy:{value:{mode:'fixed',bps:intent.slippageBps,capBps:intent.slippageBps}};if(resolvedPolicy.error)throw resolvedPolicy.error;
  const slippage=resolvedPolicy.value;if(!Number.isInteger(slippage?.bps)||slippage.bps<0||slippage.bps>intent.slippageBps)throw Error('卖出滑点超出本次上限');

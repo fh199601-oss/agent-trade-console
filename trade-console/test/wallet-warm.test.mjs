@@ -10,7 +10,7 @@ test('optional approval warming never starts cold readiness or waits behind fore
 });
 test('optional warm timeout preserves the original valid cache but never extends its expiry',async()=>{
  const bridge=new Wallets(),c=cached();bridge.readyCache.set(w.account,c);
- bridge.call=async(a,args,opts)=>{assert.equal(opts.readOnlyTimeoutMs,1000);assert.equal(opts.background,true);throw Error('network timeout');};
+ bridge.call=async(a,args,opts)=>{assert.equal(opts.readOnlyTimeoutMs,2000);assert.equal(opts.background,true);throw Error('network timeout');};
  assert.equal(await bridge.warm(w.account),null);assert.equal(bridge.readyCache.get(w.account),c);assert.equal(await bridge.ready(w.account),c);
  c.validUntil=Date.now()-1;await assert.rejects(bridge.ready(w.account),/network timeout|Cannot read/);
 });

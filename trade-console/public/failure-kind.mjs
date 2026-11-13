@@ -1,6 +1,6 @@
 import {errorCategory,errorLabels} from './error-message.mjs';
 // Shared by reports and UI. Unknown reverts never imply a sold-out/ended sale.
-export const failureLabels={...errorLabels,site_proof:'需要本钱包官网凭证',deferred:'认购后另行领取',input_needed:'请明确铸造份数',proof_pending:'工作量证明尚未完成',ended:'铸造已结束',no_quota:'当前无可用额度',ineligible:'钱包资格不足',not_open:'铸造尚未开放',paused:'合约暂停',budget:'本次预算不足',route_choice:'待选择铸造方式',adapter_needed:'此类型仍需适配',network:'网络查询失败',wallet_or_simulation:'钱包或模拟检查未通过',eligibility_or_state:'合约状态不允许',validation:'检查未通过 · 查看原因'};
+export const failureLabels={...errorLabels,site_proof:'需要本钱包官网凭证',deferred:'认购后另行领取',input_needed:'请明确铸造份数',proof_pending:'工作量证明尚未完成',ended:'铸造已结束',no_quota:'当前无可用额度',ineligible:'钱包资格不足',not_open:'铸造尚未开放',paused:'合约暂停',referral:'邀请不可用',budget:'本次预算不足',route_choice:'待选择铸造方式',adapter_needed:'此类型仍需适配',network:'网络查询失败',wallet_or_simulation:'钱包或模拟检查未通过',eligibility_or_state:'合约状态不允许',validation:'检查未通过 · 查看原因'};
 export function failureKind(error){
  const code=error?.code||'',message=error?.message||'';
  const category=errorCategory(error);if(category)return category;
@@ -21,6 +21,7 @@ export function failureKind(error){
  if(code==='MINT_NOT_OPEN'||/未开放|未开始|尚未开放/.test(message))return 'not_open';
  if(/timeout|timed out|fetch failed|HTTP (?:429|5\d\d)|network|超时|网络/i.test(message))return 'network';
  if(/钱包.*(?:登录|连接|模拟)|CONNECTED|developer|session/i.test(message))return 'wallet_or_simulation';
+ if(code==='MINT_REFERRAL'||code==='REFERRAL_UNAVAILABLE')return 'referral';
  if(code==='MINT_STATE')return 'eligibility_or_state';
  if(/UNSUPPORTED|NOT_VERIFIED|NEEDS|NO_CONTRACT|ADAPTER_INCOMPLETE/.test(code)||/未.*(?:核验|识别)|未知|需要.*适配|无法.*(?:识别|核实)|签名.*参数/.test(message))return 'adapter_needed';
  return 'validation';

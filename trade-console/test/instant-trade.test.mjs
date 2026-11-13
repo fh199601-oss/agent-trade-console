@@ -20,8 +20,8 @@ function fixture(balances=[10000n,0n,10000n],aggregate=false){
  const engine=new Engine({data:temp(),rpc,bridge,live:true,planFn});engine.observeContract=async(o,e)=>{e.status='CONFIRMED';};
  return {balances,submitted,rpc,bridge,engine};
 }
-test('zero holdings skips before route probing; failed RPC is never zero',async()=>{
- const rpc={call:async tx=>{const f=ERC20.parseTransaction({data:tx.data}).name;assert.ok(['balanceOf','decimals'].includes(f));return ERC20.encodeFunctionResult(f,[f==='decimals'?18:0]);}};
+test('zero holdings skips amount-dependent quotes; speculative registry errors cannot become holdings or writes',async()=>{
+ const rpc={getCode:async()=>'0x',getBlockNumber:async()=>1,call:async tx=>{const f=ERC20.parseTransaction({data:tx.data})?.name;if(!['balanceOf','decimals'].includes(f))throw Error('unregistered');return ERC20.encodeFunctionResult(f,[f==='decimals'?18:0]);}};
  await assert.rejects(tradePlan(rpc,{call:()=>assert.fail('must not quote')},intent,token),e=>e.code==='NO_HOLDINGS');rpc.call=async()=>{throw Error('RPC down');};await assert.rejects(tradePlan(rpc,{},intent,token),/RPC down/);
  assert.throws(()=>sellAmount(1n,'50'),e=>e.code==='AMOUNT_TOO_SMALL');assert.equal(sellAmount(1n,'100'),1n);
 });

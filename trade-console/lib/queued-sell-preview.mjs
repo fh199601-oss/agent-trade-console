@@ -1,5 +1,6 @@
 import {hash,parseUnits} from './common.mjs';
 import {assessSellFees} from './trade-fees.mjs';
+import {previewUsable} from './preview-cache.mjs';
 
 // A queued wallet may simulate its own sale while another wallet is settling.
 // It does NOT bypass the pool lane. At its turn a fresh on-chain quote must
@@ -24,7 +25,7 @@ function binding(p){
 export function reusableQueuedSell(fresh,warmed,now=Date.now()){
  try{
   const old=warmed?.plan,p=warmed?.preview,index=fresh.steps.length-1,age=now-p?.at;
-  if(!queuedSellEligible(fresh,index)||!queuedSellEligible(old,index)||!p?.raw?.requestId||age<0||age>10000||binding(old)!==binding(fresh))return null;
+  if(!queuedSellEligible(fresh,index)||!queuedSellEligible(old,index)||!previewUsable(p,now,10000)||binding(old)!==binding(fresh))return null;
   const quoted=parseUnits(String(old.quote.toCoinAmount),old.outputDecimals??18),latest=parseUnits(String(fresh.quote.toCoinAmount),fresh.outputDecimals??18);
   const minimum=BigInt(old.minOutput),cushion=quoted-minimum;
   if(quoted<=0n||minimum<=0n||cushion<0n||minimum<BigInt(fresh.minOutput)||latest<quoted-cushion/2n)return null;

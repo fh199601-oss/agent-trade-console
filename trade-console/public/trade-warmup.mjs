@@ -15,7 +15,7 @@ export function createTradeWarmup({api,allowed=()=>true,delayMs=250,now=Date.now
 }
 
 // Only read-only planning/preview. Never call run, prepare, execute or sign.
-export function createSellPreparationWarmup({api,intents,allowed=()=>true,delayMs=300,now=Date.now}){
+export function createSellPreparationWarmup({api,intents,allowed=()=>true,delayMs=300,now=Date.now,endpoint='sell-warm'}){
  let timer,pending=false,last='',after=0;
  return ()=>{
   clearTimeout(timer);if(!allowed()||pending)return;
@@ -24,7 +24,7 @@ export function createSellPreparationWarmup({api,intents,allowed=()=>true,delayM
    let rows;try{rows=intents();}catch{return;}if(!rows?.length)return;
    const key=JSON.stringify(rows);if(key===last&&now()<after)return;
    last=key;after=now()+4000;pending=true;
-   Promise.resolve().then(()=>api('sell-warm',{intents:rows})).catch(()=>{}).finally(()=>pending=false);
+   Promise.resolve().then(()=>api(endpoint,{intents:rows})).catch(()=>{}).finally(()=>pending=false);
   },delayMs);
  };
 }

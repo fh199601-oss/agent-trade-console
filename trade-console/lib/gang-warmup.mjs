@@ -1,6 +1,16 @@
 import {gangClient} from './gang-modern.mjs';
 import {conversions} from './trade-conversion.mjs';
 import {BNB,USDT,same,native} from './common.mjs';
+// Background and foreground use separate RPC queues, but completed immutable
+// metadata and factory-verified topology should not be rediscovered at click.
+// Never share in-flight calls, balances, allowances, reserves or live quotes.
+export function shareTradeMetadata(foregroundRpc,backgroundRpc){
+ if(foregroundRpc===backgroundRpc)return;
+ const foreground=gangClient(foregroundRpc),background=gangClient(backgroundRpc);
+ for(const key of ['metadata','identities','known'])background[key]=foreground[key];
+ const a=conversions(foregroundRpc),b=conversions(backgroundRpc);
+ b.topologies=a.topologies;b.prep.entries=a.prep.entries;
+}
 // Bounded background READS. No wallet commands, funds, approvals or calldata.
 export class GangWarmup{
  constructor({rpc,client=gangClient(rpc),converter=conversions(rpc),busy=()=>false,now=Date.now}={}){Object.assign(this,{client,converter,busy,now});this.after=new Map();this.pending=null;this.closed=false;}

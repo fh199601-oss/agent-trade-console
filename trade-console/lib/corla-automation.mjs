@@ -11,7 +11,7 @@ const PENDING=new Set(['PENDING','SUBMITTING','SUBMISSION_UNKNOWN','RECEIPT_REVI
 const SUCCESS=new Set(['CONFIRMED','PARTIAL']);
 export class CorlaAutomation{
  constructor({engine,rpc,opening,data,client=corlaClient(rpc),now=Date.now,autoSchedule=true,binding=wallet}){
-  Object.assign(this,{engine,rpc,opening,client,now,autoSchedule,binding});this.file=path.join(data,'corla-automation.json');this.jobs=new Map();this.busy=new Set();this.probes=new Map();this.saleWarmBusy=new Set();this.claimWarm=new Map();this.closed=false;
+  Object.assign(this,{engine,rpc,opening,client,now,autoSchedule,binding});this.file=path.join(data,'corla-automation.json');this.jobs=new Map();this.busy=new Set();this.probes=new Map();this.saleWarm=new Map();this.claimWarm=new Map();this.closed=false;
   for(const j of load(this.file,[])){if(ACTIVE.has(j.status)){j.resumeStatus=j.status;j.status='PAUSED';j.pauseReason='restart';j.message='服务重启已暂停；恢复后只跟踪原单，不重复提交。';}this.jobs.set(j.id,j);}
   if(this.jobs.size)this.persist();
  }
@@ -99,11 +99,16 @@ export class CorlaAutomation{
   void Promise.resolve().then(()=>this.engine.warmCorlaClaim(j.mint)).catch(()=>{if(this.claimWarm.get(key)===entry)this.claimWarm.delete(key);}).finally(()=>{entry.pending=false;});
  }
  warmSale(j,token=j.policy.expectedToken){
-  if(!j.policy.sell||!this.allowed(j)||!token||same(token,ZeroAddress)||this.saleWarmBusy.has(j.id)||this.now()-(j.saleWarmedAt||0)<3000)return;
-  j.saleWarmedAt=this.now();this.saleWarmBusy.add(j.id);
-  // Once launched, populate only public metadata/pool caches while the wallet
-  // previews and confirms claim. No balances, approvals or signatures reused.
-  void Promise.allSettled([this.engine.openingPreparation?.token(token),this.opening.detector?.scan(token,{currency:j.policy.sell.currency})]).finally(()=>{this.saleWarmBusy.delete(j.id);});
+  if(!j.policy.sell||!this.allowed(j)||!token||same(token,ZeroAddress))return;
+  const key=token.toLowerCase()+':'+j.policy.sell.currency,old=this.saleWarm.get(key);
+  if(old&&(old.pending||this.now()-old.at<3000))return;
+  const entry={at:this.now(),pending:true};this.saleWarm.set(key,entry);j.saleWarmedAt=entry.at;
+  // Start public metadata/topology reads BEFORE opening; share them across
+  // wallets. Watch scans do not wait for slow historical discovery. No token
+  // holding, approval, official requestId or permission to sell is cached.
+  void Promise.allSettled([this.engine.openingPreparation?.token(token),this.engine.sellAudit?.(token),this.opening.detector?.scan(token,{currency:j.policy.sell.currency,watch:true,reuseMs:250})]).then(results=>{
+   if(results.some(r=>r.status==='rejected')&&this.saleWarm.get(key)===entry)this.saleWarm.delete(key);
+  }).finally(()=>{entry.pending=false;for(const [k,v] of this.saleWarm)if(!v.pending&&this.saleWarm.size>128)this.saleWarm.delete(k);});
  }
  review(j,message){j.status='REVIEW';j.message=message;this.persist();}
  rememberError(j,error){j.lastError=publicError(error);j.errorHistory=[...(j.errorHistory||[]),{at:this.now(),status:j.status,claimId:j.claimId,error:j.lastError}].slice(-12);}
@@ -131,7 +136,7 @@ export class CorlaAutomation{
    }
    if(!this.allowed(j))return j;
    if(j.status==='WATCHING'){
-    this.warm(j);this.warmClaim(j);if(this.now()<(j.retryAt||0))return j;
+    this.warm(j);this.warmClaim(j);this.warmSale(j);if(this.now()<(j.retryAt||0))return j;
     const [,phase]=await this.probe(j.mint);if(!this.allowed(j)||j.status!=='WATCHING')return j;j.lastScanAt=this.now();
     if(BigInt(phase)===6n)return this.review(j,'项目已终止；已暂停等待领取，请核对项目状态');
     if(BigInt(phase)===4n)return this.review(j,'项目进入退款阶段；未自动退款，请使用退款入口');
@@ -146,7 +151,7 @@ export class CorlaAutomation{
     this.warmSale(j);
     if(j.attempts>=30)return this.review(j,'开盘后领取预览仍未通过：'+(j.lastError?.message||'请查看原单原因')+'；没有提交失败交易');
     const claimId=j.id+'-claim-'+(++j.attempts);j.claimId=claimId;startedAttempt=true;this.persist();
-    const o=await this.engine.prepare({account:j.account,side:'mint',asset:j.mint,routeId:'corla:claim',quantity:1,scope:'free',maxBnb:'0',maxUsdt:'0',autoClaim:false,referral:'none'},claimId);
+    const o=await this.engine.prepare({account:j.account,side:'mint',asset:j.mint,routeId:'corla:claim',quantity:1,scope:'free',maxBnb:'0',maxUsdt:'0',autoClaim:false,referral:'none'},claimId,{instantExecution:this.engine.live});
     if(!this.allowed(j)||j.status!=='WATCHING')return j;
     if(o.status==='BLOCKED'&&!o.steps?.length){
      this.rememberError(j,o.error||{message:'领取预览未通过'});

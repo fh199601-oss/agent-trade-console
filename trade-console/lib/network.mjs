@@ -7,7 +7,7 @@ import {count,measure} from './diagnostics.mjs';
 import {boundedPageText} from './page-text.mjs';
 setGlobalDispatcher(new EnvHttpProxyAgent({connect:{timeout:4000},keepAliveTimeout:60000}));
 export class Rpc extends ReadRpc{
- constructor(...args){super(...args);this.activeReads=0;this.waitingReads=[];this.inflightReads=new Map();}
+ constructor(...args){super(...args);this.multicallReads=true;this.activeReads=0;this.waitingReads=[];this.inflightReads=new Map();}
  send(method,params){
   count('rpcLogicalReads');
   const key=JSON.stringify([this.endpoints?.revision,method,params]);if(this.inflightReads.has(key)){count('rpcCoalescedReads');return this.inflightReads.get(key);}
@@ -15,11 +15,13 @@ export class Rpc extends ReadRpc{
   task.finally(()=>this.inflightReads.delete(key)).catch(()=>{});return task;
  }
  async limitedRead(method,params){
+  const allowed=()=>{if(this.readAllowed&&!this.readAllowed())throw Object.assign(Error('只读预热已让位于交易'),{code:'WARM_YIELDED'});};
+  allowed();
   // Public RPCs impose small batch limits. Multiple wallets plus per-index NFT
   // prices must not become one oversized batch with missing responses.
   if(this.activeReads>=16)await measure('rpcQueue',()=>new Promise(resolve=>this.waitingReads.push(resolve)));
   else this.activeReads++;
-  try{count('rpcDispatchedReads');return await measure('rpcRead',async()=>{
+  try{allowed();count('rpcDispatchedReads');return await measure('rpcRead',async()=>{
    try{return await (method==='eth_getStorageAt'?this.storage(...params):super.send(method,params));}
    catch(e){
     // Some providers reject an entire batch with id:null or omit a costly
@@ -39,6 +41,21 @@ export class Rpc extends ReadRpc{
   if(r.id!==id||!Object.hasOwn(r,'result'))throw Error('RPC single response missing');return r.result;
  }
  async storage(a,s,b='latest'){const response=await this.fetch(this.url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_getStorageAt',params:[a,s,b]}),signal:AbortSignal.timeout(this.timeoutMs)});if(!response.ok)throw Error('RPC HTTP '+response.status);const r=await response.json();if(r.error)throw Error(r.error.message);if(r.id!==1||!/^0x[0-9a-f]{64}$/i.test(r.result||''))throw Error('RPC storage response invalid');return r.result;}
+}
+// Queue isolation must not silently shorten the transport's failover budget.
+// Deadlines are upper bounds, not a delay on successful reads.
+export function forkReadRpc(source){
+ if(!(source instanceof Rpc))return source;
+ const client=new Rpc(source.url,{timeoutMs:source.timeoutMs,fetchImpl:source.fetch});
+ client.endpoints=source.endpoints;return client;
+}
+export function preemptibleReadRpc(source,allowed){
+ const client=forkReadRpc(source);if(client===source)return client;
+ let controller=new AbortController();const fetcher=client.fetch;
+ client.readAllowed=allowed;
+ client.fetch=(url,options)=>fetcher(url,{...options,signal:AbortSignal.any([controller.signal,...(options.signal?[options.signal]:[])])});
+ client.interrupt=()=>{controller.abort(Object.assign(Error('只读预热已让位于交易'),{code:'WARM_YIELDED'}));controller=new AbortController();};
+ return client;
 }
 export async function getJson(url,options={},timeout=6000){const r=await fetch(url,{...options,signal:AbortSignal.timeout(timeout)});if(!r.ok)throw Error(`HTTP ${r.status}`);return r.json();}
 export function publicIp(ip){

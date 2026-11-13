@@ -127,7 +127,7 @@ test('one stuck venue allowance cannot block a healthy opening sell venue', {tim
 test('failed allowance never means zero approval, even when its pool quote succeeds',async()=>{
  const f=fixture({mode:'fixed'}),original=f.rpc.call;
  f.rpc.call=async tx=>{if(same(tx.to,token)&&ERC20.parseTransaction(tx).name==='allowance')throw Error('RPC unavailable');return original(tx);};
- await assert.rejects(openingPlan(f.rpc,{}, {...f.intent,openingOnly:true},{scan:f.scan,preparation:f.preparation}),e=>e.code==='OPENING_WAIT'&&/授权额度/.test(e.message));
+ await assert.rejects(openingPlan(f.rpc,{}, {...f.intent,openingOnly:true},{scan:f.scan,preparation:f.preparation}),e=>e.code==='RPC_READ_FAILED'&&/授权额度/.test(e.message));
 });
 test('opening warm holding overlaps quote with fresh balance; changed holdings reprice instead of using the hint',async()=>{
  for(const holding of [1000n,500n,0n]){

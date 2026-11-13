@@ -9,10 +9,18 @@ export const POOL=new Interface(['function token0() view returns(address)','func
 const checkedSnapshots=new WeakSet();
 export function freshOpeningSnapshot(s,token,maxAge=1200){return !!s&&checkedSnapshots.has(s)&&same(s.token,token)&&Date.now()-s.at>=0&&Date.now()-s.at<=maxAge;}
 export class OpeningPools{
- constructor(rpc,{dexes=DEXES,quotes=QUOTES,quoteDiscovery=new OpeningQuotes(rpc),infinity=typeof rpc.send==='function'?new InfinityPools(rpc):null}={}){Object.assign(this,{rpc,dexes,quotes,quoteDiscovery,infinity});this.known=new Map();this.inflight=new Map();this.discoveryAfter=new Map();this.paths=new Map();this.infinityRecent=new Map();this.infinityStarts=new WeakMap();}
- async scan(input,{currency='AUTO',expand=false,watch=false}={}){
+ constructor(rpc,{dexes=DEXES,quotes=QUOTES,quoteDiscovery=new OpeningQuotes(rpc),infinity=typeof rpc.send==='function'?new InfinityPools(rpc):null}={}){Object.assign(this,{rpc,dexes,quotes,quoteDiscovery,infinity});this.known=new Map();this.inflight=new Map();this.discoveryAfter=new Map();this.paths=new Map();this.infinityRecent=new Map();this.infinityStarts=new WeakMap();this.watchRecent=new Map();}
+ async scan(input,{currency='AUTO',expand=false,watch=false,reuseMs=0}={}){
   const token=address(input),key=token.toLowerCase()+':'+currency+(expand?':expanded':'')+(watch?':watch':'');if(this.inflight.has(key))return this.inflight.get(key);
-  const task=this.inspect(token,currency,{expand,watch});this.inflight.set(key,task);try{return await task;}finally{this.inflight.delete(key);}
+  const recent=this.watchRecent.get(key),age=Date.now()-recent?.startedAt,budget=Math.min(250,Number(reuseMs)||0);
+  // Independent claim wallets can hand off a few ms apart. Reuse only an
+  // authenticated positive watch snapshot from this SAME short polling window.
+  // Never cache a miss or renew its age; fresh wallet/allowance/fee/preview and
+  // multi-wallet pool-impact checks still gate every eventual submission.
+  if(watch&&age>=0&&age<=budget&&budget>0&&freshOpeningSnapshot(recent.snapshot,token,budget))return recent.snapshot;
+  const startedAt=Date.now(),task=this.inspect(token,currency,{expand,watch});this.inflight.set(key,task);
+  try{const snapshot=await task;if(watch){if(snapshot.open)this.watchRecent.set(key,{snapshot,startedAt});else this.watchRecent.delete(key);while(this.watchRecent.size>128)this.watchRecent.delete(this.watchRecent.keys().next().value);}return snapshot;}
+  catch(e){if(watch)this.watchRecent.delete(key);throw e;}finally{this.inflight.delete(key);}
  }
  async inspect(token,currency,{expand=false,watch=false}={}){
   await this.rpc.verifyChain();

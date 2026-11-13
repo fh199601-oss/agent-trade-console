@@ -13,10 +13,12 @@ import * as gang from '../support/curve-trader/adapters/gang.mjs';
 import {wallet,read,Interface,ERC20,BNB,WBNB,USDT,ZeroAddress,native,same,parseUnits,formatUnits,percentOf} from './common.mjs';
 import {sellAmount,quotedSlippage,directSlippage} from './sell-policy.mjs';
 import {measure,count} from './diagnostics.mjs';
+import {openingReads} from './opening-read.mjs';
 const run=promisify(execFile),routeCache=new Map();
 // Scheduling hints only: fresh registration checks still determine every route.
 // Never cache holdings, prices, calldata, allowances, or negative registrations.
 const aggregateHints=new WeakMap();
+const registryPending=new WeakMap();
 function hintMap(rpc){let hints=aggregateHints.get(rpc);if(!hints){hints=new Map();aggregateHints.set(rpc,hints);}return hints;}
 // Official IPortal error, including the queried token (not any generic revert):
 // https://github.com/flap-sh/FlapVaultExample/blob/main/src/flap/IPortal.sol
@@ -25,8 +27,17 @@ const flapErrors=new Interface(['error TokenNotFound(address token)']);
 // allowances and quotas. These official registry getters are wallet independent.
 // Only an explicit, canonically decoded absence skips the full adapter.
 export async function probeRegistrations(rpc,token){
+ let pending=registryPending.get(rpc);if(!pending){pending=new Map();registryPending.set(rpc,pending);}
+ const key=String(rpc.endpoints?.revision||0)+':'+token.toLowerCase();
+ if(pending.has(key))return pending.get(key);
+ const task=readRegistrations(rpc,token);pending.set(key,task);
+ try{return await task;}finally{if(pending.get(key)===task)pending.delete(key);}
+}
+async function readRegistrations(rpc,token){
  const check=async(to,abi,method)=>{count('routeRegistrationReads');const raw=await rpc.call({to,data:abi.encodeFunctionData(method,[token])}),v=abi.decodeFunctionResult(method,raw);if(abi.encodeFunctionResult(method,v).toLowerCase()!==raw.toLowerCase())throw Error('注册接口返回不规范');return v;};
- const result=await Promise.allSettled([check(flap.portal,flap.portalAbi,'getTokenV8Safe'),...gang.PADS.map(p=>check(p.address,p.kind==='soft'?gang.SOFT_ABI:p.id==='s'?gang.S_ABI:gang.V2_ABI,'curves'))]);
+ const requests=[{to:flap.portal,abi:flap.portalAbi,method:'getTokenV8Safe'},...gang.PADS.map(p=>({to:p.address,abi:p.kind==='soft'?gang.SOFT_ABI:p.id==='s'?gang.S_ABI:gang.V2_ABI,method:'curves'}))];
+ if(rpc.multicallReads){count('routeRegistrationReads',requests.length);count('routeRegistrationBatches');}
+ const result=rpc.multicallReads?(await openingReads(rpc,requests.map(r=>({...r,args:[token],canonical:true})))).results:await Promise.allSettled(requests.map(r=>check(r.to,r.abi,r.method)));
  let flapKnown=result[0].status==='fulfilled'?Number(result[0].value[0].status)!==0:null;
  if(result[0].status==='rejected')try{const raw=result[0].reason.data,decoded=flapErrors.parseError(raw);if(decoded?.name==='TokenNotFound'&&same(decoded.args[0],token)&&flapErrors.encodeErrorResult(decoded.fragment,decoded.args).toLowerCase()===raw.toLowerCase())flapKnown=false;}catch{}
  const pads=result.slice(1),gangKnown=pads.some(r=>r.status==='fulfilled'&&!same(r.value[0],ZeroAddress))?true:pads.every(r=>r.status==='fulfilled')?false:null;
@@ -55,13 +66,12 @@ export async function detectRoute(rpc,token,w,platform){
  if(platform)throw Error(`未能核验 ${platform} 代币注册；不猜测交易入口`);
  return {route:'aggregate',diagnostics:checks.filter(r=>r.status==='rejected').map(r=>r.reason.message)};
 }
-export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=true,overlapRouteReads=false,coldQuoteOverlap=true,earlyBuyQuote=true,earlyBuyRoute=true,tokenMetadata,directSellPlan}={}){
+export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=true,overlapRouteReads=true,coldQuoteOverlap=true,earlyBuyQuote=true,earlyBuyRoute=true,tokenMetadata,directSellPlan,routeRpc=rpc}={}){
  const w=wallet(intent.account).address,hints=hintMap(rpc),hintKey=token.toLowerCase();
- // Sell starts with fresh holdings, then overlaps registry and quote. A buy
- // already has a known input amount and can resolve its route immediately.
- const warm=intent.side==='sell'&&!platform&&!routeCache.has(hintKey)&&(hints.get(hintKey)||0)>Date.now();
+ // Wallet-independent registration can start alongside fresh holdings.
+ // Amount-dependent quotes still wait for the current balance.
  const knownGang=gangClient(rpc).known.has(hintKey);
- const pendingRoute=(knownGang||intent.side==='buy'&&earlyBuyRoute||warm&&overlapRouteReads)?measure('tradeRoute',()=>detectRoute(rpc,token,w,platform)).then(route=>({route}),error=>({error})):null;
+ const pendingRoute=(knownGang||intent.side==='buy'&&earlyBuyRoute||intent.side==='sell'&&overlapRouteReads)?measure('tradeRoute',()=>detectRoute(routeRpc,token,w,platform)).then(route=>({route}),error=>({error})):null;
  // Buy input is already known; quote can run while token metadata/holdings are
  // read. This is read-only speculation; registry, audit and balance checks still
  // gate the final plan. Never do this for sell: its amount needs a fresh balance.
@@ -94,7 +104,7 @@ export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=
   return Promise.all([directSellPlan(seed,policy),policy]).then(([plan])=>({plan}),error=>({error}));
  };
  const speculativeDirect=directEnabled&&canSpeculate?startDirect():null;
- const routed=pendingRoute?await pendingRoute:{route:await measure('tradeRoute',()=>detectRoute(rpc,token,w,platform))};if(routed.error)throw routed.error;const route=routed.route;
+ const routed=pendingRoute?await pendingRoute:{route:await measure('tradeRoute',()=>detectRoute(routeRpc,token,w,platform))};if(routed.error)throw routed.error;const route=routed.route;
  if(route.route!=='aggregate')hints.delete(hintKey);
  if(route.route==='aggregate'){
   if(intent.currency==='QUOTE')throw Error('聚合兑换没有唯一曲线计价币，请明确选择 BNB、USDT 或 WBNB');

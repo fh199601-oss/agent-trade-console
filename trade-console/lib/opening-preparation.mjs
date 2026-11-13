@@ -3,6 +3,7 @@ import {keccak256} from 'ethers';
 import {address,read,ERC20,WBNB,wallet,percentOf,same,formatUnits} from './common.mjs';
 import {codeIdentity} from './discovery.mjs';
 import {DEXES,V2_ROUTER_ABI,V3_IMMUTABLE} from './opening-dex.mjs';
+import {openingReads} from './opening-read.mjs';
 export class OpeningPreparation{
  constructor(rpc,{now=Date.now,identityFor=codeIdentity}={}){Object.assign(this,{rpc,now,identityFor});this.entries=new Map();this.pending=new Map();}
  peekToken(input){const hit=this.entries.get('token:'+address(input));return hit&&hit.until>this.now()?hit.value:null;}
@@ -20,8 +21,18 @@ export class OpeningPreparation{
   return {assets};
  });}
  async warm(config){
-  const [token,venues,balances]=await Promise.all([this.token(config.asset),Promise.allSettled(DEXES.map(d=>this.venue(d))),Promise.all(config.accounts.map(async account=>{const w=wallet(account),[[balance],gas,allowances]=await Promise.all([read(this.rpc,config.asset,ERC20,'balanceOf',[w.address]),this.rpc.getBalance(w.address),Promise.allSettled(DEXES.map(d=>read(this.rpc,config.asset,ERC20,'allowance',[w.address,d.router])))]);return {account,w,balance,gas,allowances};}))]);
-  const rows=balances.map(({account,w,balance,gas,allowances})=>{const amount=percentOf(balance,config.percent);
+  // One bounded Multicall per wallet instead of one request per venue. Each
+  // wallet remains independent: a failed balance read must not suppress other
+  // wallets' preparation. Individual allowance failures remain unknown.
+  const [token,venues,balances]=await Promise.all([this.token(config.asset),Promise.allSettled(DEXES.map(d=>this.venue(d))),Promise.all(config.accounts.map(async account=>{
+   const w=wallet(account);
+   try{
+    const [batch,gas]=await Promise.all([openingReads(this.rpc,[{to:config.asset,abi:ERC20,method:'balanceOf',args:[w.address]},...DEXES.map(d=>({to:config.asset,abi:ERC20,method:'allowance',args:[w.address,d.router]}))]),this.rpc.getBalance(w.address)]);
+    const [holding,...allowances]=batch.results;if(holding.status!=='fulfilled')throw holding.reason;
+    return {account,w,balance:holding.value[0],gas,allowances};
+   }catch{return {account,w,unavailable:true,error:'该钱包持仓或 Gas 暂未读到，本轮跳过预热'};}
+  }))]);
+  const rows=balances.map(({account,w,balance,gas,allowances,unavailable,error})=>{if(unavailable)return {account,address:w.address,unavailable,error,routes:[]};const amount=percentOf(balance,config.percent);
    return {account,address:w.address,balance:String(balance),amount:String(amount),bnb:formatUnits(gas,18),routes:DEXES.map((d,n)=>({id:d.id,router:d.router,ready:venues[n].status==='fulfilled'&&allowances[n].status==='fulfilled',approvalNeeded:allowances[n].status==='fulfilled'?allowances[n].value[0]<amount:null,error:venues[n].reason?.message||allowances[n].reason?.message}))};
   });return {at:this.now(),decimals:token.decimals,fingerprint:token.identity.fingerprint,rows};
  }

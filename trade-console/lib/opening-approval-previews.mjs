@@ -1,6 +1,7 @@
 import {ERC20,hash,percentOf,same,wallet} from './common.mjs';
 import {dexFor,matchesCurrency} from './opening-dex.mjs';
 import {freshOpeningSnapshot} from './opening-pools.mjs';
+import {previewUsable} from './preview-cache.mjs';
 
 // Memory-only, single-use official APPROVAL previews. No sale quotes, signing,
 // authorization transactions or infinite allowances are prepared here.
@@ -16,7 +17,7 @@ export class OpeningApprovalPreviews{
  take(plan,intent,index){
   const step=plan.steps?.[index],key=this.key(plan,intent,step);if(!key)return null;
   const hit=this.entries.get(key);if(!hit)return null;this.entries.delete(key);
-  if(this.now()-hit.at<0||this.now()-hit.at>this.ttlMs)return null;
+  if(!previewUsable(hit,this.now(),this.ttlMs))return null;
   return {...hit,approvalPrewarmed:true};
  }
  async warm(config,preflight,snapshot,preparation,allowed=()=>true){
@@ -31,7 +32,7 @@ export class OpeningApprovalPreviews{
   await Promise.all(config.accounts.map(async account=>{
    if(this.busy(account)||this.pending.has(account)||!allowed())return;
    const row=preflight.rows.find(r=>r.account===account),w=wallet(account);
-   if(!row||!same(row.address,w.address)||row.routes.find(r=>r.id===d.id)?.approvalNeeded!==true)return;
+   if(!row||row.unavailable||!same(row.address,w.address)||row.routes.find(r=>r.id===d.id)?.approvalNeeded!==true)return;
    const amount=percentOf(BigInt(row.balance),config.percent);if(amount<=0n)return;
    const step={kind:'approve',to:config.asset,value:'0',data:ERC20.encodeFunctionData('approve',[d.router,amount]),spender:d.router,allowance:String(amount)};
    const plan={kind:'contract',account,token:config.asset,wallet:w.address,inputToken:config.asset,amountIn:String(amount),holdingBefore:row.balance,identity:{...meta.identity,learnedAssets:venue.assets},opening:pool,steps:[step]};
