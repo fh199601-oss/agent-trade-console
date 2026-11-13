@@ -96,6 +96,14 @@ class InstallerSafety(unittest.TestCase):
             self.assertEqual(invoke.call_args_list[0].args[1],['wallet','address'])
             self.assertEqual(invoke.call_args_list[1].args[1],action)
             self.assertEqual(invoke.call_args_list[1].kwargs['timeout'],100)
+    def test_background_sell_quote_uses_original_entry_and_bounded_read(self):
+        with patch.object(bridge,'account_lock') as lock,patch.object(bridge,'invoke',return_value=ok({'quoteId':'synthetic-quote'})) as invoke:
+            entry=self.entry()
+            bridge.dispatch(entry,['market-order','quote','--json'],False,background=True,read_only_timeout_ms=1500)
+        self.assertEqual(lock.call_args.kwargs['timeout'],0)
+        self.assertEqual(invoke.call_count,1)
+        self.assertEqual(invoke.call_args.args,(entry,['market-order','quote','--json']))
+        self.assertEqual(invoke.call_args.kwargs['timeout'],1.5)
     def test_wrapper_always_uses_json_and_drops_raw_errors(self):
         result=type('R',(),{'stdout':'sensitive provider response','stderr':'sensitive provider stderr','returncode':1})()
         with patch.object(bridge,'run_command',return_value=result) as run:

@@ -4,6 +4,27 @@ import {bindings,ERC20,BNB,WBNB,same} from '../lib/common.mjs';import {DEXES,QUO
 const wallets=bindings().slice(0,3),token='0x'+'b1'.repeat(20),pool='0x'+'b2'.repeat(20),dex=DEXES.find(x=>x.id==='pancake-v3');
 const tick=()=>new Promise(r=>setImmediate(r));
 test('conflicting sells queue, unrelated pools remain parallel, exceptions release the lane',async()=>{const c=new SellCoordinator(),a=await c.enter('one');let entered=false;const b=c.enter('one').then(x=>{entered=true;return x;});await tick();assert.equal(entered,false);const d=await c.enter('two');d.release();a.release();const next=await b;assert.equal(next.waited,true);next.release();assert.equal(c.tails.size,0);assert.equal(sellLane({token,opening:{pool}},{kind:'approve'}),null);});
+test('healthy multi-wallet progress renews queue inactivity, while duplicate releases do not',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const c=new SellCoordinator({idleTimeoutMs:100,maxWaitMs:1000});
+ const a=await c.enter('pool'),b=c.enter('pool');let arrived=false;const cc=c.enter('pool').then(l=>{arrived=true;return l;});
+ t.mock.timers.tick(75);a.release();const second=await b;await tick();assert.equal(arrived,false);
+ t.mock.timers.tick(75);second.release();const third=await cc;third.release();assert.equal(c.tails.size,0);assert.equal(c.waiters.size,0);
+ const owner=await c.enter('other'),next=c.enter('other');t.mock.timers.tick(75);owner.release();const real=await next;
+ const waiting=c.enter('other'),check=assert.rejects(waiting,e=>e.code==='SELL_POOL_BUSY');t.mock.timers.tick(75);owner.release();t.mock.timers.tick(26);await check;
+ real.release();await tick();assert.equal(c.tails.size,0);assert.equal(c.waiters.size,0);
+});
+test('stuck queues time out without bypassing the owner; other pools and later retries work',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const c=new SellCoordinator({idleTimeoutMs:100,maxWaitMs:1000}),owner=await c.enter('pool');
+ const b=assert.rejects(c.enter('pool'),e=>e.code==='SELL_POOL_BUSY'),cc=assert.rejects(c.enter('pool'),e=>e.code==='SELL_POOL_BUSY');
+ t.mock.timers.tick(101);await Promise.all([b,cc]);assert.equal(c.tails.size,1);
+ const unrelated=await c.enter('other');unrelated.release();owner.release();await tick();assert.equal(c.tails.size,0);assert.equal(c.waiters.size,0);
+ const retry=await c.enter('pool');assert.equal(retry.waited,false);retry.release();
+});
+test('queue total deadline remains bounded even when earlier wallets make progress',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const c=new SellCoordinator({idleTimeoutMs:100,maxWaitMs:120}),a=await c.enter('pool'),b=c.enter('pool');
+ const cc=assert.rejects(c.enter('pool'),e=>e.code==='SELL_POOL_BUSY');t.mock.timers.tick(70);a.release();const second=await b;
+ t.mock.timers.tick(51);await cc;second.release();await tick();assert.equal(c.tails.size,0);assert.equal(c.waiters.size,0);
+});
 for(const [fastReturn,staggered] of [[false,false],[true,false],[false,true]])test('three same-pool sales refresh after prior receipt, retain 1% slippage and never resend; fastReturn='+fastReturn+', staggered='+staggered,async t=>{
  const data=fs.mkdtempSync(path.join(os.tmpdir(),'sell-lane-'));t.after(()=>fs.rmSync(data,{recursive:true,force:true}));let price=1000000n,submits=0,sequence=0;
  const requests=new Map(),submitted=[];

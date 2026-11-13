@@ -43,10 +43,11 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
  const engine=provided||new Engine({rpc,bridge,live,data});const batches=new Batches(engine);const configFile=path.join(data,'buttons.json');
  const openingRpc=rpc instanceof Rpc?new Rpc(rpc.url,{timeoutMs:2000,fetchImpl:rpc.fetch}):rpc;
  const prepRpc=rpc instanceof Rpc?new Rpc(rpc.url,{timeoutMs:2000,fetchImpl:rpc.fetch}):rpc;
+ const warmRpc=rpc instanceof Rpc?new Rpc(rpc.url,{timeoutMs:1500,fetchImpl:rpc.fetch}):rpc;engine.warmRpc=warmRpc;
  // Historical discovery can fill its RPC queue without occupying the live
  // reserve scanner. All clients retain the user's same endpoint/failover policy.
  const discoveryRpc=rpc instanceof Rpc?new Rpc(rpc.url,{timeoutMs:2000,fetchImpl:rpc.fetch}):rpc;
- if(rpcSettings)for(const client of [readRpc,openingRpc,prepRpc,discoveryRpc])if(client instanceof Rpc){client.endpoints=rpcSettings;client.fetch=rpcSettings.fetch;}
+ if(rpcSettings)for(const client of [readRpc,openingRpc,prepRpc,discoveryRpc,warmRpc])if(client instanceof Rpc){client.endpoints=rpcSettings;client.fetch=rpcSettings.fetch;}
  const detector=new OpeningPools(openingRpc,{quoteDiscovery:new OpeningQuotes(discoveryRpc),infinity:typeof discoveryRpc.send==='function'?new InfinityPools(discoveryRpc):null}),preparation=new OpeningPreparation(prepRpc);engine.openingScan=(t,o)=>detector.scan(t,o);engine.openingPreparation=preparation;
  engine.tradePlanOptions={...engine.tradePlanOptions,tokenMetadata:t=>preparation.peekToken(t)};
  const opening=providedOpening||new OpeningSell({engine,rpc:openingRpc,bridge,detector,data,preparation});
@@ -74,11 +75,18 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
   const send=(code,v,type='application/json')=>{res.writeHead(code,{'content-type':type+'; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer','content-security-policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"});res.end(type==='application/json'?json(v):v);};
   try{
    guard(req);const u=new URL(req.url,'http://'+req.headers.host),p=u.pathname;
-   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,instance,capabilities:{gangVersion:2,sellCoordinationVersion:3,queuedSellPreviewVersion:1,genericMintVersion:3,infinitySellVersion:1,originalTrackingVersion:1,rpcRecoveryVersion:1,sellFeeGuardVersion:3,sellFeeThresholdPpm:HIGH_FEE_PPM,feeRouteSearchVersion:1,sellGasVersion:1,openingVersion:6,tradeWarmupVersion:1,recoveryVersion:1,instantReview:true,corlaVersion:3,corlaAutomationVersion:2,taskCenterVersion:2},token,mode:live?'LIVE':'SIMULATION',wallets:bindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list(),corla:corla.list()});
+   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,instance,capabilities:{gangVersion:2,sellCoordinationVersion:4,queuedSellPreviewVersion:2,manualSellPreparationVersion:1,genericMintVersion:3,infinitySellVersion:1,originalTrackingVersion:1,rpcRecoveryVersion:1,sellFeeGuardVersion:3,sellFeeThresholdPpm:HIGH_FEE_PPM,feeRouteSearchVersion:1,sellGasVersion:1,openingVersion:6,tradeWarmupVersion:2,recoveryVersion:1,instantReview:true,corlaVersion:3,corlaAutomationVersion:2,taskCenterVersion:2},token,mode:live?'LIVE':'SIMULATION',wallets:bindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list(),corla:corla.list()});
    if(p.startsWith('/api/'))auth(req);
    if(req.method==='POST'&&p==='/api/trade-warm'){
     const b=await body(req);if(!b||Object.keys(b).length!==1||typeof b.asset!=='string')throw Error('预热只接受交易代币 CA');
     const token=address(b.asset);if(/^0x0{40}$/i.test(token))throw Error('请输入有效的交易代币 CA');return send(200,{scheduled:warmTrade(token)});
+   }
+   if(req.method==='POST'&&p==='/api/sell-warm'){
+    const b=await body(req);if(!b||Object.keys(b).length!==1||!Array.isArray(b.intents)||b.intents.length>8)throw Error('卖出预热参数无效');
+    const warmer=engine.manualSellPreparation;if(!warmer)return send(200,{scheduled:0});
+    const intents=b.intents.map(i=>warmer.intent(i));
+    const idle=()=>!engine.running.size&&!opening.active?.()&&!corla.active?.();
+    return send(200,{scheduled:intents.filter(i=>!!warmer.request(i,idle)).length});
    }
    if(req.method==='GET'&&p==='/api/rpc')return send(200,rpcSettings?.status()||{available:false});
    if(req.method==='POST'&&p==='/api/rpc'){
@@ -114,7 +122,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
    if(req.method==='GET'&&p==='/api/orders')return send(200,u.searchParams.get('summary')==='1'?engine.history(50):engine.list(50));
    if(req.method==='POST'&&p==='/api/shutdown'){
     if(corla.active()||opening.active()||engine.running.size||engine.list().some(o=>['PENDING','SUBMITTING','SUBMISSION_UNKNOWN','APPROVAL_CONFIRMED','READY_TO_CONTINUE','RECEIPT_REVIEW'].includes(o.status)))throw Error('存在运行中或待核对原单，暂不能切换模式');
-    send(200,{stopping:true});setTimeout(()=>{tracker.close();corla.close();opening.close();server.close();bridge.close();server.closeIdleConnections();},100);return;
+    send(200,{stopping:true});setTimeout(()=>{engine.manualSellPreparation?.close();tracker.close();corla.close();opening.close();server.close();bridge.close();server.closeIdleConnections();},100);return;
    }
    if(req.method==='POST'&&p==='/api/ready'){const b=await body(req);const result=await Promise.all(bindings().filter(w=>!b.account||w.account===b.account).map(async w=>{try{const r=await bridge.ready(w.account,{force:true});readiness.set(w.account,r);return r;}catch(e){const r={...w,status:'ERROR',error:e.message};readiness.set(w.account,r);return r;}}));return send(200,result);}
    if(req.method==='POST'&&p==='/api/settings'){const s=validateSettings(await body(req));save(configFile,s);return send(200,s);}
@@ -142,7 +150,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
   })).finally(()=>{warming=null;});return warming;
  }
  server.on('listening',()=>{tracker.start();if(rpcSettings)void rpc.verifyChain().catch(()=>{});});
- server.on('close',()=>{gangWarmup.close();tracker.close();sellWarmup.close();corla.close();opening.close();void rpcSettings?.close()?.catch(()=>{});});
+ server.on('close',()=>{engine.manualSellPreparation?.close();gangWarmup.close();tracker.close();sellWarmup.close();corla.close();opening.close();void rpcSettings?.close()?.catch(()=>{});});
  return {server,engine,bridge,token,warm,rpc,readRpc,opening,corla,rpcSettings,enrollment,tracker};
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){

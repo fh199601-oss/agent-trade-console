@@ -10,7 +10,7 @@ import {executeIndependent,runInstantTrades,isReady,independentOrder,tradeResult
 import {normalizeAssetInput,mintTradeCA,pasteAsset,resolvedTradeAsset} from './asset-input.mjs';
 import {binanciansInput} from './binancians-input.mjs';
 import {createConsoleClient} from './session-client.mjs';
-import {createTradeWarmup} from './trade-warmup.mjs';
+import {createTradeWarmup,createSellPreparationWarmup} from './trade-warmup.mjs';
 const $=id=>document.getElementById(id);
 let boot,ca=null,settings,selected=new Set(),busy=false,reviewOrders=[],refreshing=false,holdingsRows=[],nativeRows=[],walletRequest=null,project=null,generation=0,tradeRevision=0,tradeManual=false,tradeKind=null;
 let budgetManual=false;
@@ -44,6 +44,14 @@ for(const [id,target] of [['asset','mintNotice'],['tradeCA','tradeNotice']]){
 }
 const client=createConsoleClient({onSession:applySession}),api=client.request;
 const warmTrade=createTradeWarmup({api,allowed:()=>!!boot?.capabilities?.tradeWarmupVersion&&!busy&&!document.hidden});
+let warmSellPercent='100',lastSellActivity=Date.now();
+const warmSell=createSellPreparationWarmup({api,allowed:()=>!!boot?.capabilities?.manualSellPreparationVersion&&!busy&&!document.hidden&&document.hasFocus()&&Date.now()-lastSellActivity<60000,intents:()=>{
+ const asset=checkedTradeCA(),slip=$('sellSlippage').value;if(!/^\d+(?:\.\d{1,2})?$/.test(slip)||Number(slip)>50)return [];
+ return [...selected].slice(0,4).map(account=>({account,side:'sell',asset,percent:warmSellPercent,currency:$('receive').value,slippageBps:Math.round(Number(slip)*100),slippageMode:$('sellSlippageMode').value}));
+}});
+$('tradeCA').addEventListener('input',()=>{lastSellActivity=Date.now();warmSellPercent='100';warmSell();});
+for(const event of ['pointermove','focusin','input'])$('sellButtons').closest('section')?.addEventListener(event,()=>lastSellActivity=Date.now());
+document.addEventListener('change',()=>{lastSellActivity=Date.now();warmSell();});
 for(const id of ['tradeCA','asset'])$(id).addEventListener('input',()=>warmTrade($(id).value));
 createUpdateDialog({api});
 createRpcDialog({api});
@@ -76,7 +84,7 @@ function updateTradePreferences(save=false){
 }
 function loadTradePreferences(){try{const p=JSON.parse(localStorage.getItem(preferenceKey)||'null');if(p){if(typeof p.quick==='boolean')$('quick').checked=p.quick;if(['auto','fixed'].includes(p.sellSlippageMode))$('sellSlippageMode').value=p.sellSlippageMode;for(const [key,id]of [['sellSlippage','sellSlippage'],['buySlippage','slippage'],['openingSlippage','openingSlippage']])if(/^\d+(?:\.\d{1,2})?$/.test(String(p[key]))&&Number(p[key])<=50)$(id).value=p[key];if(/^\d+(?:\.\d{1,6})?$/.test(String(p.openingPercent))&&Number(p.openingPercent)>0&&Number(p.openingPercent)<=100)$('openingPercent').value=p.openingPercent;}}catch{}updateTradePreferences();}
 for(const id of ['quick','sellSlippageMode','sellSlippage','slippage','openingPercent','openingSlippage'])$(id).addEventListener('change',()=>updateTradePreferences(true));
-function buildButtons(){for(const [side,id]of [['buy','buyButtons'],['sell','sellButtons']]){$(id).replaceChildren();settings[side].forEach(value=>{const b=el('button',side==='buy'?value:value+'%');b.append(el('small',side==='buy'?$('currency').selectedOptions[0].textContent:'当前持仓'));b.addEventListener('click',()=>act(side,value));$(id).append(b);});}}
+function buildButtons(){for(const [side,id]of [['buy','buyButtons'],['sell','sellButtons']]){$(id).replaceChildren();settings[side].forEach(value=>{const b=el('button',side==='buy'?value:value+'%');b.append(el('small',side==='buy'?$('currency').selectedOptions[0].textContent:'当前持仓'));if(side==='sell')for(const event of ['pointerenter','focus'])b.addEventListener(event,()=>{warmSellPercent=String(value);warmSell();});b.addEventListener('click',()=>act(side,value));$(id).append(b);});}}
 function renderWalletSelection(){
  applyAutoBudget();
  const count=boot.wallets.filter(w=>selected.has(w.account)).length;
@@ -84,8 +92,8 @@ function renderWalletSelection(){
  $('selectAllWallets').disabled=count===boot.wallets.length;
  $('clearWallets').disabled=count===0;
 }
-$('selectAllWallets').addEventListener('click',()=>{selected=new Set(boot.wallets.map(w=>w.account));renderWallets();});
-$('clearWallets').addEventListener('click',()=>{selected.clear();renderWallets();});
+$('selectAllWallets').addEventListener('click',()=>{selected=new Set(boot.wallets.map(w=>w.account));renderWallets();lastSellActivity=Date.now();warmSell();});
+$('clearWallets').addEventListener('click',()=>{selected.clear();renderWallets();warmSell();});
 function renderWallets(){
  const rows=new Map(holdingsRows.map(r=>[r.account,r])),native=new Map(nativeRows.map(r=>[r.account,r])),scrollTop=$('wallets').scrollTop;$('wallets').replaceChildren();
  for(const w of boot.wallets){
@@ -142,7 +150,7 @@ $('mintRoute').addEventListener('change',()=>{renderCorlaAction();renderWallets(
 $('copyInvite').addEventListener('click',async()=>{noticeTarget='mintNotice';const url=project?.referral?.url;if(!url)return;try{await navigator.clipboard.writeText(url);if(project?.referral?.url===url){$('copyInvite').textContent='已复制 ✓';note('1 号邀请链接已复制。');}}catch{note('自动复制失败，请选中邀请链接手动复制：'+url,true);}});
 function clearTrade(){ca=null;tradeKind=null;holdingsRows=[];tradeRevision++;$('tokenCA').textContent='等待加载';$('tokenName').textContent='等待加载';for(const id of ['mcap','price','holders','liquidity'])$(id).textContent='—';$('holdingBlock').textContent='代币持仓待加载';$('change').textContent='24h —';$('volume').textContent='24h 成交 —';$('holdersSource').textContent='暂无数据';$('updated').textContent='行情尚未加载';}
 function checkedTradeCA(){const raw=$('tradeCA').value.trim();if(!/^0x[0-9a-f]{40}$/i.test(raw)||/^0x0{40}$/i.test(raw))throw Error('请在快捷交易卡片填写完整的 42 字符代币 CA');return raw;}
-function activateTrade(address,kind=null,name=null){$('tradeFeedback').replaceChildren();feedbackRows=[];$('tradeNotice').hidden=true;clearTrade();ca=address;tradeKind=kind;$('tradeCA').value=address;$('tokenCA').textContent=address;$('tokenName').textContent=name||'正在读取代币';warmTrade(address);}
+function activateTrade(address,kind=null,name=null){$('tradeFeedback').replaceChildren();feedbackRows=[];$('tradeNotice').hidden=true;clearTrade();ca=address;tradeKind=kind;$('tradeCA').value=address;$('tokenCA').textContent=address;$('tokenName').textContent=name||'正在读取代币';warmTrade(address);warmSell();}
 async function loadTrade(){noticeTarget='tradeNotice';try{const address=checkedTradeCA();tradeManual=true;activateTrade(address);note('正在读取此 CA 的行情和钱包持仓…');await refreshAsset(true);if(ca===address)note('已加载交易 CA；买卖使用此地址，卖出按点击时实时持仓计算。');}catch(e){note(e.message,true);$('tradeCA').focus();}}
 $('tradeCA').addEventListener('input',()=>{noticeTarget='tradeNotice';tradeManual=true;clearTrade();renderWallets();note('交易 CA 已改变；可加载持仓。买卖按钮按下方确认设置执行。');});
 $('tradeCA').addEventListener('keydown',e=>{if(e.key==='Enter')loadTrade();});$('loadTradeCA').addEventListener('click',loadTrade);
@@ -404,4 +412,5 @@ document.addEventListener('visibilitychange',resumePage);for(const event of ['fo
 setInterval(()=>{if(document.hidden||busy)return;if(!boot){startApp().catch(e=>note('连接本地服务失败：'+e.message,true));return;}refreshAsset().catch(e=>note('数据更新失败：'+e.message,true));},5000);
 setInterval(()=>{if(boot&&!document.hidden)refreshOrders().catch(()=>{});},5000);
 setInterval(()=>{if(boot&&!busy&&!document.hidden)refreshWallets().catch(e=>{$('walletState').textContent='BNB 更新失败：'+e.message;});},15000);
+setInterval(warmSell,4000);
 try{await startApp();}catch(e){note('连接本地服务失败：'+e.message,true);}

@@ -1,4 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';
+import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
+import {Engine} from '../lib/engine.mjs';
 import {tradePlan} from '../lib/routes.mjs';
 import {manualDirectSell} from '../lib/manual-sell-recovery.mjs';
 import {ManualSellWarmup} from '../lib/manual-sell-warmup.mjs';
@@ -27,6 +29,15 @@ function fixture({mode='auto',quoteCurrency=WBNB,holding=1000n}={}){
  const directSellPlan=(seed,slippagePromise)=>manualDirectSell(rpc,bridge,intent,seed,{scan,preparation,slippagePromise});
  return {rpc,bridge,intent,seen,gates,scan,preparation,run:()=>tradePlan(rpc,bridge,intent,token,undefined,{directSellPlan})};
 }
+test('real planning path marks every warm wallet request read-only and yields before a foreground operation',async t=>{
+ const data=fs.mkdtempSync(path.join(os.tmpdir(),'warm-planning-'));t.after(()=>fs.rmSync(data,{recursive:true,force:true}));
+ const f=fixture(),calls=[],original=f.bridge.call;f.rpc.verifyChain=async()=>{};
+ f.bridge.ready=async(account,options)=>{assert.equal(options.background,true);};
+ f.bridge.call=async(account,args,options)=>{calls.push(args.slice(0,2));assert.equal(options.background,true);assert.equal(options.readOnlyTimeoutMs,1500);return original(account,args);};
+ const e=new Engine({data,rpc:f.rpc,bridge:f.bridge,auditFn:async()=>({available:true,taxes:{sellTax:'0'}})});e.openingScan=f.scan;e.openingPreparation=f.preparation;
+ const p=await e.plan(f.intent,{background:true,allowed:()=>true});assert.equal(p.manualRouteRecovery,true);assert.deepEqual(calls,[['market-order','quote']]);
+ await assert.rejects(e.plan(f.intent,{background:true,allowed:()=>false}),/让位/);assert.equal(calls.length,1);assert.equal(e.list().length,0);
+});
 test('first manual sell overlaps scan, metadata, fresh holdings, official policy and registration; all gates must finish',async()=>{
  const f=fixture();f.gates.quote=deferred();f.gates.registry=deferred();f.gates.scan=deferred();f.gates.meta=deferred();let done=false;
  const result=f.run().then(p=>{done=true;return p;});await tick();
@@ -83,6 +94,11 @@ test('warmup is read-only, bounded, coalesced, throttled and yields to foregroun
 });
 test('warmup metadata/scan errors do not leak rejections or keep the warmup busy forever',async()=>{
  const warm=new ManualSellWarmup({scan:async()=>{throw Error('offline');},preparation:{token:async()=>{throw Error('offline');}}});await warm.request(token);assert.equal(warm.pending,null);assert.equal(warm.request('bad'),null);
+});
+test('CA warmup discovers native quote pools and warms bounded quote metadata without wallet calls',async()=>{
+ const quoteCoins=[WBNB,USDT,...['a1','a2','a3','a4'].map(s=>'0x'+s.repeat(20))],seen=[];
+ const warm=new ManualSellWarmup({scan:async(asset,options)=>{assert.equal(asset,token);assert.deepEqual(options,{currency:'AUTO',watch:true});return {pools:quoteCoins.flatMap(quote=>[{...d,quote,liquid:true},{...d,quote,liquid:true}])};},preparation:{token:async()=>{},venue:async v=>seen.push(v.id),quote:async q=>{seen.push(q);if(q===USDT)throw Error('one quote RPC failed');}}});
+ await warm.request(token);assert.deepEqual(seen.map(x=>x.toLowerCase()),[d.id,...quoteCoins.slice(0,4)].map(x=>x.toLowerCase()));assert.equal(warm.pending,null);
 });
 test('a freshly registered live curve wins over an already prepared speculative external pool',async()=>{
  const f=fixture({mode:'fixed'}),original=f.rpc.call;

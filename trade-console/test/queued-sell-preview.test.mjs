@@ -32,7 +32,7 @@ test('large movement, higher current minimum, unknown/high/increased fees, or ch
 
 const tick=()=>new Promise(r=>setImmediate(r));
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
-async function queuedFixture(t,{failedWarm=false,changedHolding=false,unknown=false,stalledWarm=false,callFailed=false}={}){
+async function queuedFixture(t,{failedWarm=false,changedHolding=false,unknown=false,stalledWarm=false,callFailed=false,fastReturn=false,callDelayed=false,callStalled=false,cancelSecond=false}={}){
  const data=fs.mkdtempSync(path.join(os.tmpdir(),'queued-sell-'));t.after(()=>fs.rmSync(data,{recursive:true,force:true}));
  const wallets=bindings().slice(0,4),unit=10n**18n,amount=5n*unit;
  let ri=1000n*unit,ro=1000n*unit,seq=0,confirmed=0;const ids=new Map(),seen=[],first=deferred(),release=deferred();
@@ -41,6 +41,7 @@ async function queuedFixture(t,{failedWarm=false,changedHolding=false,unknown=fa
  const plan=intent=>{const wallet=wallets.find(w=>w.account===intent.account),pool=state(),quote=output(),min=quote*80n/100n;
   return {kind:'contract',route:d.id+'-opening',account:wallet.account,wallet:wallet.address,token,inputToken:token,outputToken:WBNB,amountIn:String(amount),holdingBefore:String(amount),decimals:18,outputDecimals:18,minOutput:String(min),quote:{toCoinAmount:formatUnits(quote,18)},opening:pool,state:pool,poolFees:poolFeeProof(pool,[amount,quote],token,100),requireSellCredit:true,slippage:{mode:'fixed',bps:2000,capBps:2000},review:[],steps:[{kind:'sell',to:d.router,value:'0',data:V2_ROUTER_ABI.encodeFunctionData('swapExactTokensForTokensSupportingFeeOnTransferTokens',[amount,min,[token,WBNB],wallet.address,Math.floor(Date.now()/1000)+120])}]};};
  const rpc={getBlockNumber:async()=>100,call:async tx=>{
+  if(same(tx.to,d.router)&&V2_ROUTER_ABI.parseTransaction(tx).name.startsWith('swap')){if(callStalled)return new Promise(()=>{});if(callDelayed)await new Promise(r=>setTimeout(r,25));}
   const encode=tx=>{const abi=same(tx.to,token)?ERC20:same(tx.to,pair)?POOL:V2_ROUTER_ABI,f=abi.parseTransaction(tx);
    if(f.name.startsWith('swap')){assert.ok(wallets.some(w=>same(w.address,tx.from)));assert.equal(tx.value,'0x0');seen.push({kind:'latestCall'});if(callFailed||f.args[1]>output())throw Error('latest call reverted');return '0x';}
    return abi.encodeFunctionResult(f.name,f.name==='balanceOf'?[changedHolding&&confirmed&&same(f.args[0],wallets[1].address)?amount-1n:amount]:f.name==='getReserves'?[ri,ro,1]:[[f.args[0],output(f.args[0])]]);};
@@ -58,18 +59,20 @@ async function queuedFixture(t,{failedWarm=false,changedHolding=false,unknown=fa
  }};
  const e=new Engine({rpc,bridge,data,live:true,planFn:async i=>plan(i)});
  if(stalledWarm)e.queuedSellPreview=()=>new Promise(()=>{});
- e.observeContract=async(o,entry)=>{if(!confirmed){first.resolve();await release.promise;}if(unknown){entry.status=o.status='SUBMISSION_UNKNOWN';return;}const out=output();ri+=amount;ro-=out;confirmed++;entry.status='CONFIRMED';};
+ e.observeContract=async(o,entry,wait)=>{if(fastReturn&&wait===0)return;if(!confirmed){first.resolve();await release.promise;}if(unknown){entry.status=o.status='SUBMISSION_UNKNOWN';return;}const out=output();ri+=amount;ro-=out;confirmed++;entry.status='CONFIRMED';};
  // Prevent the unknown-original test from waiting for the real 8s follower.
  if(unknown)e.follow=async id=>{const o=e.get(id);o.steps.at(-1).txHash=null;return o;};
  const intents=wallets.map(w=>({side:'sell',account:w.account,asset:token,percent:'100',currency:'WBNB',slippageBps:2000}));
  for(let n=0;n<intents.length;n++)await e.prepare(intents[n],'queued-'+n);
  seen.length=0;
- const running=Promise.all(intents.map((_,n)=>e.execute('queued-'+n,{authorization:'synthetic-only fixture'})));
+ let cancelled=false;const initial=[];
+ if(fastReturn){initial.push(await e.execute('queued-0',{authorization:'synthetic-only fixture',swapReceiptWaitMs:0}));assert.equal(initial[0].status,'PENDING');assert.equal(e.sellCoordinator.tails.size,0);}
+ const running=Promise.all(intents.map((_,n)=>n===0&&fastReturn?initial[0]:e.execute('queued-'+n,{authorization:'synthetic-only fixture',continueAllowed:()=>!(cancelSecond&&n===1&&cancelled)})));
  await first.promise;
  for(let n=0;n<100&&!seen.filter(s=>s.background).length;n++)await tick();
  for(let n=0;n<20;n++)await tick();
  assert.equal(seen.filter(s=>s.background&&s.confirmed===0).length,stalledWarm?0:3,'three wallets prepare while the first is settling');
- release.resolve();const results=await running;
+ cancelled=cancelSecond;release.resolve();const results=(await running).map(o=>e.get(o.id));
  return {e,results,seen};
 }
 test('four wallets pipeline previews while queued, keep same-pool settlement ordering, and execute exactly once',async t=>{
@@ -95,4 +98,20 @@ test('an unfinished optional preparation never delays the next wallet when its t
 });
 test('a failed latest exact-call check discards the queued preview and requires a fresh official one',async t=>{
  const {results,seen}=await queuedFixture(t,{callFailed:true});assert.ok(results.every(o=>o.status==='CONFIRMED'));assert.equal(seen.filter(s=>s.kind==='preview'&&!s.background).length,3);assert.ok(results.every(o=>!o.timing.executionSteps.some(s=>s.queuedPreviewReused)));
+});
+test('fast-return original receipt wait also warms the next wallet when the lane has already released',async t=>{
+ const {results,seen}=await queuedFixture(t,{fastReturn:true});assert.ok(results.every(o=>o.status==='CONFIRMED'),JSON.stringify(results.map(o=>o.error)));
+ assert.equal(seen.filter(s=>s.kind==='execute').length,4);assert.equal(results.filter(o=>o.timing.executionSteps.some(s=>s.queuedPreviewReused)).length,3);
+});
+test('a latest call slightly slower than the router quote reuses its exact official preview',async t=>{
+ const {results,seen}=await queuedFixture(t,{callDelayed:true});assert.ok(results.every(o=>o.status==='CONFIRMED'));
+ assert.equal(results.filter(o=>o.timing.executionSteps.some(s=>s.queuedPreviewReused)).length,3);assert.equal(seen.filter(s=>s.kind==='preview'&&!s.background).length,0);
+});
+test('stalled exact-call RPC has a bounded wait, then uses normal official simulation', {timeout:5000},async t=>{
+ const {results,seen}=await queuedFixture(t,{callStalled:true});assert.ok(results.every(o=>o.status==='CONFIRMED'));
+ assert.equal(seen.filter(s=>s.kind==='preview'&&!s.background).length,3);assert.equal(seen.filter(s=>s.kind==='execute').length,4);
+});
+test('cancelling a warmed queued wallet cannot submit it or prevent the other wallets selling',async t=>{
+ const {results,seen}=await queuedFixture(t,{cancelSecond:true});assert.equal(results[1].status,'CANCELLED');
+ assert.equal(seen.filter(s=>s.kind==='execute').length,3);assert.ok(results.filter((_,n)=>n!==1).every(o=>o.status==='CONFIRMED'));
 });

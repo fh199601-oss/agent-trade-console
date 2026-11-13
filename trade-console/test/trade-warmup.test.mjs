@@ -1,8 +1,9 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
-import {createTradeWarmup} from '../public/trade-warmup.mjs';
+import {createTradeWarmup,createSellPreparationWarmup} from '../public/trade-warmup.mjs';
+import {ManualSellPreparation} from '../lib/manual-sell-preparation.mjs';
 import {OpeningPreparation} from '../lib/opening-preparation.mjs';
-import {createServer} from '../server.mjs';import {ERC20} from '../lib/common.mjs';
+import {createServer} from '../server.mjs';import {ERC20,bindings} from '../lib/common.mjs';
 const token='0x'+'23'.repeat(20),other='0x'+'45'.repeat(20),wait=ms=>new Promise(r=>setTimeout(r,ms));
 test('typing/paste warmup debounces to the last valid CA and cannot submit any action',async()=>{
  const calls=[];let allowed=true,now=100;const warm=createTradeWarmup({api:async(...args)=>calls.push(args),allowed:()=>allowed,now:()=>now,delayMs:5});
@@ -23,7 +24,8 @@ test('cached output metadata expires and never includes a wallet holding',async(
 });
 test('warm HTTP entry is authenticated, read-only and bounded while trading is busy',async t=>{
  const data=fs.mkdtempSync(path.join(os.tmpdir(),'trade-warm-test-'));let writes=0;
- const app=createServer({data,rpc:{},bridge:{call:()=>writes++},engine:{list:()=>[],running:new Set(['busy']),run:()=>writes++}});
+ const warmer=new ManualSellPreparation({plan:()=>assert.fail('busy prefetch must not start'),preview:()=>assert.fail('busy prefetch must not start')});
+ const app=createServer({data,rpc:{},bridge:{call:()=>writes++},engine:{list:()=>[],running:new Set(['busy']),run:()=>writes++,manualSellPreparation:warmer}});
  await new Promise(r=>app.server.listen(0,'127.0.0.1',r));t.after(async()=>{await new Promise(r=>{app.server.close(r);app.server.closeAllConnections();});fs.rmSync(data,{recursive:true,force:true});});
  const base='http://127.0.0.1:'+app.server.address().port,post=(payload,auth=true)=>fetch(base+'/api/trade-warm',{method:'POST',headers:{'content-type':'application/json',...(auth?{'x-console-token':app.token}:{})},body:JSON.stringify(payload)});
  // A valid import must also be served by the explicit static-file allowlist.
@@ -35,4 +37,15 @@ test('warm HTTP entry is authenticated, read-only and bounded while trading is b
  assert.equal((await post({asset:token,execute:true})).status,400);assert.equal((await post({asset:'not-ca'})).status,400);
  assert.equal((await post({asset:'0x'+'0'.repeat(40)})).status,400);
  assert.deepEqual(await (await post({asset:token})).json(),{scheduled:false});assert.equal(writes,0);
+ const i={side:'sell',account:bindings()[0].account,asset:token,percent:'100',currency:'AUTO',slippageBps:5000,slippageMode:'auto'};
+ const sell=(payload,auth=true)=>fetch(base+'/api/sell-warm',{method:'POST',headers:{'content-type':'application/json',...(auth?{'x-console-token':app.token}:{})},body:JSON.stringify(payload)});
+ assert.equal((await sell({intents:[i]},false)).status,401);
+ for(const b of [{intents:[i],execute:true},{intents:[i,{...i,execute:true}]},{intents:Array(9).fill(i)},{intents:[{...i,side:'buy'}]}])assert.equal((await sell(b)).status,400);
+ assert.deepEqual(await (await sell({intents:[i]})).json(),{scheduled:0});assert.equal(writes,0);
+});
+test('sell prefetch debounces current wallet/settings, throttles, yields on click/hide and cannot place an order',async()=>{
+ const calls=[];let now=0,allowed=true,rows=[{percent:'100'}];const warm=createSellPreparationWarmup({api:async(...args)=>{calls.push(args);throw Error('optional offline');},intents:()=>rows,allowed:()=>allowed,now:()=>now,delayMs:1});
+ warm();rows=[{percent:'50'}];warm();await wait(20);assert.deepEqual(calls,[['sell-warm',{intents:[{percent:'50'}]}]]);
+ warm();await wait(20);assert.equal(calls.length,1);now=4001;warm();allowed=false;await wait(20);assert.equal(calls.length,1);
+ allowed=true;warm();await wait(20);assert.equal(calls.length,2);rows=[];warm();await wait(20);assert.equal(calls.length,2);
 });

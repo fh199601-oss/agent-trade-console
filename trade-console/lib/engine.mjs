@@ -1,6 +1,7 @@
 import {invitationFailure} from './mint-funding.mjs';
 import {refreshStarsMint,verifyStarsPreview,verifyStarsReceipt} from './stars.mjs';
 import {OpeningApprovalPreviews} from './opening-approval-previews.mjs';
+import {ManualSellPreparation} from './manual-sell-preparation.mjs';
 import {diagnoseRevert} from './revert-reason.mjs';
 import {describeError} from '../public/error-message.mjs';
 import {SellCoordinator,sellLane} from './sell-coordinator.mjs';
@@ -15,6 +16,7 @@ import {updateFeeReview,blockUnverifiableFees,assessSellFees} from './trade-fees
 import {findLowFeeSell,searchableSellPreviewError} from './sell-fee-search.mjs';
 import {manualDirectSell} from './manual-sell-recovery.mjs';
 import {openingPlan,refreshOpeningSell} from './opening-route.mjs';
+import {openingReads} from './opening-read.mjs';
 import {openingRecoveryPlan} from './opening-recovery.mjs';
 import {recentOpeningPreviewFailures} from './sell-route-history.mjs';
 import {hasPreviewRisks} from './preview-risks.mjs';
@@ -29,7 +31,7 @@ import {DATA,json,hash,load,save,wallet,validateIntent,read,ERC20,same,native,BN
 import {discover} from './discovery.mjs';
 import {tradeTarget} from './trade-target.mjs';
 import {mintPlan,verifyIdentity} from './mint.mjs';
-import {tradePlan,settlements} from './routes.mjs';
+import {tradePlan,settlements,detectRoute} from './routes.mjs';
 import {auditToken} from '../support/curve-trader/audit.mjs';
 import {ExperienceStore} from './experience.mjs';
 import {profiled,measure,snapshot,preflightReport} from './diagnostics.mjs';
@@ -102,6 +104,7 @@ export class Engine{
  constructor({rpc,bridge,data=DATA,live=false,planFn=null,auditFn=auditToken,tradePlanOptions={}}){Object.assign(this,{rpc,bridge,data,live,planFn,auditFn,tradePlanOptions});this.experience=new ExperienceStore(data);this.running=new Set();this.sellCoordinator=new SellCoordinator();this.mintSequences=new Map();this.previews=new Map();this.ordersDir=path.join(data,'orders');fs.mkdirSync(this.ordersDir,{recursive:true,mode:0o700});
   this.orderIndex=new OrderIndex(this.ordersDir);this.following=new Map();this.openingRefreshes=new Map();
   this.openingApprovalPreviews=new OpeningApprovalPreviews({preview:(plan,intent)=>this.preview(plan,intent,0,{background:true}),busy:account=>this.running.has(account)||this.bridge.queues?.has(account)});
+  this.manualSellPreparation=new ManualSellPreparation({plan:(intent,allowed)=>this.plan(intent,{background:true,allowed}),preview:(plan,intent)=>this.preview(plan,intent,0,{background:true}),busy:account=>this.running.has(account)||this.bridge.queues?.has(account)||!!this.orderIndex.find(o=>o.intent.account===account&&unresolved.has(o.status))});
   for(const row of this.list()){if(this.repairRefusal(row))continue;if(row.status==='SUBMITTING'){row.status='SUBMISSION_UNKNOWN';row.error={message:'服务在提交过程中退出，只能核对原单'};this.write(row);}else{try{this.experience.record(row);}catch{}}}
  }
  file(id){if(typeof id!=='string'||!/^[a-zA-Z0-9_.:-]{1,160}$/.test(id))throw Error('订单 ID 只能包含字母、数字、下划线、点、冒号、横线');return path.join(this.ordersDir,hash(id)+'.json');}
@@ -135,7 +138,9 @@ export class Engine{
  }
  async plan(intent,context={}){
   if(this.planFn)return this.planFn(intent);
-  const preflight=()=>Promise.all([this.rpc.verifyChain(),measure('walletReady',()=>this.bridge.ready(intent.account,{external:intent.side==='mint'}))]).then(()=>({}),error=>({error}));
+  const background=context.background===true;
+  const planningRpc=background?(this.warmRpc||this.rpc):this.rpc;
+  const preflight=()=>Promise.all([planningRpc.verifyChain(),measure('walletReady',()=>this.bridge.ready(intent.account,{external:intent.side==='mint',...(background?{background:true}:{})}))]).then(()=>({}),error=>({error}));
   const earlyReady=intent.side==='mint'&&(corlaInput(intent.asset)?.priority||/^corla:/.test(intent.routeId||''))?preflight():null;
   // A claim names the previously registered mint contract. The dedicated
   // planner still verifies its factory/implementation and fresh claim state;
@@ -153,12 +158,12 @@ export class Engine{
   const ensureReady=async()=>{const r=await ready;if(r.error)throw r.error;};
   const overlap=intent.side==='mint'?['corla','binancians','stars'].includes(resolved.platform):!intent.openingOnly&&this.tradePlanOptions.overlapTradePreflight!==false;
   if(!overlap)await ensureReady();
-  const tradeBridge=overlap?{call:async(...args)=>{await ensureReady();return this.bridge.call(...args);},ready:async(...args)=>{await ensureReady();return this.bridge.ready(...args);}}:this.bridge;
-  const directSellPlan=(seed,slippagePromise)=>manualDirectSell(this.rpc,tradeBridge,intent,seed,{scan:this.openingScan,preparation:this.openingPreparation,slippagePromise});
+  const tradeBridge=overlap||background?{call:async(account,args,options)=>{await ensureReady();if(background){if(!context.allowed?.()||args[0]!=='market-order'||args[1]!=='quote')throw Error('只读预热已让位于交易');return this.bridge.call(account,args,{...options,background:true,readOnlyTimeoutMs:1500});}return this.bridge.call(account,args,options);},ready:async(account,options)=>{await ensureReady();return this.bridge.ready(account,{...options,...(background?{background:true}:{})});}}:this.bridge;
+  const directSellPlan=(seed,slippagePromise)=>manualDirectSell(planningRpc,tradeBridge,intent,seed,{scan:this.openingScan,preparation:this.openingPreparation,slippagePromise});
   // Buying always targets the explicitly supplied token CA. Audit and quote
   // are independent reads; both still complete before preview/submission.
   let [p,audit]=await Promise.all([
-   intent.side==='mint'?mintPlan(this.rpc,this.bridge,intent,resolved.address,resolved,this.experience,{officialPreview:true,quantityCeiling:context.mintCeiling??500}):(intent.openingOnly?(context.openingRecovery?openingRecoveryPlan(this.rpc,this.bridge,intent,this.get(context.openingRecovery.sourceId),{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation}):openingPlan(this.rpc,this.bridge,intent,{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation,holdingHint:context.openingHoldingHint,failedPreviews:recentOpeningPreviewFailures(this.list(),intent)})):tradePlan(this.rpc,tradeBridge,intent,resolved.address,resolved.platform,{...this.tradePlanOptions,directSellPlan})),
+   intent.side==='mint'?mintPlan(this.rpc,this.bridge,intent,resolved.address,resolved,this.experience,{officialPreview:true,quantityCeiling:context.mintCeiling??500}):(intent.openingOnly?(context.openingRecovery?openingRecoveryPlan(this.rpc,this.bridge,intent,this.get(context.openingRecovery.sourceId),{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation}):openingPlan(this.rpc,this.bridge,intent,{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation,holdingHint:context.openingHoldingHint,failedPreviews:recentOpeningPreviewFailures(this.list(),intent)})):tradePlan(planningRpc,tradeBridge,intent,resolved.address,resolved.platform,{...this.tradePlanOptions,directSellPlan})),
    intent.side==='sell'?measure('tokenAudit',()=>this.sellAudit(resolved.address)):intent.side==='buy'?measure('tokenAudit',()=>this.auditFn(resolved.address)).catch(e=>({available:false,reason:e.message})):null,
    ensureReady()
   ]);
@@ -178,6 +183,31 @@ export class Engine{
   }catch(e){project.address=resolved.address;e.project=project;throw e;}
  }
  async warmOpeningApprovals(config,preflight,snapshot,allowed){return this.openingApprovalPreviews.warm(config,preflight,snapshot,this.openingPreparation,allowed);}
+ async consumeManualSellPreparation(intent,warm){
+  if(!warm||!same(warm.plan.wallet,wallet(intent.account).address))return null;
+  const original=warm.plan,first=original.steps[0],last=original.steps.at(-1);
+  try{
+   // Re-price at click time. The early quote never sets an order's minimum.
+   // Both registry and identity are fresh; the warmed official preview is only
+   // reusable for the exact same approval, or an exact sale with stricter limits.
+   const [fresh,[allowance],route,,audit]=await Promise.all([
+    refreshOpeningSell(this.rpc,original),read(this.rpc,original.token,ERC20,'allowance',[original.wallet,last.to]),
+    detectRoute(this.rpc,original.token,original.wallet),verifyIdentity(this.rpc,original.identity),this.sellAudit(original.token),
+    this.rpc.verifyChain(),this.bridge.ready(intent.account,{external:true})
+   ]);
+   if(route.route!=='aggregate')return null;
+   fresh.audit=audit;
+   if(first.kind==='sell'&&allowance<BigInt(fresh.amountIn))return null;
+   if(first.kind==='approve'&&allowance>=BigInt(fresh.amountIn))fresh.steps=fresh.steps.slice(1);
+   let preview=null;
+   if(first.kind==='approve'&&fresh.steps[0].kind==='approve'){
+    preview={...warm.preview,review:verifyPreview(warm.preview.raw,fresh,fresh.steps[0])};
+   }
+   // The normal execution path independently refreshes, simulates and guards
+   // the sale. Warm sale quotes are not used as a substitute for those checks.
+   return {plan:fresh,preview,ageMs:Date.now()-warm.startedAt};
+  }catch{return null;}
+ }
  openingRefreshKey(plan){return hash({wallet:plan.wallet,token:plan.token,amount:plan.amountIn,balance:plan.holdingBefore,slippage:plan.slippage,opening:plan.opening,steps:plan.steps,minimum:plan.authorizationMinOutput});}
  primeOpeningRefresh(o,entry,plan){
   // Only AFTER the successful, exact original approval receipt is verified.
@@ -239,7 +269,9 @@ export class Engine{
   await this.reconcileAccount(intent.account,id);
   return profiled('prepare',()=>this.exclusive(intent.account,async()=>{
    const o={id,intent,status:'PREPARING',createdAt:Date.now(),timing:{receivedAt:Date.now()},steps:[],simulationOnly:!this.live,...(old?{preparationHistory:[...(old.preparationHistory||[]),{at:old.updatedAt,error:old.error,timing:old.timing}]}:{})};this.write(o);
-   try{let plan=await measure('plan',()=>this.plan(intent,context));o.plan=JSON.parse(json(plan));o.project=plan.project;o.timing.planReadyAt=Date.now();const p=await measure('officialPreview',()=>this.previewWithFeeSearch(o));plan=o.plan;
+   try{const warm=this.manualSellPreparation.take(intent),prepared=warm?await measure('warmSellValidation',()=>this.consumeManualSellPreparation(intent,warm)):null;
+    if(prepared){o.timing.sellPreparationReused=true;o.timing.sellPreparationAgeMs=prepared.ageMs;}
+    let plan=prepared?.plan||await measure('plan',()=>this.plan(intent,context));o.plan=JSON.parse(json(plan));o.project=plan.project;o.timing.planReadyAt=Date.now();const p=await measure('officialPreview',()=>this.previewWithFeeSearch(o,0,{cached:prepared?.preview}));plan=o.plan;
     if(plan.route==='bagent:mint'&&plan.steps[0].kind==='referral'&&!plan.steps.some(s=>s.kind==='approve')){
      const mintPreview=await this.preview(plan,intent,plan.steps.length-1);o.mintPreview=mintPreview.review;
      if(hasPreviewRisks(mintPreview.raw.risks))plan.review.push('BAGENT Mint 官方预览存在风险提示，请查看详情');
@@ -332,14 +364,15 @@ export class Engine{
       // No signing while queued. A later fresh quote and every normal guard
       // still gate consumption of this exact, wallet-specific official preview.
       let warmingAllowed=true,queuedPreview=null;
-      if(laneKey&&this.sellCoordinator.tails.has(laneKey)&&queuedSellEligible(o.plan,index))void this.queuedSellPreview(o,index,()=>warmingAllowed&&mayContinue()).then(result=>{if(warmingAllowed)queuedPreview=result;});
+      const pendingSale=()=>laneKey?this.orderIndex.find(r=>r.id!==o.id&&unresolved.has(r.status)&&r.intent?.side==='sell'&&sellLane(r.plan,r.steps?.at(-1)?.step)===laneKey):null;
+      if(laneKey&&(this.sellCoordinator.tails.has(laneKey)||pendingSale())&&queuedSellEligible(o.plan,index))void this.queuedSellPreview(o,index,()=>warmingAllowed&&mayContinue()).then(result=>{if(warmingAllowed)queuedPreview=result;}).catch(()=>{});
       const lane=await this.sellCoordinator.enter(laneKey).catch(e=>{warmingAllowed=false;throw e;});
       try{
       const stepTiming={kind:o.plan.steps[index].kind,queueMs:Date.now()-laneStarted};
       (o.timing.executionSteps??=[]).push(stepTiming);
       // A previous fast-return submit may still be on-chain. Follow that exact
       // original before quoting another wallet against the same pool.
-      const prior=laneKey?this.orderIndex.find(r=>r.id!==o.id&&unresolved.has(r.status)&&r.intent?.side==='sell'&&sellLane(r.plan,r.steps?.at(-1)?.step)===laneKey):null;
+      const prior=pendingSale();
       let repriced=lane.waited||!!(laneKey&&this.orderIndex.find(r=>r.id!==o.id&&r.intent?.side==='sell'&&r.updatedAt>=o.createdAt&&r.steps?.some(e=>e.status==='CONFIRMED'&&sellLane(e.plan||r.plan,e.step)===laneKey)));
       if(prior){const originalWaitStarted=Date.now();let original=this.get(prior.id);const until=Date.now()+8000;
        // Share the normal original-order follower and account lock. A separate
@@ -360,8 +393,9 @@ export class Engine{
       // Refresh the exact sender/calldata at the latest chain state as well as
       // the pool quote. Phase changes, transfer restrictions and tax changes can
       // invalidate a recent wallet preview without changing router getAmountsOut.
-      let queuedCallPassed=false;
-      if(warmedSale)void Promise.resolve().then(()=>{const s=warmedSale.plan.steps[index];return this.rpc.call({from:o.plan.wallet,to:s.to,data:s.data,value:'0x'+BigInt(s.value).toString(16)},'latest');}).then(()=>{queuedCallPassed=true;},()=>{});
+      let queuedCallPassed=false,queuedCall=null;
+      const queuedCallDeadline=Date.now()+250;
+      if(warmedSale)queuedCall=Promise.resolve().then(()=>{const s=warmedSale.plan.steps[index];return this.rpc.call({from:o.plan.wallet,to:s.to,data:s.data,value:'0x'+BigInt(s.value).toString(16)},'latest');}).then(()=>{queuedCallPassed=true;},()=>{});
       const auditRefresh=o.intent.side==='sell'&&o.plan.steps[index].kind==='sell'&&o.plan.audit?.checkedAt&&Date.now()-o.plan.audit.checkedAt>5000?this.sellAudit(o.plan.token):null;
       // Authorization can take several blocks. Refresh the automatic sale's
       // quote and deadline AFTER approval, then obtain a new official preview.
@@ -374,6 +408,11 @@ export class Engine{
        o.plan=await refreshGangSell(this.rpc,o.plan,index);this.previews.delete(id);this.write(o);
       }
       if(auditRefresh)o.plan.audit=await auditRefresh;
+      // An exact eth_call can finish just after the lighter router quote. Give
+      // it the remainder of a small TOTAL budget instead of discarding a valid
+      // warm preview on every such race. Slow/failed RPC falls back to the
+      // normal official preview; no unbounded wait or weaker minimum.
+      if(queuedCall&&!queuedCallPassed&&Date.now()<queuedCallDeadline){let timer;try{await Promise.race([queuedCall,new Promise(r=>timer=setTimeout(r,Math.max(0,queuedCallDeadline-Date.now())))]);}finally{clearTimeout(timer);}}
       stepTiming.refreshMs=Date.now()-refreshStarted;
       let p=o.steps.length===0?this.previews.get(id):null,queuedHit=null;
       if(warmedSale&&queuedCallPassed){queuedHit=reusableQueuedSell(o.plan,warmedSale);if(queuedHit){
@@ -483,6 +522,10 @@ export class Engine{
   const plan=entry.plan||o.plan;
   if(!entry.txHash){o.status='SUBMISSION_UNKNOWN';entry.status='SUBMISSION_UNKNOWN';o.error={message:'官方返回未包含交易哈希，仅可核对原 requestId/orderId，禁止重发'};return;}
   const end=Date.now()+timeout;do{
+   // Read allowance beside the approval receipt. It is usable only with a
+   // proven block at/after that receipt; an early/failed read is retried normally.
+   let earlyAllowance=null;
+   if(entry.step.kind==='approve'&&!entry.step.approvalType&&plan.opening&&queuedSellEligible(plan,plan.steps.length-1))void openingReads(this.rpc,[{to:entry.step.to,abi:ERC20,method:'allowance',args:[plan.wallet,entry.step.spender]}]).then(value=>{earlyAllowance={value};},()=>{});
    // Claim confirmation gates a subsequent sale. Fetch its immutable original
    // transaction alongside the receipt, not one network round trip later.
    const txRead=originalRead(()=>this.rpc.getTransaction(entry.txHash)).then(tx=>({tx}),error=>({error}));
@@ -498,7 +541,8 @@ export class Engine{
     try{if(entry.step.kind==='approve'){
      this.primeOpeningRefresh(o,entry,plan);
      if(entry.step.approvalType==='infinity-permit2')await verifyInfinityAllowance(this.rpc,entry.step,plan,originalRead);
-     else{const [allowance]=await originalRead(()=>read(this.rpc,entry.step.to,ERC20,'allowance',[plan.wallet,entry.step.spender]));if(allowance<BigInt(entry.step.allowance))throw Error('当前授权额度不足，后续步骤未执行');}
+     else{const batch=earlyAllowance?.value,row=batch?.results?.[0];let proven=false;try{proven=receipt.blockNumber!==undefined&&BigInt(receipt.blockNumber)>0n&&BigInt(batch.block)>=BigInt(receipt.blockNumber)&&row.status==='fulfilled'&&row.value[0]>=BigInt(entry.step.allowance);}catch{}
+      const [allowance]=proven?row.value:await originalRead(()=>read(this.rpc,entry.step.to,ERC20,'allowance',[plan.wallet,entry.step.spender]));if(proven)(o.timing??={}).approvalAllowanceOverlapped=true;if(allowance<BigInt(entry.step.allowance))throw Error('当前授权额度不足，后续步骤未执行');}
     }else if(settlements[entry.step.tradeLeg?.settlementRoute||plan.route]){
      try{
       const leg=tradeLegPlan(plan,entry.step);
