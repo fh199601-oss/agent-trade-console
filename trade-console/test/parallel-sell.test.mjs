@@ -1,3 +1,4 @@
+import {virtualLatency} from './support/virtual-latency.mjs';
 import test from 'node:test';import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import {parallelSellCandidate,parallelSellProof} from '../lib/parallel-sell.mjs';
@@ -112,9 +113,10 @@ test('cancelled wallet sends nothing and leaves no stale reservation for the oth
  const r=await engineFixture(t,{cancelAccount:ws[1].account});assert.equal(r.beforeReceipt,2);assert.equal(r.results[1].status,'CANCELLED');assert.equal(r.e.sellCoordinator.parallel.size,0);
 });
 test('same simulated RPC/wallet latency: compare three-wallet serial and concurrent completion',async t=>{
- const legacy=await engineFixture(t,{serial:true,latency:70,automaticReceipt:true});
- const concurrent=await engineFixture(t,{latency:70,automaticReceipt:true});
+ const advance=virtualLatency(t);
+ const legacy=await advance(engineFixture(t,{serial:true,latency:70,automaticReceipt:true}));
+ const concurrent=await advance(engineFixture(t,{latency:70,automaticReceipt:true}));
  assert.ok(legacy.results.every(o=>o.status==='CONFIRMED'));assert.ok(concurrent.results.every(o=>o.status==='CONFIRMED'));
  assert.ok(concurrent.totalMs<legacy.totalMs,JSON.stringify({legacy:legacy.totalMs,concurrent:concurrent.totalMs}));
- t.diagnostic(JSON.stringify({syntheticOnly:true,threeWallets:{serial:{allSentMs:legacy.dispatchMs,allConfirmedMs:legacy.totalMs},concurrent:{allSentMs:concurrent.dispatchMs,allConfirmedMs:concurrent.totalMs}}}));
+ t.diagnostic(JSON.stringify({syntheticOnly:true,virtualClock:true,threeWallets:{serial:{allSentMs:legacy.dispatchMs,allConfirmedMs:legacy.totalMs},concurrent:{allSentMs:concurrent.dispatchMs,allConfirmedMs:concurrent.totalMs}}}));
 });

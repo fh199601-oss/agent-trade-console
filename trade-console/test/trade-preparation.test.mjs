@@ -1,3 +1,4 @@
+import {virtualLatency} from './support/virtual-latency.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
@@ -106,22 +107,23 @@ test('preview completing after click but during fresh planning is consumed witho
  assert.equal(f.engine.manualSellPreparation.entries.size,0);assert.equal(f.seen.filter(x=>x.op==='execute').length,0);
 });
 test('three-wallet timing comparison includes preparation and keeps normal RPC deadlines',async t=>{
+ const advance=virtualLatency(t);
  const results=[];
  for(const overlap of [false,true]){
   const f=await fixture(t,{side:'sell'}),rpcCall=f.rpc.call,bridgeCall=f.bridge.call;
   f.rpc.call=async(...args)=>{await wait(160);return rpcCall(...args);};
   f.bridge.call=async(a,args,options)=>{await wait(args[1]==='preview'?260:80);return bridgeCall(a,args,options);};
-  const start=Date.now(),orders=await Promise.all(wallets.slice(0,3).map(async(w,n)=>{
+  const start=Date.now(),orders=await advance(Promise.all(wallets.slice(0,3).map(async(w,n)=>{
    const i=intent('sell',w.account),id='comparison-'+n,options={execute:true,authorization:'synthetic latency test'};
    if(overlap)return f.engine.run(i,id,options);
    await f.engine.prepare(i,id);return f.engine.execute(id,options);
-  }));
+  })));
   assert.ok(orders.every(o=>o.status==='CONFIRMED'),JSON.stringify(orders.map(o=>o.error)));
   const dispatch=orders.map(o=>o.steps[0].submitStartedAt-start);
   results.push({overlap,allSubmittedMs:Math.max(...dispatch),dispatchSpreadMs:Math.max(...dispatch)-Math.min(...dispatch),completedMs:Date.now()-start});
  }
  assert.ok(results[1].allSubmittedMs+80<results[0].allSubmittedMs,JSON.stringify(results));
- t.diagnostic('simulation only: '+JSON.stringify(results));
+ t.diagnostic('virtual-clock simulation only: '+JSON.stringify(results));
 });
 test('four-wallet buy caches one unsigned preview each; click reuses then executes each exactly once',async t=>{
  const f=await fixture(t),ints=wallets.slice(0,4).map(w=>intent('buy',w.account));

@@ -1,3 +1,4 @@
+import {virtualLatency} from './support/virtual-latency.mjs';
 // Isolated in-memory wallet and RPC. No real accounts, network or signatures.
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import {Engine} from '../lib/engine.mjs';import {codeIdentity} from '../lib/discovery.mjs';import {bindings,BNB} from '../lib/common.mjs';import {CORLA_MINT} from '../lib/corla.mjs';
@@ -32,13 +33,14 @@ test('claim pause, changed code and stale guard do not bypass final checks',asyn
  }
 });
 test('same simulated latency: three auto-claim dispatches save sequential identity wait without shorter deadlines',async t=>{
+ const advance=virtualLatency(t);
  const results=[];
  for(const overlap of [false,true]){
   const f=await fixture(t),code=f.rpc.getCode,call=f.bridge.call;
   f.rpc.getCode=async(...a)=>{await wait(160);return code(...a);};f.bridge.call=async(...a)=>{await wait(a[1][1]==='preview'?260:80);return call(...a);};
-  const start=Date.now(),orders=await Promise.all([0,1,2].map(n=>f.run(n,{overlap})));
+  const start=Date.now(),orders=await advance(Promise.all([0,1,2].map(n=>f.run(n,{overlap}))));
   assert.ok(orders.every(o=>o.status==='CONFIRMED'),JSON.stringify(orders.map(o=>o.error)));assert.equal(f.calls.submits,3);
   const times=orders.map(o=>o.steps[0].submitStartedAt-start);results.push({overlap,allDispatchMs:Math.max(...times),spreadMs:Math.max(...times)-Math.min(...times),completionMs:Date.now()-start});
  }
- assert.ok(results[1].allDispatchMs+80<results[0].allDispatchMs,JSON.stringify(results));t.diagnostic('simulation only: '+JSON.stringify(results));
+ assert.ok(results[1].allDispatchMs+80<results[0].allDispatchMs,JSON.stringify(results));t.diagnostic('virtual-clock simulation only: '+JSON.stringify(results));
 });
