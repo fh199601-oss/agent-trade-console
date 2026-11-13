@@ -321,7 +321,7 @@
     "trade-console/test/round9.test.mjs": "94afd9b774f94a1b5b989301b1e57416ab1d4c9111c8a77884570d93c3ac1b94",
     "trade-console/test/route-probe.test.mjs": "e0b80b281ab14986ec2e995ee88f5c54e1f31ca68b45f6497e885bbc9ca2f949",
     "trade-console/test/rpc-batching.test.mjs": "b5d37a5e37c78eaef19b63ecba489c2d5fb522d2b0b486c30f4e9a154733f326",
-    "trade-console/test/rpc-endpoints.test.mjs": "d9c13fa49a0d5af5f327971cd2af55ba0879e17dc22304c498872be0fed49168",
+    "trade-console/test/rpc-endpoints.test.mjs": "bf4aeef5cb0df9b2486823709c91afb99d95fa315bc4c91b70b08a6556acb9c3",
     "trade-console/test/rpc-isolation.test.mjs": "183c16e0c37d555299c65eee1c2ca7d10bf2b9a5bb89fbf81774d1b1b9de6da7",
     "trade-console/test/rpc-recovery.test.mjs": "7b6817f88094e877650ee331d69146088b961103ab280bb520d337f5277cc8d5",
     "trade-console/test/rpc-transport.test.mjs": "8009d11572038fa6817d64184f6f840016fa3d507c227cde37323bd87e5a31b2",
