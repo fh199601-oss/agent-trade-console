@@ -85,6 +85,14 @@ test('buy warm metadata skips only output precision; balance and registration re
  const options={tokenMetadata:()=>({decimals:6})};assert.equal((await tradePlan(rpc,bridge,i,token,undefined,options)).decimals,6);
  held=123n;assert.equal((await tradePlan(rpc,bridge,i,token,undefined,options)).holdingBefore,'123');assert.equal(reads,2);assert.equal(rpc.calls.length,14);
 });
+test('fixed-pool buy bypasses opaque quote and failure cannot fall back to aggregator',async()=>{
+ const rpc=mock(),call=rpc.call;rpc.call=async tx=>{if(tx.to!==token)return call(tx);const f=ERC20.parseTransaction(tx);return ERC20.encodeFunctionResult(f.name,[f.name==='decimals'?18n:0n]);};
+ let quotes=0,planned=0;const bridge={call:async()=>{quotes++;throw Error('opaque fallback');}};
+ const i={account:bindings()[0].account,side:'buy',amount:'0.01',currency:'BNB',slippageMode:'fixed',slippageBps:100};
+ const directBuyPlan=async(seed,policy)=>{planned++;assert.equal(seed.amountIn,'10000000000000000');assert.equal((await policy).bps,100);return {kind:'contract',route:'primary-pool'};};
+ assert.equal((await tradePlan(rpc,bridge,i,token,undefined,{directBuyPlan})).route,'primary-pool');assert.equal(planned,1);assert.equal(quotes,0);
+ await assert.rejects(tradePlan(rpc,bridge,i,token,undefined,{directBuyPlan:async()=>{throw Error('primary unavailable');}}),/primary unavailable/);assert.equal(quotes,0);
+});
 test('cold trade preflight overlaps public reads but failed wallet or chain guards prevent official quote and plan',async()=>{
  for(const failing of [null,'wallet','chain']){
   const rpc=mock(),registryCall=rpc.call,dir=fs.mkdtempSync(path.join(os.tmpdir(),'overlap-guard-'));let release,publicReads=0,quotes=0,guardDone=false;

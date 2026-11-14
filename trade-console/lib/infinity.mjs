@@ -79,7 +79,7 @@ export class InfinityPools{
   const [key,slot,liquidity]=result.results.map(r=>r.value),values=[...key];
   if(!same(key[3],INFINITY.factory)||infinityId(values)!==id.toLowerCase()||![key[0],key[1]].some(a=>same(a,token)))return null;
   const zero=same(token,key[0]),quote=zero?key[1]:key[0];
-  return {...INFINITY,pool:id,token,token0:key[0],token1:key[1],quote:same(quote,ZeroAddress)?WBNB:quote,nativeQuote:same(quote,ZeroAddress),key:values.map(v=>typeof v==='bigint'?String(v):v),block:result.block,liquid:slot[0]>0n,liquidity:String(liquidity[0]),sqrtPriceX96:String(slot[0]),fee:infinityFee(slot,zero),lpFee:Number(slot[3]),hooks:key[2]};
+  return {...INFINITY,pool:id,token,token0:key[0],token1:key[1],quote:same(quote,ZeroAddress)?WBNB:quote,nativeQuote:same(quote,ZeroAddress),key:values.map(v=>typeof v==='bigint'?String(v):v),block:result.block,liquid:slot[0]>0n,liquidity:String(liquidity[0]),sqrtPriceX96:String(slot[0]),fee:infinityFee(slot,zero),protocolFee:Number(slot[2]),lpFee:Number(slot[3]),hooks:key[2]};
  }
 }
 export async function infinityVenue(rpc){
@@ -126,7 +126,7 @@ export async function infinityApprovals(rpc,token,owner,amount){
 }
 export function verifyInfinityApproval(step,plan){
  const v=PERMIT2.decodeFunctionData('approve',step.data);
- if(plan.route!==INFINITY.id+'-opening'||!same(step.to,INFINITY.permit2)||!same(step.token,plan.inputToken)||!same(v[0],step.token)||!same(v[1],INFINITY.router)||!same(step.spender,INFINITY.router)||v[2]!==BigInt(step.allowance)||v[2]!==BigInt(plan.amountIn)||v[3]!==BigInt(step.expiration)||step.expiration>Math.floor(Date.now()/1000)+1800||step.expiration<=Math.floor(Date.now()/1000))throw Error('Permit2 授权超出本笔范围');
+ if(![INFINITY.id+'-opening',INFINITY.id+'-buy'].includes(plan.route)||!same(step.to,INFINITY.permit2)||!same(step.token,plan.inputToken)||!same(v[0],step.token)||!same(v[1],INFINITY.router)||!same(step.spender,INFINITY.router)||v[2]!==BigInt(step.allowance)||v[2]!==BigInt(plan.amountIn)||v[3]!==BigInt(step.expiration)||step.expiration>Math.floor(Date.now()/1000)+1800||step.expiration<=Math.floor(Date.now()/1000))throw Error('Permit2 授权超出本笔范围');
 }
 export async function verifyInfinityAllowance(rpc,step,plan,readState=work=>work()){
  verifyInfinityApproval(step,plan);const [amount,expiry]=await readState(()=>read(rpc,INFINITY.permit2,PERMIT2,'allowance',[plan.wallet,step.token,step.spender]));if(amount<BigInt(step.allowance)||Number(expiry)<Math.floor(Date.now()/1000)+30)throw Error('Permit2 当前额度或有效期不足');

@@ -62,6 +62,8 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
  // main RPC. Share only completed identities/topology, never pending work.
  const warmDetector=new OpeningPools(warmRpc),warmPreparation=new OpeningPreparation(warmRpc);
  warmDetector.known=detector.known;warmPreparation.entries=preparation.entries;
+ engine.primaryPoolHints=t=>{detector.quoteDiscovery.adoptCompleted(t,warmDetector.quoteDiscovery);return detector.quoteDiscovery.knownRoutes(t);};
+ detector.hintSource=warmDetector.quoteDiscovery;warmDetector.hintSource=detector.quoteDiscovery;
  engine.warmOpeningScan=(t,o)=>warmDetector.scan(t,{...o,watch:true});engine.warmOpeningPreparation=warmPreparation;
  const sellWarmup=new ManualSellWarmup({scan:engine.warmOpeningScan,preparation:warmPreparation,busy:()=>!warmIdle()});
  const gangWarmup=new GangWarmup({rpc:warmRpc,busy:()=>engine.running.size>0||!!opening.active?.()||!!corla.active?.()});
@@ -86,7 +88,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
   const send=(code,v,type='application/json')=>{res.writeHead(code,{'content-type':type+'; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer','content-security-policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"});res.end(type==='application/json'?json(v):v);};
   try{
    guard(req);const u=new URL(req.url,'http://'+req.headers.host),p=u.pathname;
-   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,instance,capabilities:{gangVersion:2,sellCoordinationVersion:6,queuedSellPreviewVersion:3,manualSellPreparationVersion:4,tradePreparationVersion:5,instantGuardsVersion:2,sellQuoteIsolationVersion:3,rpcRecoveryVersion:1,genericMintVersion:3,infinitySellVersion:1,sellFeeGuardVersion:3,sellFeeThresholdPpm:HIGH_FEE_PPM,feeRouteSearchVersion:1,sellGasVersion:1,openingVersion:7,tradeWarmupVersion:2,recoveryVersion:1,instantReview:true,corlaVersion:3,corlaAutomationVersion:3,taskCenterVersion:2,originalTrackingVersion:1},token,mode:live?'LIVE':'SIMULATION',wallets:bindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list(),corla:corla.list()});
+   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,instance,capabilities:{gangVersion:2,sellCoordinationVersion:6,queuedSellPreviewVersion:3,manualSellPreparationVersion:4,tradePreparationVersion:5,instantGuardsVersion:2,sellQuoteIsolationVersion:3,rpcRecoveryVersion:1,genericMintVersion:3,infinitySellVersion:1,sellFeeGuardVersion:4,sellRouteValueVersion:1,primaryPoolSpeedVersion:1,primaryTradePolicyVersion:1,sellFeeThresholdPpm:HIGH_FEE_PPM,feeRouteSearchVersion:1,sellGasVersion:1,openingVersion:7,tradeWarmupVersion:2,recoveryVersion:1,instantReview:true,corlaVersion:3,corlaAutomationVersion:3,taskCenterVersion:2,originalTrackingVersion:1},token,mode:live?'LIVE':'SIMULATION',wallets:bindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list(),corla:corla.list()});
    if(p.startsWith('/api/'))auth(req);
    if(req.method==='POST'&&p==='/api/trade-warm'){
     const b=await body(req);if(!b||Object.keys(b).length!==1||typeof b.asset!=='string')throw Error('预热只接受交易代币 CA');

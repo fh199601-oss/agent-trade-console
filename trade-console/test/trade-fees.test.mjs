@@ -53,7 +53,8 @@ test('official/declarative labels and prior approval cannot prefer a high fee po
  const low={pool:{pool,quote:WBNB},fees:{poolFeePpm:3000},output:5n,allowance:0n};
  const high={pool:{pool:router,quote:WBNB,declaredByToken:true},fees:{poolFeePpm:850150},output:100n,allowance:999999n};
  assert.deepEqual([high,low].sort(compareFeeRoutes),[low,high]);assert.ok(compareFeeRoutes(low,{...high,fees:{poolFeePpm:null}})<0);
- const official={...low,pool:{...low.pool,declaredByToken:true},output:4n};assert.ok(compareFeeRoutes(official,low)<0);
+ const official={...low,pool:{...low.pool,declaredByToken:true}};assert.ok(compareFeeRoutes(official,low)<0);
+ assert.ok(compareFeeRoutes({...official,output:4n},low)>0,'a label cannot prefer materially worse proceeds');
 });
 test('an opaque aggregator cannot inherit a direct pool fee proof or a token tax zero result',()=>{
  const f=assessSellFees({...direct(),kind:'swap',opening:{pool,fee:3000}});assert.equal(f.poolFeePpm,null);assert.equal(f.pools.length,0);assert.equal(f.required,true);assert.equal(f.opaque,true);

@@ -1,5 +1,5 @@
 import {hash,parseUnits} from './common.mjs';
-import {assessSellFees} from './trade-fees.mjs';
+import {assessSellFees,HIGH_FEE_PPM} from './trade-fees.mjs';
 import {previewUsable} from './preview-cache.mjs';
 
 // A queued wallet may simulate its own sale while another wallet is settling.
@@ -19,7 +19,7 @@ function binding(p){
   audit:{available:p.audit?.available,tax:p.audit?.taxes?.sellTax,unusual:p.audit?.taxes?.unusualSellTax,flagged:p.audit?.taxes?.isFlaggedByVendor},
   pool:o.pool,kind:o.kind,id:o.id,router:o.router,factory:o.factory,quote:o.quote,fee:o.fee,
   path:o.path,legs:o.legs?.map(l=>({pool:l.pool,kind:l.kind,router:l.router,factory:l.factory,token0:l.token0,token1:l.token1})),
-  fees:{poolFeePpm:p.poolFees?.poolFeePpm,quoteLossPpm:p.poolFees?.quoteLossPpm,pools:p.poolFees?.pools},
+  fees:{poolFeePpm:p.poolFees?.poolFeePpm,quoteLossPpm:p.poolFees?.quoteLossPpm>=HIGH_FEE_PPM?p.poolFees.quoteLossPpm:null,pools:p.poolFees?.pools},
   prefix:p.steps.slice(0,-1),target:p.steps.at(-1).to,value:p.steps.at(-1).value});
 }
 export function reusableQueuedSell(fresh,warmed,now=Date.now()){

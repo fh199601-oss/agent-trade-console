@@ -18,6 +18,7 @@ import {refreshStarsMint,verifyStarsPreview,verifyStarsReceipt} from './stars.mj
 import {sellGasArgs} from './sell-gas.mjs';
 import {updateFeeReview,blockUnverifiableFees,assessSellFees} from './trade-fees.mjs';
 import {findLowFeeSell,searchableSellPreviewError} from './sell-fee-search.mjs';
+import {primaryBuyPlan} from './primary-buy.mjs';
 import {manualDirectSell} from './manual-sell-recovery.mjs';
 import {openingPlan,refreshOpeningSell} from './opening-route.mjs';
 import {openingReads} from './opening-read.mjs';
@@ -75,7 +76,7 @@ export function verifyPreview(p,plan,step){
   if(!same(c.owner,plan.wallet))continue;
   if(step.kind==='approve'){
    if(!same(c.tokenAddress,step.approvalType==='infinity-permit2'?step.token:step.to)||!same(c.spender,step.spender)||integer(c.postAmount)>BigInt(step.allowance))throw Error('授权范围超出本笔所需');
-  }else if(!same(c.tokenAddress,plan.inputToken)||!(same(c.spender,step.to)||plan.route===INFINITY.id+'-opening'&&same(step.to,INFINITY.router)&&same(c.spender,INFINITY.permit2))||integer(c.postAmount)>integer(c.preAmount))throw Error('模拟出现额外授权');
+  }else if(!same(c.tokenAddress,plan.inputToken)||!(same(c.spender,step.to)||[INFINITY.id+'-opening',INFINITY.id+'-buy'].includes(plan.route)&&same(step.to,INFINITY.router)&&same(c.spender,INFINITY.permit2))||integer(c.postAmount)>integer(c.preAmount))throw Error('模拟出现额外授权');
  }
  const debits=new Map(),nftCredits=new Set(),multiIds=new Set();let multiCredit=0n,output=0n;
  for(const c of s.balanceChanges||[]){if(!same(c.owner,plan.wallet))continue;const token=c.contractAddress;
@@ -173,10 +174,11 @@ export class Engine{
   if(!overlap)await ensureReady();
   const tradeBridge=overlap||background?{call:async(account,args,options)=>{await ensureReady();if(background){if(!context.allowed?.()||args[0]!=='market-order'||args[1]!=='quote')throw Error('只读预热已让位于交易');return this.bridge.call(account,args,{...options,background:true,readOnlyTimeoutMs:1500});}return this.bridge.call(account,args,options);},ready:async(account,options)=>{await ensureReady();return this.bridge.ready(account,{...options,...(background?{background:true}:{})});}}:this.bridge;
   const directSellPlan=(seed,slippagePromise)=>manualDirectSell(planningRpc,tradeBridge,intent,seed,{scan:background?(this.warmOpeningScan||this.openingScan):this.openingScan,preparation:background?(this.warmOpeningPreparation||this.openingPreparation):this.openingPreparation,slippagePromise});
+  const directBuyPlan=(seed,slippagePromise)=>primaryBuyPlan(planningRpc,intent,seed,{scan:background?(this.warmOpeningScan||this.openingScan):this.openingScan,slippagePromise});
   // Buying always targets the explicitly supplied token CA. Audit and quote
   // are independent reads; both still complete before preview/submission.
   let [p,audit]=await Promise.all([
-   intent.side==='mint'?mintPlan(this.rpc,this.bridge,intent,resolved.address,resolved,this.experience,{officialPreview:true,quantityCeiling:context.mintCeiling??500}):(intent.openingOnly?(context.openingRecovery?openingRecoveryPlan(this.rpc,tradeBridge,intent,this.get(context.openingRecovery.sourceId),{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation}):openingPlan(this.rpc,tradeBridge,intent,{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation,holdingHint:context.openingHoldingHint,failedPreviews:recentOpeningPreviewFailures(this.list(),intent)})):tradePlan(planningRpc,tradeBridge,intent,resolved.address,resolved.platform,{...this.tradePlanOptions,directSellPlan,routeRpc})),
+   intent.side==='mint'?mintPlan(this.rpc,this.bridge,intent,resolved.address,resolved,this.experience,{officialPreview:true,quantityCeiling:context.mintCeiling??500}):(intent.openingOnly?(context.openingRecovery?openingRecoveryPlan(this.rpc,tradeBridge,intent,this.get(context.openingRecovery.sourceId),{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation}):openingPlan(this.rpc,tradeBridge,intent,{scan:this.openingScan,snapshot:context.openingSnapshot,preparation:this.openingPreparation,holdingHint:context.openingHoldingHint,failedPreviews:recentOpeningPreviewFailures(this.list(),intent)})):tradePlan(planningRpc,tradeBridge,intent,resolved.address,resolved.platform,{...this.tradePlanOptions,directSellPlan,directBuyPlan,routeRpc})),
    intent.side==='sell'?measure('tokenAudit',()=>this.sellAudit(resolved.address)):intent.side==='buy'?measure('tokenAudit',()=>this.buyAudit(resolved.address)):null,
    ensureReady()
   ]);
@@ -198,20 +200,14 @@ export class Engine{
  async warmOpeningApprovals(config,preflight,snapshot,allowed){return this.openingApprovalPreviews.warm(config,preflight,snapshot,this.openingPreparation,allowed);}
  async consumeManualSellPreparation(intent,warm){
   if(!warm||!same(warm.plan.wallet,wallet(intent.account).address))return null;
-  if(warm.plan.kind==='swap'){
-   // The aggregator executes a fresh market order from exact input arguments;
-   // its quote is indicative, never a cached signed transaction or route ID.
-   // Still verify current registration, payment funds and audit before reuse.
-   if(intent.side!=='buy'||Date.now()-warm.startedAt>3000)return null;
-   const old=warm.plan;
-   try{
-    const [route,balance,audit]=await Promise.all([detectRoute(this.routeRpc||this.rpc,old.token,old.wallet),native(old.inputToken)?this.rpc.getBalance(old.wallet):read(this.rpc,old.inputToken,ERC20,'balanceOf',[old.wallet]).then(r=>r[0]),this.buyAudit(old.token),this.rpc.verifyChain(),this.bridge.ready(intent.account)]);
-    const auditKey=a=>hash({available:a?.available,level:a?.level,items:a?.items,taxes:a?.taxes});
-    if(route.route!=='aggregate'||route.diagnostics?.length||BigInt(balance)<BigInt(old.amountIn)||auditKey(audit)!==auditKey(old.audit)||Date.now()-warm.startedAt>3000)return null;
-    return {plan:{...old,audit},preview:null,ageMs:Date.now()-warm.startedAt,planReused:true};
-   }catch{return null;}
-  }
+  // Old aggregator warm entries cannot bypass fixed-pool selection.
+  if(warm.plan.kind==='swap')return null;
   let original=warm.plan;
+  if(intent.side==='sell'&&original.manualRouteRecovery&&this.primaryPoolHints){
+   const main=this.primaryPoolHints(original.token);
+   // No RPC here: current warmed provenance invalidates an old secondary.
+   if(main.some(p=>p.declaredByToken&&!same(p.pool,original.opening?.pool)))return null;
+  }
   if(warm.routeSeedOnly){
    const amount=sellAmount(BigInt(original.holdingBefore),intent.percent);
    original={...original,amountIn:String(amount),steps:original.steps.map(s=>s.kind==='approve'?{...s,allowance:String(amount),data:ERC20.encodeFunctionData('approve',[s.spender,amount])}:s)};

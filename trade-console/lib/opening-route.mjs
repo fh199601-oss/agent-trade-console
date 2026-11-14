@@ -1,11 +1,12 @@
 import {InfinityPools,infinityQuote,infinitySaleData,infinityApprovals,infinitySettlement} from './infinity.mjs';
 import {Interface,read,ERC20,WBNB,BNB,wallet,same,formatUnits} from './common.mjs';
-import {OpeningPools,freshOpeningSnapshot} from './opening-pools.mjs';
+import {OpeningPools,freshOpeningSnapshot,refreshOpeningPoolProvenance} from './opening-pools.mjs';
 import {DEXES,dexFor,matchesCurrency,poolRouteKey,QUOTES,V2_ROUTER_ABI,V3_LEGACY,V3_MODERN,QUOTER} from './opening-dex.mjs';
 import {OpeningPreparation} from './opening-preparation.mjs';
+import {openingValues} from './opening-value.mjs';
 import {sellAmount} from './sell-policy.mjs';
 import {multiHopSettlement} from './opening-multihop.mjs';
-import {poolFeeProof,compareFeeRoutes,HIGH_FEE_PPM,feePercent} from './trade-fees.mjs';
+import {poolFeeProof,quotedPoolFees,v3SpotFees,V3_PRICE,compareFeeRoutes,adequatePrimaryRoute,HIGH_FEE_PPM,feePercent} from './trade-fees.mjs';
 import {openingReads} from './opening-read.mjs';
 import {POOL} from './opening-pools.mjs';
 import {checkedRead,transientRead} from './read-failure.mjs';
@@ -37,10 +38,10 @@ export async function refreshOpeningSell(rpc,plan,{slippagePromise}={}){
   const step={...plan.steps.at(-1),data:saleData(d,freshPool,plan.token,plan.wallet,amount,minimum,same(plan.outputToken,BNB))};
   return {...plan,opening:freshPool,state:freshPool,poolFees:fees,minOutput:String(minimum),quote:{...plan.quote,toCoinAmount:formatUnits(output,plan.outputDecimals??18)},quoteRefreshedAt:Date.now(),steps:[...plan.steps.slice(0,-1),step]};
  }
- const requests=d.kind==='v2'?[...(pool.legs||[pool]).map(p=>({to:p.pool,abi:POOL,method:'getReserves'})),{to:d.router,abi:ROUTER,method:'getAmountsOut',args:[amount,pool.path||[plan.token,pool.quote]]}]:[{to:d.quoter,abi:QUOTER,method:'quoteExactInputSingle',args:[[plan.token,pool.quote,amount,pool.fee,0]]}];
+ const requests=d.kind==='v2'?[...(pool.legs||[pool]).map(p=>({to:p.pool,abi:POOL,method:'getReserves'})),{to:d.router,abi:ROUTER,method:'getAmountsOut',args:[amount,pool.path||[plan.token,pool.quote]]}]:[{to:d.quoter,abi:QUOTER,method:'quoteExactInputSingle',args:[[plan.token,pool.quote,amount,pool.fee,0]]},{to:pool.pool,abi:V3_PRICE,method:'slot0'}];
  const [[balance],batch]=await Promise.all([read(rpc,plan.token,ERC20,'balanceOf',[plan.wallet]),openingReads(rpc,requests)]);
  if(batch.results.some(r=>r.status!=='fulfilled'))throw Error('最新池费与报价查询未完成，未提交');
- const quoted=batch.results.at(-1).value,legs=d.kind==='v2'?(pool.legs||[pool]).map((p,i)=>({...p,block:batch.block,reserve0:String(batch.results[i].value[0]),reserve1:String(batch.results[i].value[1])})):null;
+ const quoted=(d.kind==='v2'?batch.results.at(-1):batch.results[0]).value,legs=d.kind==='v2'?(pool.legs||[pool]).map((p,i)=>({...p,block:batch.block,reserve0:String(batch.results[i].value[0]),reserve1:String(batch.results[i].value[1])})):null;
  const freshPool=legs?{...pool,...legs[0],...(pool.legs?{quote:pool.quote,path:pool.path,legs}:{})}:pool;
  if(String(balance)!==plan.holdingBefore)throw Error('授权期间持仓已变化，请重新预览');
  await refreshPolicy();const output=d.kind==='v2'?quoted[0].at(-1):quoted[0];let minimum=output*BigInt(10000-plan.slippage.bps)/10000n;
@@ -48,7 +49,8 @@ export async function refreshOpeningSell(rpc,plan,{slippagePromise}={}){
  if(output<minimum)throw Error('备用路线刷新报价不足原最低到账');
  if(minimum<=0n||d.kind==='v2'&&(quoted[0].length!==(pool.path?.length||2)||quoted[0][0]!==amount))throw Error('开盘卖出刷新报价无效');
  const step={...plan.steps.at(-1),data:saleData(d,pool,plan.token,plan.wallet,amount,minimum,same(plan.outputToken,BNB))};
- return {...plan,opening:freshPool,state:freshPool,poolFees:poolFeeProof(freshPool,d.kind==='v2'?quoted[0]:null,plan.token,batch.block),minOutput:String(minimum),quote:{...plan.quote,toCoinAmount:formatUnits(output,plan.outputDecimals??18)},quoteRefreshedAt:Date.now(),steps:[...plan.steps.slice(0,-1),step]};
+ const fees=d.kind==='v2'?poolFeeProof(freshPool,quoted[0],plan.token,batch.block):v3SpotFees(freshPool,[amount,output],plan.token,batch.block,batch.results[1].value[0]);
+ return {...plan,opening:freshPool,state:freshPool,poolFees:fees,minOutput:String(minimum),quote:{...plan.quote,toCoinAmount:formatUnits(output,plan.outputDecimals??18)},quoteRefreshedAt:Date.now(),steps:[...plan.steps.slice(0,-1),step]};
 }
 export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPools(rpc).scan(t,o),snapshot,preparation,identityFor,holdingHint,initialHolding,failedPreviews=[],excludedRoutes=[],lowFeeOnly=false,expand=false,outputToken,minimumOutput,slippagePromise}={}){
  // Pool discovery and token/holding reads are independent. Only metadata is
@@ -89,11 +91,12 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
  const [tokenResult,openingBalance]=await Promise.all([tokenReads,intent.openingOnly?read(rpc,intent.asset,ERC20,'balanceOf',[w]):null]);if(tokenResult.error)throw tokenResult.error;const [meta,earlyBalance]=tokenResult.value,[balance]=openingBalance||earlyBalance;
  const amount=sellAmount(balance,intent.percent);
  const failed=p=>failedPreviews.some(f=>same(f.pool,p.pool)&&f.fingerprint===meta.identity?.fingerprint&&f.amountIn===String(amount)&&f.holdingBefore===String(balance));
+ const declared=p=>refreshOpeningPoolProvenance(snapshot,p).declaredByToken;
  candidates.sort((a,b)=>{
   const high=p=>['v3','infinity-cl'].includes(p.kind)&&p.fee>=HIGH_FEE_PPM;
   if(high(a)!==high(b))return high(a)?1:-1;
   if(failed(a)!==failed(b))return failed(a)?1:-1;
-  const score=p=>{const index=QUOTES.findIndex(q=>same(q,p.quote));return (p.declaredByToken?50:0)+(p.kind==='v2'?10:0)+(index<0?0:QUOTES.length-index);};
+  const score=p=>{const index=QUOTES.findIndex(q=>same(q,p.quote));return (declared(p)?50:0)+(p.kind==='v2'?10:0)+(index<0?0:QUOTES.length-index);};
   const diff=score(b)-score(a);if(diff)return diff;
   const depth=p=>BigInt(p.kind==='v2'?(same(p.token0,intent.asset)?p.reserve1:p.reserve0)||'0':p.liquidity||'0');return depth(b)>depth(a)?1:depth(b)<depth(a)?-1:0;
  });
@@ -108,7 +111,7 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
   if(approval.error)throw Object.assign(Error('当前授权额度读取失败，未提交，可重新点击'),{code:'SELL_ROUTE_READ_FAILED'});const allowance=approval.value;
   const output=d.kind==='infinity-cl'?quoted.output:d.kind==='v2'?quoted[0].at(-1):quoted[0];if(output<=0n||d.kind==='v2'&&(quoted[0].length!==(pool.path?.length||2)||quoted[0][0]!==amount))throw Error('开盘卖出报价无效');
   if(minimumOutput!==undefined&&output<BigInt(minimumOutput))throw Error('备用路线报价不足原最低到账');
-  return {pool,d,allowance,venue,output,failed:failed(pool),outputDecimals:outputMeta.decimals,fees:d.kind==='infinity-cl'?quoted.fees:poolFeeProof(pool,d.kind==='v2'?quoted[0]:null,intent.asset,pool.block)};
+  return {pool,d,allowance,venue,output,failed:failed(pool),outputDecimals:outputMeta.decimals,fees:d.kind==='infinity-cl'?quoted.fees:await quotedPoolFees(rpc,pool,d.kind==='v2'?quoted[0]:[amount,output],intent.asset,pool.block)};
  };
  // Compare bounded parallel quotes. Fast/previously approved is not evidence
  // of cheap. A hung quote cannot indefinitely block the remaining candidates.
@@ -120,14 +123,29 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
   const group=new AbortController();let grace;
   try{results.push(...await Promise.allSettled(candidates.slice(start,start+8).map(async pool=>{
    const result=await quoteCandidate(pool,group.signal);
-   if(!grace&&result.fees.poolFeePpm!==null&&Math.max(result.fees.poolFeePpm,result.fees.quoteLossPpm||0)<HIGH_FEE_PPM&&!result.failed)grace=setTimeout(()=>group.abort(),1200);
+   result.pool=refreshOpeningPoolProvenance(snapshot,result.pool);
+   // Primary identity + full-size depth + current allowance + venue checks
+   // have ALL completed. A slow secondary cannot improve the primary-first
+   // policy, so end only those optional waits; keep normal deadlines otherwise.
+   if(!result.failed&&adequatePrimaryRoute(result)){clearTimeout(grace);group.abort();}
+   else if(!grace&&!group.signal.aborted&&result.fees.poolFeePpm!==null&&Math.max(result.fees.poolFeePpm,result.fees.quoteLossPpm||0)<HIGH_FEE_PPM&&!result.failed)grace=setTimeout(()=>group.abort(),1200);
    return result;
   })));}finally{clearTimeout(grace);}
   usable=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
-  if(usable.some(r=>r.fees.poolFeePpm!==null&&Math.max(r.fees.poolFeePpm,r.fees.quoteLossPpm||0)<HIGH_FEE_PPM&&!r.failed))break;
+  // A primary getter can complete during the first batch. Bring any still
+  // unquoted primary to the next batch before taking a merely fast secondary.
+  const remaining=candidates.slice(start+8).sort((a,b)=>Number(!!declared(b))-Number(!!declared(a)));
+  candidates.splice(start+8,remaining.length,...remaining);
+  const primaryPending=remaining.some(p=>declared(p)&&!failed(p));
+  if(!primaryPending&&usable.some(r=>r.fees.poolFeePpm!==null&&Math.max(r.fees.poolFeePpm,r.fees.quoteLossPpm||0)<HIGH_FEE_PPM&&!r.failed))break;
   if(!usable.length&&results.some(r=>r.status==='rejected'&&transientRead(r.reason)))break;
  }
  if(lowFeeOnly)usable=usable.filter(r=>r.fees.poolFeePpm!==null&&Math.max(r.fees.poolFeePpm,r.fees.quoteLossPpm||0)<HIGH_FEE_PPM);
+ for(const r of usable)r.pool=refreshOpeningPoolProvenance(snapshot,r.pool);
+ // An adequate primary wins by policy, so unrelated FX reads cannot improve
+ // this decision. Keep their latency off the common primary-pool path.
+ if(!usable.some(r=>!r.failed&&adequatePrimaryRoute(r)))await openingValues(rpc).compare(usable,prep);
+ for(const r of usable)r.pool=refreshOpeningPoolProvenance(snapshot,r.pool);
  usable.sort(compareFeeRoutes);
  const chosen=usable[0],lastError=results.find(r=>r.status==='rejected')?.reason;
  // A quote failure can be a thin/closed pool, not the absence of all pools.
@@ -143,7 +161,7 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
  const receiveNative=same(pool.quote,WBNB)&&(outputToken?same(outputToken,BNB):intent.currency!=='WBNB'),data=saleData(d,pool,intent.asset,w,amount,minimum,receiveNative);
  return {kind:'contract',route:d.id+'-opening',account:intent.account,token:intent.asset,wallet:w,inputToken:intent.asset,outputToken:receiveNative?BNB:pool.quote,amountIn:String(amount),holdingBefore:String(balance),decimals:meta.decimals,outputDecimals,minOutput:String(minimum),
   identity:{...meta.identity,learnedAssets:venue.assets},opening:{...pool,detectedAt:snapshot.at,reusedDetection:reused},state:pool,requireSellCredit:true,
-  poolFees:chosen.fees,...(minimumOutput!==undefined?{authorizationMinOutput:String(minimumOutput)}:{}),routeSearch:{quoted:results.length,candidates:candidates.length,limited:results.length<candidates.length,expanded:!!snapshot.expanded},slippage,quote:{toCoinAmount:formatUnits(output,outputDecimals)},review:[],steps:[
+  poolFees:chosen.fees,...(minimumOutput!==undefined?{authorizationMinOutput:String(minimumOutput)}:{}),routeSearch:{quoted:results.length,candidates:candidates.length,limited:results.length<candidates.length,expanded:!!snapshot.expanded,comparison:usable.map(r=>({pool:r.pool.pool,quote:r.pool.quote,output:String(r.output),poolFeePpm:r.fees.poolFeePpm,quoteLossPpm:r.fees.quoteLossPpm??null,declaredByToken:!!r.pool.declaredByToken,value:r.value??null,valueUnavailable:!!r.valueUnavailable}))},slippage,quote:{toCoinAmount:formatUnits(output,outputDecimals)},review:[],steps:[
    ...approvalSteps,
    {kind:'sell',to:d.router,value:'0',data}
   ]};

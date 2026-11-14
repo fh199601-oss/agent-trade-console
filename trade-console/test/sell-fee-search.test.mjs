@@ -1,6 +1,6 @@
 // All plans, wallets' transport responses and submissions below are synthetic.
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
-import {HIGH_FEE_PPM} from '../lib/trade-fees.mjs';
+import {HIGH_FEE_PPM,V3_PRICE} from '../lib/trade-fees.mjs';
 import {findLowFeeSell,MAX_FEE_ALTERNATIVES} from '../lib/sell-fee-search.mjs';
 import {Engine} from '../lib/engine.mjs';import {openingPlan,refreshOpeningSell} from '../lib/opening-route.mjs';
 import {BNB,WBNB,USDT,ERC20,bindings,same} from '../lib/common.mjs';
@@ -40,7 +40,7 @@ function harness(t,first,{previewError=false}={}){
   if(!approve&&input.length>10){const tx=V3_LEGACY.parseTransaction({data:input});const inner=V3_LEGACY.parseTransaction({data:tx.name==='multicall'?tx.args[0][0]:input});bad=inner.args[0].fee===2500n;}
   return {requestId:approve?'approve':bad?'bad':'good',simulationResult:{simulationCode:bad&&previewError?'failure':'000000000',balanceChanges:approve?[]:[{owner:w.address,contractAddress:BNB,change:bad?'500000':'1000000'}]}};
  }sent.push(args.at(-1));return {txHash:'0x'+'ab'.repeat(32)};}};
- const rpc={getBlockNumber:async()=>100,call:async tx=>same(tx.to,token)?ERC20.encodeFunctionResult('balanceOf',[2000000n]):same(tx.to,DEXES[2].quoter)?QUOTER.encodeFunctionResult('quoteExactInputSingle',[1000000n,1n,0n,100000n]):Promise.reject(Error('unsupported multicall'))};
+ const rpc={getBlockNumber:async()=>100,call:async tx=>same(tx.to,token)?ERC20.encodeFunctionResult('balanceOf',[2000000n]):same(tx.to,DEXES[2].quoter)?QUOTER.encodeFunctionResult('quoteExactInputSingle',[1000000n,1n,0n,100000n]):tx.data===V3_PRICE.encodeFunctionData('slot0')?V3_PRICE.encodeFunctionResult('slot0',[1n<<96n,0,0,0,0,0,true]):Promise.reject(Error('unsupported multicall'))};
  const engine=new Engine({rpc,bridge,data,live:true,planFn:async()=>first});engine.observeContract=async(o,e)=>{e.status='CONFIRMED';};
  engine.feeRoutePlanner=async()=>venuePlan(2);
  return {engine,sent};
@@ -73,7 +73,7 @@ test('alternate route filter uses 50% and reports the same threshold',async()=>{
 });
 test('alternate quotes stay on pinned output and encode original minimum when new slippage floor is lower',async()=>{
  const d=DEXES[2],pools=[{...d,pool:router,quote:WBNB,liquid:true,fee:500},{...d,pool:token,quote:USDT,liquid:true,fee:100}];let quotes=0;
- const rpc={getBlockNumber:async()=>100,call:async tx=>same(tx.to,token)?ERC20.encodeFunctionResult(ERC20.parseTransaction(tx).name,[2000000n]):same(tx.to,d.quoter)?(quotes++,QUOTER.encodeFunctionResult('quoteExactInputSingle',[1000000n,1n,0n,100000n])):Promise.reject(Error('no multicall'))};
+ const rpc={getBlockNumber:async()=>100,call:async tx=>same(tx.to,token)?ERC20.encodeFunctionResult(ERC20.parseTransaction(tx).name,[2000000n]):same(tx.to,d.quoter)?(quotes++,QUOTER.encodeFunctionResult('quoteExactInputSingle',[1000000n,1n,0n,100000n])):same(tx.to,router)&&tx.data===V3_PRICE.encodeFunctionData('slot0')?V3_PRICE.encodeFunctionResult('slot0',[1n<<96n,0,0,0,0,0,true]):Promise.reject(Error('no multicall'))};
  const p=await openingPlan(rpc,{}, {...intent,currency:'AUTO'},{scan:async()=>({pools}),preparation:{token:async()=>({decimals:6,identity:{}}),venue:async()=>({assets:[]})},outputToken:BNB,minimumOutput:'800000',lowFeeOnly:true});
  assert.equal(quotes,1);assert.equal(p.outputToken,BNB);assert.equal(p.minOutput,'800000');assert.equal(p.authorizationMinOutput,'800000');
  const fresh=await refreshOpeningSell(rpc,p);assert.equal(fresh.minOutput,'800000');const calls=V3_LEGACY.parseTransaction(fresh.steps[0]).args[0];assert.equal(V3_LEGACY.parseTransaction({data:calls[0]}).args[0].amountOutMinimum,800000n);

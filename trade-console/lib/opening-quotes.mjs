@@ -11,20 +11,35 @@ const valid=a=>/^0x[\da-f]{40}$/i.test(a)&&!same(a,ZeroAddress)&&!same(a,BNB);
 const unique=items=>[...new Map(items.map(q=>[q.toLowerCase(),q])).values()].slice(0,12);
 
 export class OpeningQuotes{
- constructor(rpc,{now=Date.now,sources=typeof rpc.send==='function'?new OpeningSources(rpc):null}={}){Object.assign(this,{rpc,now,sources});this.cache=new Map();this.pending=new Map();this.routes=new Map();this.external=new Map();this.unknown=new Map();}
+ constructor(rpc,{now=Date.now,sources=typeof rpc.send==='function'?new OpeningSources(rpc):null}={}){Object.assign(this,{rpc,now,sources});this.cache=new Map();this.pending=new Map();this.primaryPending=new Map();this.routes=new Map();this.external=new Map();this.unknown=new Map();}
  known(token){return unique([...(this.cache.get(token.toLowerCase())?.quotes||[]),...this.knownRoutes(token).map(p=>p.quote)]);}
  knownRoutes(token){return this.routes.get(token.toLowerCase())||[];}
  unsupported(token){return this.unknown.get(token.toLowerCase())||[];}
- async discover(token){
+ adoptCompleted(token,other){
   const key=token.toLowerCase();
-  if(this.pending.has(key))return this.pending.get(key);
-  const work=(async()=>{
-   const old=this.cache.get(key),external=this.sources?this.sources.discover(token).then(pairs=>this.readPairs(token,pairs)).catch(()=>{}):Promise.resolve();
-   if(!old||this.now()-old.at>=(old.quotes.length?15000:2000)){
-    const quotes=await this.read(token);this.cache.set(key,{at:this.now(),quotes});if(this.cache.size>128){const evict=this.cache.keys().next().value;this.cache.delete(evict);this.routes.delete(evict);this.external.delete(evict);}
-   }
-   await external.catch(()=>{});return this.known(token);
-  })();this.pending.set(key,work);try{return await work;}finally{this.pending.delete(key);}
+  // Keep foreground and warm RPC queues/pending work isolated. Only a finished
+  // discovery can seed metadata; never import its balance, quote or promise.
+  if(!other||other===this||this.pending.has(key)||other.pending.has(key)||this.primaryPending.has(key)||other.primaryPending?.has(key))return false;
+  const entry=other.cache.get(key),old=this.cache.get(key),age=this.now()-entry?.at;
+  if(!entry||age<0||age>=(entry.quotes.length||other.knownRoutes(token).length?15000:2000)||old&&old.at>=entry.at)return false;
+  this.cache.set(key,{at:entry.at,quotes:[...entry.quotes]});
+  this.routes.set(key,other.knownRoutes(token).map(p=>({...p})));
+  this.external.set(key,new Map(other.external.get(key)||[]));
+  this.unknown.set(key,other.unsupported(token).map(p=>({...p})));
+  while(this.cache.size>128){const evict=this.cache.keys().next().value;for(const m of [this.cache,this.routes,this.external,this.unknown])m.delete(evict);}
+  return true;
+ }
+ async primary(token){
+  const key=token.toLowerCase(),old=this.cache.get(key);
+  if(old&&this.now()-old.at>=0&&this.now()-old.at<(old.quotes.length||this.knownRoutes(token).length?15000:2000))return this.known(token);
+  if(this.primaryPending.has(key))return this.primaryPending.get(key);
+  const work=this.read(token).then(quotes=>{this.cache.set(key,{at:this.now(),quotes});if(this.cache.size>128){const evict=this.cache.keys().next().value;this.cache.delete(evict);this.routes.delete(evict);this.external.delete(evict);}return this.known(token);});
+  this.primaryPending.set(key,work);try{return await work;}finally{this.primaryPending.delete(key);}
+ }
+ async discover(token){
+  const key=token.toLowerCase();if(this.pending.has(key))return this.pending.get(key);
+  const work=Promise.all([this.primary(token),this.sources?this.sources.discover(token).then(pairs=>this.readPairs(token,pairs)).catch(()=>{}):null]).then(()=>this.known(token));
+  this.pending.set(key,work);try{return await work;}finally{this.pending.delete(key);}
  }
  async readPairs(token,pairs,block='latest'){
   const key=token.toLowerCase(),known=this.external.get(key)||new Map(),fresh=unique(pairs.filter(valid)).filter(p=>!known.has(p.toLowerCase())||this.now()-known.get(p.toLowerCase())>15000);
@@ -35,9 +50,9 @@ export class OpeningQuotes{
    const quote=same(t0,token)?t1:same(t1,token)?t0:null;if(!valid(quote)||same(quote,token))return;
    if(!d){this.unknown.set(key,[...new Map([...this.unsupported(token),{pool,factory}].map(p=>[p.pool.toLowerCase(),p])).values()].slice(0,8));if(this.unknown.size>128)this.unknown.delete(this.unknown.keys().next().value);return;}
    const fee=d.kind==='v3'&&row[3].status==='fulfilled'?Number(row[3].value[0]):null;if(d.kind==='v3'&&!(fee>0&&fee<1000000))return;
-   routes.push({pool,quote:address(quote),factory:d.factory,kind:d.kind,...(fee?{fee}:{})});known.set(pool.toLowerCase(),this.now());
+   routes.push({pool,quote:address(quote),factory:d.factory,kind:d.kind,declaredByToken:!!this.knownRoutes(token).find(p=>same(p.pool,pool))?.declaredByToken,...(fee?{fee}:{})});known.set(pool.toLowerCase(),this.now());
   });
-  this.external.set(key,known);this.routes.set(key,[...new Map([...routes,...this.knownRoutes(token)].map(p=>[p.pool.toLowerCase(),p])).values()].slice(0,24));
+  this.external.set(key,known);this.routes.set(key,[...new Map([...this.knownRoutes(token),...routes].map(p=>[p.pool.toLowerCase(),p])).values()].slice(0,24));
   if(this.routes.size>128){const evict=this.routes.keys().next().value;this.routes.delete(evict);this.external.delete(evict);}
  }
  async read(token){

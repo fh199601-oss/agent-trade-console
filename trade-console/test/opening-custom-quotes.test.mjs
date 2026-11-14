@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {OpeningPools,POOL,FACTORY,freshOpeningSnapshot} from '../lib/opening-pools.mjs';
+import {OpeningPools,POOL,FACTORY,freshOpeningSnapshot,refreshOpeningPoolProvenance} from '../lib/opening-pools.mjs';
 import {OpeningQuotes,HINT_ABI} from '../lib/opening-quotes.mjs';
 import {DEXES,V2_ROUTER_ABI as ROUTER} from '../lib/opening-dex.mjs';
 import {MULTICALL,MULTI} from '../lib/opening-read.mjs';
@@ -38,6 +38,20 @@ test('nonstandard quote learned before opening; new pair found immediately; warm
 test('unknown quote can be found from a pair getter without a quote getter',async()=>{
  const h=fixture({pairOnly:true});h.open();const s=await h.detector.scan(token);assert.equal(s.open,true);assert.equal(s.pools[0].quote,quote);
 });
+test('token-declared main pair discovered beside a liquid base scan retains provenance in this snapshot',async()=>{
+ const h=fixture({pairOnly:true});h.detector.quotes=[quote];h.open();
+ const s=await h.detector.scan(token);assert.equal(s.open,true);assert.equal(s.pools[0].declaredByToken,true);
+});
+test('cold watch waits for token primary proof, never races it with a dust pool',async()=>{
+ const h=fixture({pairOnly:true});h.detector.quotes=[quote];h.open();
+ const original=h.hints.read.bind(h.hints);let release,finished=false;
+ const gate=new Promise(r=>release=r);h.hints.read=async token=>{await gate;return original(token);};
+ const pending=h.detector.scan(token,{watch:true}).then(s=>{finished=true;return s;});
+ await new Promise(r=>setImmediate(r));assert.equal(finished,false);release();
+ const s=await pending,p=s.pools[0];assert.equal(p.declaredByToken,true);
+ const before=h.calls(),fresh=refreshOpeningPoolProvenance(s,p);assert.equal(fresh.declaredByToken,true);assert.equal(h.calls(),before);
+ assert.equal(fresh.block,p.block);assert.equal(fresh.reserve0,p.reserve0);
+});
 for(const flag of ['badFactory','wrongAssets'])test('untrusted '+flag+' never becomes opening',async()=>{
  const h=fixture({[flag]:true});h.open();assert.equal((await h.detector.scan(token)).open,false);
 });
@@ -61,4 +75,23 @@ test('an already verified liquid pool is never held up by optional quote redisco
  const h=fixture();h.open();await h.detector.scan(token);
  let release;h.detector.quoteDiscovery.discover=()=>new Promise(r=>release=r);
  const pending=h.detector.scan(token);try{assert.equal((await Promise.race([pending,new Promise((_,reject)=>setTimeout(()=>reject(Error('hint discovery blocked a liquid pool')),200))])).open,true);}finally{release?.([]);}
+});
+test('completed primary warmup is reused without inheriting its RPC queue or refreshing its age',async()=>{
+ const h=fixture({pairOnly:true});h.open();await h.hints.discover(token);
+ let calls=0,clock=4000;
+ const live=new OpeningQuotes({call:async()=>{calls++;throw Error('unexpected foreground getter');}},{now:()=>clock,sources:null});
+ assert.equal(live.adoptCompleted(token,h.hints),true);assert.equal(live.knownRoutes(token)[0].declaredByToken,true);
+ assert.notEqual(live.routes,h.hints.routes);assert.notEqual(live.pending,h.hints.pending);
+ await live.discover(token);assert.equal(calls,0);assert.equal(live.cache.get(token).at,1000);
+ h.hints.routes.get(token)[0].declaredByToken=false;assert.equal(live.knownRoutes(token)[0].declaredByToken,true,'copy, not shared mutable metadata');
+ clock=17000;const fresh=new OpeningQuotes({}, {now:()=>clock,sources:null});assert.equal(fresh.adoptCompleted(token,h.hints),false,'expired metadata cannot be renewed by import');
+});
+test('unfinished warm discovery is ignored rather than awaited or copied',async()=>{
+ const h=fixture({pairOnly:true});h.open();await h.hints.discover(token);h.hints.pending.set(token,new Promise(()=>{}));
+ const live=new OpeningQuotes({}, {now:()=>1000,sources:null});assert.equal(live.adoptCompleted(token,h.hints),false);assert.equal(live.knownRoutes(token).length,0);assert.equal(live.pending.size,0);
+});
+test('foreground pool scan reuses completed warm primary proof and reads fresh reserves',async()=>{
+ const h=fixture({pairOnly:true});h.open();await h.hints.discover(token);const before=h.hintReads();
+ const fresh=new OpeningQuotes(h.rpc,{now:()=>1500,sources:null}),detector=new OpeningPools(h.rpc,{dexes:[d],quotes:[quote],quoteDiscovery:fresh,infinity:null});
+ detector.hintSource=h.hints;const s=await detector.scan(token);assert.equal(s.pools[0].declaredByToken,true);assert.equal(s.block,123);assert.equal(h.hintReads(),before);
 });

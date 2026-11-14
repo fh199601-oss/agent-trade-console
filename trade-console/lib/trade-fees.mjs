@@ -1,8 +1,9 @@
 import {createHash} from 'node:crypto';
-import {same,native,parseUnits} from './common.mjs';
+import {same,native,parseUnits,Interface,read} from './common.mjs';
 
 // PPM, not bps: Uniswap 850150 means 85.015%, NOT 0.85015%.
 export const HIGH_FEE_PPM=500000; // User-selected 50% high-fee threshold.
+export const MAIN_POOL_QUOTE_LOSS_PPM=50000; // 5% full-size loss establishes adequate depth; not a new consent threshold.
 export const feePercent=n=>n===null||n===undefined?'未知':`${Number((n/10000).toFixed(4))}%`;
 const ppm=n=>n!==null&&n!==undefined&&n!==''&&typeof n!=='boolean'&&Number.isFinite(Number(n))&&Number(n)>=0&&Number(n)<=1000000?Math.ceil(Number(n)):null;
 export function compoundFees(values){if(values.some(v=>v===null))return null;return Number(1000000n-values.reduce((n,v)=>n*BigInt(1000000-v)/1000000n,1000000n));}
@@ -22,7 +23,58 @@ export function poolFeeProof(pool,amounts,token,block){
  const legs=pool.legs||[pool],path=pool.path||[token,pool.quote];
  const fees=legs.map((p,i)=>p.kind==='v3'?ppm(p.fee):
   block!==undefined&&p.block===block&&amounts?.length===legs.length+1?v2FeePpm({reserveIn:same(path[i],p.token0)?p.reserve0:p.reserve1,reserveOut:same(path[i],p.token0)?p.reserve1:p.reserve0,amountIn:amounts[i],amountOut:amounts[i+1]}):null);
- return {version:1,source:pool.kind==='v3'?'verified-v3-fee':'same-block-reserves-and-quote',poolFeePpm:compoundFees(fees),pools:legs.map((p,i)=>({address:p.pool,factory:p.factory,feePpm:fees[i]})),block};
+ const impact=v2QuoteLoss(pool,amounts,token,block);
+ return {version:1,source:pool.kind==='v3'?'verified-v3-fee':'same-block-reserves-and-quote',poolFeePpm:compoundFees(fees),...impact,pools:legs.map((p,i)=>({address:p.pool,factory:p.factory,feePpm:fees[i]})),block};
+}
+export const V3_PRICE=new Interface(['function slot0() view returns(uint160,int24,uint16,uint16,uint16,uint32,bool)']);
+const priceReads=new WeakMap();
+function v3Spot(rpc,pool,block){
+ let entries=priceReads.get(rpc);if(!entries){entries=new Map();priceReads.set(rpc,entries);}
+ const key=pool.toLowerCase()+':'+String(block),old=entries.get(key);
+ if(old&&old.until>Date.now())return old.value;
+ // Coalesce wallets only for the exact same pinned block. Never carry a
+ // latest price into another block, and never share background RPC promises.
+ const value=read(rpc,pool,V3_PRICE,'slot0',[],block);const entry={until:Date.now()+5000,value};entries.set(key,entry);
+ void value.catch(()=>{if(entries.get(key)===entry)entries.delete(key);});
+ while(entries.size>128)entries.delete(entries.keys().next().value);
+ return value;
+}
+export async function quotedPoolFees(rpc,pool,amounts,token,block){
+ const proof=poolFeeProof(pool,amounts,token,block);
+ if(pool.kind!=='v3'||!pool.token0||!pool.token1||![pool.token0,pool.token1].some(t=>same(t,token))||!(Number.isSafeInteger(block)&&block>=0||/^0x[\da-f]+$/i.test(String(block))))return proof;
+ try{
+  const [sqrt]=await v3Spot(rpc,pool.pool,block);
+  return v3SpotFees(pool,amounts,token,block,sqrt);
+ }catch{return proof;} // Unknown depth never qualifies for the primary fast path.
+}
+export function v3SpotFees(pool,amounts,token,block,sqrt){
+ const proof=poolFeeProof(pool,amounts,token,block);
+ if(!sqrt||sqrt<=0n||![pool.token0,pool.token1].some(t=>same(t,token)))return proof;
+ const x=BigInt(amounts[0]),y=BigInt(amounts.at(-1)),n=same(pool.token0,token)?x*sqrt*sqrt:x*(1n<<192n),d=same(pool.token0,token)?1n<<192n:sqrt*sqrt;
+ if(n<=0n||y<=0n)return proof;
+ return {...proof,quoteLossPpm:y*d>=n?0:Number(((n-y*d)*1000000n+n-1n)/n),referenceOutput:String(n/d)};
+}
+// A low LP fee does NOT imply a good execution price. Compare the full-size
+// quote with the same-block spot price, using exact rational arithmetic across
+// every leg (no decimal assumptions or per-hop rounding).
+export function v2QuoteLoss(pool,amounts,token,block){
+ try{
+  const legs=pool.legs||[pool],path=pool.path||[token,pool.quote];
+  if(block===undefined||path.length!==legs.length+1||amounts?.length!==legs.length+1)return {};
+  let numerator=BigInt(amounts[0]),denominator=1n;
+  if(numerator<=0n||BigInt(amounts.at(-1))<=0n)return {};
+  for(let i=0;i<legs.length;i++){
+   const p=legs[i];if(p.kind!=='v2'||p.block!==block||!same(path[i],p.token0)&&!same(path[i],p.token1))return {};
+   const ri=BigInt(same(path[i],p.token0)?p.reserve0:p.reserve1),ro=BigInt(same(path[i],p.token0)?p.reserve1:p.reserve0);
+   if(ri<=0n||ro<=0n)return {};numerator*=ro;denominator*=ri;
+  }
+  const actual=BigInt(amounts.at(-1))*denominator;
+  const loss=actual>=numerator?0:Number(((numerator-actual)*1000000n+numerator-1n)/numerator);
+  return {quoteLossPpm:loss,referenceOutput:String(numerator/denominator)};
+ }catch{return {};}
+}
+export function adequatePrimaryRoute(r){
+ return !!r.pool.declaredByToken&&r.fees?.poolFeePpm!=null&&r.fees.poolFeePpm<HIGH_FEE_PPM&&r.fees?.quoteLossPpm!=null&&r.fees.quoteLossPpm<=MAIN_POOL_QUOTE_LOSS_PPM;
 }
 export function compareFeeRoutes(a,b){
  const cost=r=>r.fees?.poolFeePpm==null?null:Math.max(r.fees.poolFeePpm,r.fees.quoteLossPpm||0);
@@ -30,10 +82,23 @@ export function compareFeeRoutes(a,b){
  const tier=f=>f===null?2:f>=HIGH_FEE_PPM?1:0;
  if(tier(af)!==tier(bf))return tier(af)-tier(bf);
  if(!!a.failed!==!!b.failed)return a.failed?1:-1;
+ // User policy: an authenticated token-declared primary pool with adequate
+ // depth comes first. 'Official' text, prior approval and a nonzero reserve
+ // alone are insufficient. The ordinary 50% fee gate remains unchanged.
+ if(adequatePrimaryRoute(a)!==adequatePrimaryRoute(b))return adequatePrimaryRoute(a)?-1:1;
+ if(!!a.value!==!!b.value)return a.value?-1:1;
+ // Compare like units, never a USDT integer with a BNB integer. Value quotes
+ // are read-only comparison evidence; they do not change the payout currency.
+ if(same(a.pool.quote,b.pool.quote)&&a.output!==b.output)return a.output>b.output?-1:1;
+ if(a.value?.amount&&b.value?.amount&&same(a.value.token,b.value.token)){
+  const av=BigInt(a.value.amount),bv=BigInt(b.value.amount);
+  if(av!==bv)return av>bv?-1:1;
+ }
  // A token-declared pool is only preferred AFTER factory and fee checks. Its
  // label does not exempt it from the high-fee confirmation rule.
  if(!!a.pool.declaredByToken!==!!b.pool.declaredByToken)return a.pool.declaredByToken?-1:1;
- if(same(a.pool.quote,b.pool.quote)&&a.output!==b.output)return a.output>b.output?-1:1;
+ // Missing cross-currency valuation is not permission to choose a dust pool
+ // for a one-PPM fee rounding advantage. Prefer measured execution retention.
  if(af!==bf)return (af??1000001)-(bf??1000001);
  return String(a.pool.pool).localeCompare(String(b.pool.pool));
 }
@@ -56,7 +121,15 @@ function simulatedShortfall(plan,preview){
  }catch{return null;}
 }
 export function assessSellFees(plan,preview,{beforeSell=false}={}){
- const opaque=plan.kind==='swap',curve=opaque?null:curveFees(plan),proof=opaque?null:plan.poolFees;
+ const opaque=plan.kind==='swap',curve=opaque?null:curveFees(plan);
+ let proof=opaque?null:plan.poolFees;
+ // Reconstruct this check for older cached/prepared V2 plans as well. Their
+ // previous feeReview omitted impact; never trust that saved 'low fee' flag.
+ if(!opaque&&plan.opening?.kind==='v2')try{
+  const pool=plan.opening,amounts=Array((pool.legs?.length||1)+1).fill(0n);
+  amounts[0]=BigInt(plan.amountIn);amounts[amounts.length-1]=parseUnits(String((plan.latestQuote||plan.quote).toCoinAmount),plan.outputDecimals??18);
+  proof={...proof,...v2QuoteLoss(pool,amounts,plan.token,pool.block)};
+ }catch{}
  const poolFeePpm=ppm(curve?.poolFeePpm??proof?.poolFeePpm);
  const taxPpm=curve?.taxPpm??(plan.audit?.available?percentPpm(plan.audit.taxes?.sellTax):null);
  const additionalLossPpm=opaque?null:simulatedShortfall(plan,preview);

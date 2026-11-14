@@ -172,30 +172,9 @@ test('arming starts read-only approval preparation immediately and pause invalid
  opening.checks.set('fake',{id:'fake',config,rows:[{account:w.account,address:w.address}],preflight:{rows:[]},snapshot:{open:false},checkedAt:Date.now(),mode:'SIMULATION'});
  opening.arm('fake',{confirmed:true});assert.equal(called,1);assert.equal(allowed(),true);opening.pause('fake');assert.equal(allowed(),false);
 });
-test('aggregate buy reuses only indicative quote; current payment balance, audit, registration and age gate the cache',async t=>{
- const data=fs.mkdtempSync(path.join(os.tmpdir(),'aggregate-prepare-'));t.after(()=>fs.rmSync(data,{recursive:true,force:true}));
- const zero=p=>p.baseType==='tuple'?p.components.map(zero):p.type==='address'?ZeroAddress:p.type==='bool'?false:p.type==='bytes32'?'0x'+'0'.repeat(64):0n;
- let funds=1000000000000000000n,audits=0,quotes=0,registered=false,risk=false,ready=0;
- const rpc={verifyChain:async()=>{},getBalance:async()=>funds,call:async tx=>{
-  if(same(tx.to,USDT))return ERC20.encodeFunctionResult('balanceOf',[funds]);
-  if(same(tx.to,token)){const f=ERC20.parseTransaction(tx);return ERC20.encodeFunctionResult(f.name,[f.name==='decimals'?18:0]);}
-  const pad=gang.PADS.find(p=>same(p.address,tx.to)),a=same(tx.to,GANG_ENTRY)?GANG_ABI:same(tx.to,flap.portal)?flap.portalAbi:pad?(pad.kind==='soft'?gang.SOFT_ABI:pad.id==='s'?gang.S_ABI:gang.V2_ABI):null;
-  assert.ok(a);const f=a.parseTransaction(tx);if(registered&&same(tx.to,GANG_ENTRY))throw Object.assign(Error('registration changed'),{code:'GANG_IDENTITY_MISMATCH'});
-  return a.encodeFunctionResult(f.name,f.fragment.outputs.map(zero));
- }};
- const bridge={ready:async()=>{ready++;},call:async(_,args)=>{assert.deepEqual(args.slice(0,2),['market-order','quote']);quotes++;return {toCoinAmount:'123'};}};
- const engine=new Engine({data,rpc,bridge,auditFn:async()=>{audits++;return risk?{available:true,level:5,items:[]}:audit;}});
- const intents=wallets.slice(0,4).map(w=>intent('buy',w.account));
- await Promise.all(intents.map(i=>engine.manualSellPreparation.request(i)));assert.equal(audits,1);assert.equal(quotes,4);
- const old=structuredClone(engine.manualSellPreparation.entries.get(w.account+':buy'));
- const orders=await Promise.all(intents.map((i,n)=>engine.prepare(i,'aggregate-hot-'+n)));
- assert.ok(orders.every(o=>o.status==='PREPARED'&&o.timing.tradePlanReused),JSON.stringify(orders.map(o=>o.error)));
- assert.equal(quotes,4,'click does not repeat cached indicative quote');assert.equal(ready,8);
- const attempt=()=>engine.consumeManualSellPreparation(validateIntent(intent()),old);
- funds=0n;assert.equal(await attempt(),null);funds=1000000000000000000n;
- registered=true;assert.equal(await attempt(),null);registered=false;
- risk=true;engine.buyAudits.clear();assert.equal(await attempt(),null);
- await assert.rejects(engine.plan(validateIntent(intent())),/风险 5 级/);
- risk=false;engine.buyAudits.clear();old.startedAt=Date.now()-3001;assert.equal(await attempt(),null);
- assert.equal(engine.list().length,4);assert.ok(engine.list().every(o=>o.steps.length===0));
+test('legacy opaque buy warmup is discarded before it can bypass primary-pool routing',async t=>{
+ const data=fs.mkdtempSync(path.join(os.tmpdir(),'aggregate-retired-'));t.after(()=>fs.rmSync(data,{recursive:true,force:true}));
+ let calls=0;const engine=new Engine({data,rpc:{},bridge:{call:async()=>{calls++;throw Error('no wallet call');}}});
+ const warm={startedAt:Date.now(),plan:{kind:'swap',wallet:w.address,token,route:'binance-aggregate'}};
+ assert.equal(await engine.consumeManualSellPreparation(validateIntent(intent()),warm),null);assert.equal(calls,0);
 });

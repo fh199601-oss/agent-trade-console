@@ -1,10 +1,12 @@
 // Fixed, factory-verified routes. This is a planner: no signing/broadcast here.
+import {infinityQuote} from './infinity.mjs';
+import {infinityBuySteps} from './infinity-buy.mjs';
 import {Interface,read,ERC20,BNB,WBNB,USDT,same,native} from './common.mjs';
 import {OpeningPools,POOL} from './opening-pools.mjs';
 import {openingReads} from './opening-read.mjs';
 import {OpeningPreparation} from './opening-preparation.mjs';
 import {DEXES,dexFor,V2_ROUTER_ABI,V3_LEGACY,V3_MODERN,QUOTER} from './opening-dex.mjs';
-import {poolFeeProof,HIGH_FEE_PPM,compoundFees} from './trade-fees.mjs';
+import {poolFeeProof,quotedPoolFees,HIGH_FEE_PPM,compoundFees,compareFeeRoutes,adequatePrimaryRoute} from './trade-fees.mjs';
 import {codeIdentity} from './discovery.mjs';
 import {openingSettlement} from './opening-route.mjs';
 export const WRAPPED=new Interface(['function deposit() payable','function withdraw(uint256)','event Deposit(address indexed dst,uint256 wad)','event Withdrawal(address indexed src,uint256 wad)','event Transfer(address indexed from,address indexed to,uint256 value)']);
@@ -56,13 +58,13 @@ export class TradeConversions{
   })();this.preparing.set(key,work);try{return await work;}finally{this.preparing.delete(key);}
  }
  async plan(args){
-  if(args.graph)return this.build(args);
+  if(args.graph||args.routeCandidates)return this.build({...args,graph:args.graph||new Map()});
   const input=native(args.inputToken)?WBNB:args.inputToken,output=native(args.outputToken)?WBNB:args.outputToken;
   const prepared=await this.refresh(input,output),graph=prepared||new Map();
   try{const result=await this.build({...args,graph});if(!prepared)this.remember(input,output,graph);return result;}
   catch(e){if(!prepared||e.code!=='QUOTE_CONVERSION_UNAVAILABLE')throw e;this.topologies.delete(this.key(input,output));const fresh=new Map(),result=await this.build({...args,graph:fresh});this.remember(input,output,fresh);return result;}
  }
- async build({inputToken,outputToken,amount,owner,slippageBps,preferredPool,quotedOutput,maxHops=2,graph}){
+ async build({inputToken,outputToken,amount,owner,slippageBps,preferredPool,quotedOutput,maxHops=2,graph,routeCandidates,refreshProvenance=p=>p}){
   amount=BigInt(amount);if(amount<=0n||!Number.isInteger(slippageBps)||slippageBps<0||slippageBps>5000)throw Error('兑换金额或滑点无效');
   const ni=native(inputToken),no=native(outputToken),input=ni?WBNB:inputToken,output=no?WBNB:outputToken;
   if(same(input,output)){
@@ -71,30 +73,41 @@ export class TradeConversions{
    const tradeLeg={inputToken,outputToken,amountIn:String(amount),minOutput:String(amount),settlementRoute:'trade-conversion',state:{wrap:ni?'deposit':'withdraw'}};
    return {outputToken,amountOut:amount,minOutput:String(amount),outputDecimals:18,identities:[identity],fees:{poolFeePpm:0,source:'WBNB 1:1 包装',pools:[]},steps:[{kind:'conversion',to:WBNB,value:ni?String(amount):'0',data,tradeLeg}]};
   }
-  const base=await this.edge(input,output,graph),candidates=base.pools.filter(p=>p.liquid);
+  const base=routeCandidates?{pools:routeCandidates}:await this.edge(input,output,graph),candidates=base.pools.filter(p=>p.liquid);
   // If no direct pair exists, include fixed same-factory two-hop V2 paths.
-  if(!candidates.length&&maxHops>1){
+  if(!routeCandidates&&!candidates.length&&maxHops>1){
    const mids=[WBNB,USDT].filter(t=>!same(t,input)&&!same(t,output));
    const rows=await Promise.all(mids.map(async mid=>{const [a,b]=await Promise.all([this.edge(input,mid,graph,base.block),this.edge(mid,output,graph,base.block)]);return a.pools.filter(p=>p.liquid&&p.kind==='v2').flatMap(p=>b.pools.filter(q=>q.liquid&&q.kind==='v2'&&same(q.factory,p.factory)).map(q=>({...p,quote:output,path:[input,mid,output],legs:[p,q]})));}));candidates.push(...rows.flat());
   }
-  const quoted=await Promise.allSettled(candidates.map(async pool=>{
+  const group=new AbortController();
+  const quoteWork=async pool=>{
    const d=dexFor(pool);if(!d)throw Error('兑换池不在已核验工厂中');
-   const r=await read(this.rpc,d.kind==='v2'?d.router:d.quoter,d.kind==='v2'?V2_ROUTER_ABI:QUOTER,d.kind==='v2'?'getAmountsOut':'quoteExactInputSingle',d.kind==='v2'?[amount,pool.path||[input,output]]:[[input,output,amount,pool.fee,0]],pool.block);
-   const raw=d.kind==='v2'?r[0].at(-1):r[0],fees=poolFeeProof(pool,d.kind==='v2'?r[0]:null,input,pool.block);
+   const r=d.kind==='infinity-cl'?await infinityQuote(this.rpc,pool,pool.inputCurrency,amount):await read(this.rpc,d.kind==='v2'?d.router:d.quoter,d.kind==='v2'?V2_ROUTER_ABI:QUOTER,d.kind==='v2'?'getAmountsOut':'quoteExactInputSingle',d.kind==='v2'?[amount,pool.path||[input,output]]:[[input,output,amount,pool.fee,0]],pool.block);
+   const raw=d.kind==='infinity-cl'?r.output:d.kind==='v2'?r[0].at(-1):r[0],fees=d.kind==='infinity-cl'?r.fees:await quotedPoolFees(this.rpc,pool,d.kind==='v2'?r[0]:[amount,raw],input,pool.block);
    if(raw<=0n||fees.poolFeePpm===null||fees.poolFeePpm>=HIGH_FEE_PPM)throw Error('兑换路径无有效低费报价');
    // Tax-handler preview is only applicable to its declared official pair.
    const adjusted=quotedOutput&&same(pool.pool,preferredPool)?await quotedOutput(pool,raw):raw;
    if(adjusted<=0n||adjusted>raw)throw Error('计入税收后的兑换报价无效');
-   return {pool,d,amountOut:adjusted,fees};
+   if(routeCandidates)await this.prep.venue(d);
+   return {pool:{...refreshProvenance(pool),...(preferredPool&&same(pool.pool,preferredPool)?{declaredByToken:true}:{})},d,amountOut:adjusted,output:adjusted,fees};
+  };
+  const quoted=await Promise.allSettled(candidates.map(async pool=>{
+   if(!routeCandidates)return quoteWork(pool);
+   let timer,abort;
+   try{
+    const result=await Promise.race([quoteWork(pool),new Promise((_,reject)=>{
+     abort=()=>reject(Error('主池已核验，结束次池等待'));if(group.signal.aborted)abort();else group.signal.addEventListener('abort',abort,{once:true});
+     timer=setTimeout(()=>reject(Error('买入池报价或身份查询超时，未提交')),Math.max(6000,Number(this.rpc.timeoutMs)||0));
+    })]);
+    if(adequatePrimaryRoute(result))group.abort();
+    return result;
+   }finally{clearTimeout(timer);if(abort)group.signal.removeEventListener('abort',abort);}
   }));
-  const valid=quoted.filter(r=>r.status==='fulfilled').map(r=>r.value).sort((a,b)=>{
-   if(preferredPool&&same(a.pool.pool,preferredPool)!==same(b.pool.pool,preferredPool))return same(a.pool.pool,preferredPool)?-1:1;
-   return a.amountOut===b.amountOut?0:a.amountOut>b.amountOut?-1:1;
-  });
+  const valid=quoted.filter(r=>r.status==='fulfilled').map(r=>r.value).filter(r=>!routeCandidates||Math.max(r.fees.poolFeePpm,r.fees.quoteLossPpm||0)<HIGH_FEE_PPM).sort(compareFeeRoutes);
   // Some stock quotes only have V3 liquidity against USDT, or use a different
   // factory on each leg. Build bounded exact-input steps, spending only each
   // prior leg's guaranteed proceeds. Never recurse into arbitrary-hop searches.
-  if(!valid.length&&maxHops>1&&!quotedOutput){
+  if(!routeCandidates&&!valid.length&&maxHops>1&&!quotedOutput){
    const mids=[WBNB,USDT].filter(t=>!same(t,input)&&!same(t,output));
    const alternatives=await Promise.allSettled(mids.map(async mid=>{
     const first=await this.plan({inputToken,outputToken:mid,amount,owner,slippageBps:Math.floor(slippageBps/2),maxHops:1,graph});
@@ -108,6 +121,11 @@ export class TradeConversions{
   if(!valid.length)throw Object.assign(Error('未找到 '+inputToken+' → '+outputToken+' 的可核验低费兑换路径；可选择池子原币直接交易'),{code:'QUOTE_CONVERSION_UNAVAILABLE'});
   const {pool,d,amountOut,fees}=valid[0],minimum=amountOut*BigInt(10000-slippageBps)/10000n;
   if(minimum<=0n)throw Error('兑换最低到账为零');
+  if(d.kind==='infinity-cl'){
+   if(!routeCandidates||no)throw Error('Infinity 买入缺少固定池与到账资产');
+   const [venue,asset,meta,steps]=await Promise.all([this.prep.venue(d),this.prep.token(output),this.prep.quote(output),infinityBuySteps(this.rpc,pool,inputToken,output,owner,amount,minimum)]);
+   return {outputToken:output,amountOut,minOutput:String(minimum),outputDecimals:meta.decimals,fees,selectedPool:pool,primarySelected:adequatePrimaryRoute(valid[0]),identities:[{...asset.identity,learnedAssets:venue.assets}],steps};
+  }
   const [venue,identity,[allowance],meta]=await Promise.all([this.prep.venue(d),this.prep.token?this.prep.token(output).then(v=>v.identity):this.identityFor(this.rpc,output),ni?[amount]:read(this.rpc,input,ERC20,'allowance',[owner,d.router]),this.prep.quote(output)]);
   const deadline=Math.floor(Date.now()/1000)+180;let data;
   if(d.kind==='v2')data=ni?V2_NATIVE.encodeFunctionData('swapExactETHForTokensSupportingFeeOnTransferTokens',[minimum,pool.path||[input,output],owner,deadline]):V2_ROUTER_ABI.encodeFunctionData(no?'swapExactTokensForETHSupportingFeeOnTransferTokens':'swapExactTokensForTokensSupportingFeeOnTransferTokens',[amount,minimum,pool.path||[input,output],owner,deadline]);
@@ -116,7 +134,7 @@ export class TradeConversions{
    data=d.legacy?(calls.length===1?call:abi.encodeFunctionData('multicall(bytes[])',[calls])):abi.encodeFunctionData('multicall(uint256,bytes[])',[deadline,calls]);
   }
   const tradeLeg={inputToken,outputToken,amountIn:String(amount),minOutput:String(minimum),settlementRoute:'trade-conversion',state:pool};
-  return {outputToken,amountOut,minOutput:String(minimum),outputDecimals:meta.decimals,fees,identities:[{...identity,learnedAssets:venue.assets}],steps:[...(allowance<amount?[{kind:'approve',to:input,value:'0',data:ERC20.encodeFunctionData('approve',[d.router,amount]),spender:d.router,allowance:String(amount)}]:[]),{kind:'conversion',to:d.router,value:ni?String(amount):'0',data,tradeLeg}]};
+  return {outputToken,amountOut,minOutput:String(minimum),outputDecimals:meta.decimals,fees,selectedPool:pool,primarySelected:adequatePrimaryRoute(valid[0]),identities:[{...identity,learnedAssets:venue.assets}],steps:[...(allowance<amount?[{kind:'approve',to:input,value:'0',data:ERC20.encodeFunctionData('approve',[d.router,amount]),spender:d.router,allowance:String(amount)}]:[]),{kind:'conversion',to:d.router,value:ni?String(amount):'0',data,tradeLeg}]};
  }
 }
 export function conversionSettlement({receipt,wallet:owner,state,plan,step}){

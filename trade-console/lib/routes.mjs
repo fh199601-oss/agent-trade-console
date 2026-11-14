@@ -1,3 +1,4 @@
+import {INFINITY_BUY,infinityBuySettlement} from './infinity-buy.mjs';
 import {INFINITY} from './infinity.mjs';
 import {gangClient,gangInternalPlan,gangSettlement} from './gang-modern.mjs';
 import {gangPoolPlan} from './gang-pool.mjs';
@@ -66,7 +67,7 @@ export async function detectRoute(rpc,token,w,platform){
  if(platform)throw Error(`未能核验 ${platform} 代币注册；不猜测交易入口`);
  return {route:'aggregate',diagnostics:checks.filter(r=>r.status==='rejected').map(r=>r.reason.message)};
 }
-export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=true,overlapRouteReads=true,coldQuoteOverlap=true,earlyBuyQuote=true,earlyBuyRoute=true,tokenMetadata,directSellPlan,routeRpc=rpc}={}){
+export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=true,overlapRouteReads=true,coldQuoteOverlap=true,earlyBuyQuote=true,earlyBuyRoute=true,tokenMetadata,directSellPlan,directBuyPlan,routeRpc=rpc}={}){
  const w=wallet(intent.account).address,hints=hintMap(rpc),hintKey=token.toLowerCase();
  // Wallet-independent registration can start alongside fresh holdings.
  // Amount-dependent quotes still wait for the current balance.
@@ -76,7 +77,8 @@ export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=
  // read. This is read-only speculation; registry, audit and balance checks still
  // gate the final plan. Never do this for sell: its amount needs a fresh balance.
  const canSpeculate=overlapQuotes&&intent.currency!=='QUOTE'&&!platform&&!gangClient(rpc).known.has(hintKey)&&!/888[0-9a-f]$/i.test(token)&&!routeCache.has(hintKey)&&(coldQuoteOverlap||(hints.get(hintKey)||0)>Date.now());
- const earlyArgs=earlyBuyQuote&&canSpeculate&&intent.side==='buy'?['--binanceChainId','56','--fromToken',intent.currency==='USDT'?USDT:intent.currency==='WBNB'?WBNB:BNB,'--toToken',token,'--fromTokenQty',formatUnits(parseUnits(intent.amount,18),18),'--slippage',intent.slippageMode==='auto'?'auto':String(intent.slippageBps/100)]:null;
+ const directPlanner=intent.side==='buy'?directBuyPlan:directSellPlan,directEnabled=typeof directPlanner==='function';
+ const earlyArgs=!directEnabled&&earlyBuyQuote&&canSpeculate&&intent.side==='buy'?['--binanceChainId','56','--fromToken',intent.currency==='USDT'?USDT:intent.currency==='WBNB'?WBNB:BNB,'--toToken',token,'--fromTokenQty',formatUnits(parseUnits(intent.amount,18),18),'--slippage',intent.slippageMode==='auto'?'auto':String(intent.slippageBps/100)]:null;
  const early=earlyArgs?measure('tradeQuote',()=>bridge.call(intent.account,['market-order','quote',...earlyArgs])).then(value=>({value}),error=>({error})):null;
  // Verified token decimals are reusable for either direction. Holdings and
  // every execution identity remain fresh; metadata never supplies an amount.
@@ -92,7 +94,6 @@ export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=
  // Quote and registry are independent READS, including a first visit. Any
  // curve registration wins and discards this quote; its error is also isolated.
  // Holdings are always current and a zero holding never requests a quote.
- const directEnabled=intent.side==='sell'&&typeof directSellPlan==='function';
  // A direct fixed-slippage sell does not need an opaque aggregator quote.
  // Auto mode still obtains and pins the official recommendation under its cap.
  const speculative=early||(canSpeculate&&(!directEnabled||intent.slippageMode==='auto')?quoteOnly().then(value=>({value}),error=>({error})):null);
@@ -100,8 +101,8 @@ export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=
   const policy=intent.slippageMode==='auto'?(speculative||quoteOnly().then(value=>({value}),error=>({error}))).then(result=>directSlippage(intent,result)):Promise.resolve(quotedSlippage(intent,{}));
   // All work here is read-only speculation. A registered curve still wins;
   // a rejected speculative plan never escapes as an unhandled rejection.
-  const seed={kind:'swap',wallet:w,token,inputToken:aggregateInput,outputToken:aggregateOutput,amountIn:String(aggregateAmount),holdingBefore:String(balance),holdingCheckedAt,slippage:{mode:'fixed',bps:intent.slippageBps,capBps:intent.slippageBps}};
-  return Promise.all([directSellPlan(seed,policy),policy]).then(([plan])=>({plan}),error=>({error}));
+  const seed={kind:'swap',wallet:w,token,inputToken:aggregateInput,outputToken:aggregateOutput,amountIn:String(aggregateAmount),holdingBefore:String(balance),holdingCheckedAt,decimals,slippage:{mode:'fixed',bps:intent.slippageBps,capBps:intent.slippageBps}};
+  return Promise.all([directPlanner(seed,policy),policy]).then(([plan])=>({plan}),error=>({error}));
  };
  const speculativeDirect=directEnabled&&canSpeculate?startDirect():null;
  const routed=pendingRoute?await pendingRoute:{route:await measure('tradeRoute',()=>detectRoute(routeRpc,token,w,platform))};if(routed.error)throw routed.error;const route=routed.route;
@@ -153,4 +154,4 @@ export async function tradePlan(rpc,bridge,intent,token,platform,{overlapQuotes=
  const approval=allowance<amountIn?[{kind:'approve',to:input,value:'0',data:ERC20.encodeFunctionData('approve',[s.spender,amountIn]),spender:s.spender,allowance:String(amountIn)}]:[];
  return {kind:'contract',route:a.id,wallet:w,token,amountIn:String(amountIn),inputToken:input,outputToken:intent.side==='buy'?token:s.quoteToken,holdingBefore:String(balance),decimals,minOutput:String(min),quote:q,review:[],state:s,steps:[...approval,{kind:intent.side,...tx,value:String(tx.value)}]};
 }
-export const settlements={...Object.fromEntries([...DEXES,INFINITY].map(d=>[d.id+'-opening',openingSettlement])),flap:flap.settlement,gang:gang.settlement,'gang-modern':gangSettlement,'trade-conversion':conversionSettlement};
+export const settlements={[INFINITY_BUY]:infinityBuySettlement,...Object.fromEntries([...DEXES,INFINITY].map(d=>[d.id+'-opening',openingSettlement])),flap:flap.settlement,gang:gang.settlement,'gang-modern':gangSettlement,'trade-conversion':conversionSettlement};
