@@ -14,7 +14,7 @@ import {INFINITY,verifyInfinityApproval,verifyInfinityAllowance} from './infinit
 import {tradeLegPlan} from './trade-leg.mjs';
 import {providerRefusal,repairRejectedOrder,applyContractRefusal} from './provider-outcome.mjs';
 import {refreshBagentMint,verifyBagentBinding,verifyBagentReceipt} from './bagent.mjs';
-import {refreshStarsMint,verifyStarsPreview,verifyStarsReceipt} from './stars.mjs';
+import {refreshStarsMint,verifyStarsPreview,verifyStarsReceipt,refreshStarsRefund,verifyStarsRefundPreview,verifyStarsRefundReceipt} from './stars.mjs';
 import {sellGasArgs} from './sell-gas.mjs';
 import {updateFeeReview,blockUnverifiableFees,assessSellFees} from './trade-fees.mjs';
 import {findLowFeeSell,searchableSellPreviewError} from './sell-fee-search.mjs';
@@ -70,6 +70,7 @@ export function verifyPreview(p,plan,step){
  if(p.parsedTx?.contractAddress&&!same(p.parsedTx.contractAddress,step.to)&&!permitTokenView)throw Error('模拟目标合约不匹配');
  if(s.authorityChanges?.length)throw Error('模拟出现权限变更');
  const starsAllowance=plan.route==='stars:mint'&&verifyStarsPreview(p,plan,step);
+ if(plan.route==='stars:refund'&&step.kind!=='approve')verifyStarsRefundPreview(plan,step);
  if(step.kind==='referral'&&(s.allowanceChanges?.length||(s.balanceChanges||[]).some(c=>same(c.owner,plan.wallet)&&integer(c.change)!==0n)))throw Error('邀请绑定模拟出现资产或授权变更');
  for(const c of s.allowanceChanges||[]){
   if(starsAllowance)continue; // Exact pinned token/factory/amount already checked above.
@@ -98,7 +99,7 @@ export function verifyPreview(p,plan,step){
  }
  if(step.kind==='sell'&&plan.requireSellCredit&&output<BigInt(plan.minOutput))throw Object.assign(Error('官方卖出模拟到账不足最低到账，停止提交'),{code:'SELL_OUTPUT_BELOW_MIN'});
  if(plan.requireTradeCredit&&step.kind!=='approve'&&output<BigInt(plan.minOutput))throw Object.assign(Error('官方交易模拟到账不足本步骤最低到账，未提交'),{code:'TRADE_OUTPUT_BELOW_MIN'});
- if(plan.requireRefundCredit&&output<BigInt(plan.minOutput))throw Error('官方预览未证明本钱包退款足额到账');
+ if(plan.requireRefundCredit&&step.kind!=='approve'&&output<BigInt(plan.minOutput))throw Error('官方预览未证明本钱包退款足额到账');
  // Runtime-only ERC20 recognition requires proof of the promised incoming asset.
  if(step.kind==='mint'&&(!plan.metaVerified||plan.requireAssetCredit)&&plan.expectedAsset?.kind==='Erc20'&&output<BigInt(plan.minOutput||0))throw Error('模拟到账少于模板最低数量');
  if(step.kind==='mint'&&plan.requireNftCredit&&BigInt(nftCredits.size)<BigInt(plan.minOutput||0))throw Error('官方预览未证明本次 NFT 足额到账，停止提交');
@@ -423,6 +424,9 @@ export class Engine{
       if(o.plan.route==='stars:mint'&&o.plan.steps[index].kind==='mint'){
        o.plan=await refreshStarsMint(this.rpc,o.plan,o.plan.mintFunding?.effectiveIntent||{...o.intent,...(o.plan.referral?.fallback?{referral:'none'}:{})});this.previews.delete(id);this.write(o);
       }
+      if(o.plan.route==='stars:refund'&&o.plan.steps[index].kind==='mint'){
+       o.plan=await refreshStarsRefund(this.rpc,o.plan,o.intent);this.previews.delete(id);this.write(o);
+      }
       // Fresh identity checks and quote/official preview reads are independent.
       // Capture THIS plan: a fee-search reroute restarts the loop and checks the
       // new target again. Every guard must finish before execute can be called.
@@ -561,7 +565,7 @@ export class Engine{
      if(o.intent.side!=='mint')return this.finish(o);
      if(o.settledStage!==(o.stage||0)){
       o.completedQuantity=(o.completedQuantity||0)+o.plan.quantity;
-      const key=o.plan.budgetCurrency==='QUOTE'?'quote':o.plan.budgetCurrency==='USDT'?'usdt':'bnb';o.spent??={bnb:'0',usdt:'0'};o.spent[key]=String(BigInt(o.spent[key]||'0')+BigInt(o.plan.amountIn));o.settledStage=o.stage||0;this.write(o);
+      const key=o.plan.budgetCurrency==='QUOTE'?'quote':o.plan.budgetCurrency==='USDT'?'usdt':'bnb';o.spent??={bnb:'0',usdt:'0'};o.spent[key]=String(BigInt(o.spent[key]||'0')+BigInt(o.plan.redemption?'0':o.plan.amountIn));o.settledStage=o.stage||0;this.write(o);
      }
      const requested=o.plan.route==='binancians:mint'&&o.targetQuantity?o.targetQuantity-o.completedQuantity:o.intent.quantity==='max'?null:o.intent.quantity-o.completedQuantity;
      if(!o.plan.fill?.continue||requested===0||o.plan.route==='corla:mint'&&o.completedQuantity>=o.targetQuantity)return this.finish(o);
@@ -673,6 +677,8 @@ export class Engine{
      entry.settlement=corlaReceipt(receipt,plan);entry.received='1';
     }else if(entry.step.kind==='mint'&&plan.redemption?.protocol==='corla'){
      entry.settlement=corlaRefundReceipt(receipt,plan);entry.received=entry.settlement.amount;
+    }else if(entry.step.kind==='mint'&&plan.redemption?.protocol==='stars'){
+     entry.settlement=verifyStarsRefundReceipt(receipt,plan);entry.received=entry.settlement.amount;
     }else if(entry.step.kind==='mint'){
      const asset=plan.expectedAsset;const topic='0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';let received=0n;
      for(const log of receipt.logs||[])if(same(log.address,asset?.token||plan.token)&&log.topics?.[0]===topic&&same('0x'+log.topics[2]?.slice(-40),plan.wallet))received+=log.topics.length===4?1n:BigInt(log.data);
@@ -722,7 +728,7 @@ export class Engine{
     const e=o.steps?.at(-1);if(e?.txHash){await this.observeContract(o,e,Math.min(8000,Math.max(0,Number(receiptTimeoutMs)||0)));if(e.status==='CONFIRMED'){
      o.nextStep=e.index+1;
      if(o.nextStep<o.plan.steps.length||o.intent.side==='mint'&&o.plan.fill?.continue)o.status='READY_TO_CONTINUE';else{
-      if(o.intent.side==='mint'&&o.settledStage!==(o.stage||0)){o.completedQuantity=(o.completedQuantity||0)+o.plan.quantity;const key=o.plan.budgetCurrency==='QUOTE'?'quote':o.plan.budgetCurrency==='USDT'?'usdt':'bnb';o.spent??={bnb:'0',usdt:'0'};o.spent[key]=String(BigInt(o.spent[key]||'0')+BigInt(o.plan.amountIn));o.settledStage=o.stage||0;}
+      if(o.intent.side==='mint'&&o.settledStage!==(o.stage||0)){o.completedQuantity=(o.completedQuantity||0)+o.plan.quantity;const key=o.plan.budgetCurrency==='QUOTE'?'quote':o.plan.budgetCurrency==='USDT'?'usdt':'bnb';o.spent??={bnb:'0',usdt:'0'};o.spent[key]=String(BigInt(o.spent[key]||'0')+BigInt(o.plan.redemption?'0':o.plan.amountIn));o.settledStage=o.stage||0;}
       this.finish(o);
      }
     }}

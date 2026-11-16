@@ -86,7 +86,7 @@ export class TradeConversions{
    const raw=d.kind==='infinity-cl'?r.output:d.kind==='v2'?r[0].at(-1):r[0],fees=d.kind==='infinity-cl'?r.fees:await quotedPoolFees(this.rpc,pool,d.kind==='v2'?r[0]:[amount,raw],input,pool.block);
    if(raw<=0n||fees.poolFeePpm===null||fees.poolFeePpm>=HIGH_FEE_PPM)throw Error('兑换路径无有效低费报价');
    // Tax-handler preview is only applicable to its declared official pair.
-   const adjusted=quotedOutput&&same(pool.pool,preferredPool)?await quotedOutput(pool,raw):raw;
+   const adjusted=quotedOutput&&(!preferredPool||same(pool.pool,preferredPool))?await quotedOutput(refreshProvenance(pool),raw):raw;
    if(adjusted<=0n||adjusted>raw)throw Error('计入税收后的兑换报价无效');
    if(routeCandidates)await this.prep.venue(d);
    return {pool:{...refreshProvenance(pool),...(preferredPool&&same(pool.pool,preferredPool)?{declaredByToken:true}:{})},d,amountOut:adjusted,output:adjusted,fees};
@@ -121,6 +121,8 @@ export class TradeConversions{
   if(!valid.length)throw Object.assign(Error('未找到 '+inputToken+' → '+outputToken+' 的可核验低费兑换路径；可选择池子原币直接交易'),{code:'QUOTE_CONVERSION_UNAVAILABLE'});
   const {pool,d,amountOut,fees}=valid[0],minimum=amountOut*BigInt(10000-slippageBps)/10000n;
   if(minimum<=0n)throw Error('兑换最低到账为零');
+  const routerMinimum=d.kind==='v3'&&quotedOutput?.minimum&&(!preferredPool||same(pool.pool,preferredPool))?quotedOutput.minimum(pool,minimum):minimum;
+  if(routerMinimum<minimum)throw Error('税后最低到账不能放宽链上滑点保护');
   if(d.kind==='infinity-cl'){
    if(!routeCandidates||no)throw Error('Infinity 买入缺少固定池与到账资产');
    const [venue,asset,meta,steps]=await Promise.all([this.prep.venue(d),this.prep.token(output),this.prep.quote(output),infinityBuySteps(this.rpc,pool,inputToken,output,owner,amount,minimum)]);
@@ -130,7 +132,7 @@ export class TradeConversions{
   const deadline=Math.floor(Date.now()/1000)+180;let data;
   if(d.kind==='v2')data=ni?V2_NATIVE.encodeFunctionData('swapExactETHForTokensSupportingFeeOnTransferTokens',[minimum,pool.path||[input,output],owner,deadline]):V2_ROUTER_ABI.encodeFunctionData(no?'swapExactTokensForETHSupportingFeeOnTransferTokens':'swapExactTokensForTokensSupportingFeeOnTransferTokens',[amount,minimum,pool.path||[input,output],owner,deadline]);
   else{
-   const abi=d.legacy?V3_LEGACY:V3_MODERN,call=abi.encodeFunctionData('exactInputSingle',[[input,output,pool.fee,no?d.router:owner,...(d.legacy?[deadline]:[]),amount,minimum,0]]),calls=[call,...(no?[abi.encodeFunctionData('unwrapWETH9',[minimum,owner])]:[])];
+   const abi=d.legacy?V3_LEGACY:V3_MODERN,call=abi.encodeFunctionData('exactInputSingle',[[input,output,pool.fee,no?d.router:owner,...(d.legacy?[deadline]:[]),amount,routerMinimum,0]]),calls=[call,...(no?[abi.encodeFunctionData('unwrapWETH9',[minimum,owner])]:[])];
    data=d.legacy?(calls.length===1?call:abi.encodeFunctionData('multicall(bytes[])',[calls])):abi.encodeFunctionData('multicall(uint256,bytes[])',[deadline,calls]);
   }
   const tradeLeg={inputToken,outputToken,amountIn:String(amount),minOutput:String(minimum),settlementRoute:'trade-conversion',state:pool};

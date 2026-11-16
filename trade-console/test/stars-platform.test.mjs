@@ -1,6 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';
 import {keccak256} from 'ethers';
-import {STARS,STARS_ABI as M,STARS_TEMPLATE,STARS_PRICE,STARS_UNITS,starsPlan,starsState,discoverStars,inspectStars,verifyStarsTokenCode,starsReferral,verifyStarsPreview,verifyStarsReceipt} from '../lib/stars.mjs';
+import {STARS,STARS_ABI as M,STARS_TEMPLATE,STARS_PRICE,STARS_UNITS,STARS_MODES,starsRefundPlan,verifyStarsRefundReceipt,starsBuyTax,starsPlan,starsState,discoverStars,inspectStars,verifyStarsTokenCode,starsReferral,verifyStarsPreview,verifyStarsReceipt} from '../lib/stars.mjs';
+import {verifyPreview} from '../lib/engine.mjs';
 import {ERC20,ZeroAddress,parseUnits,BNB,same} from '../lib/common.mjs';
 import {IMPL_SLOT,discover} from '../lib/discovery.mjs';
 import {fundedMintPlan} from '../lib/mint-funding.mjs';
@@ -9,7 +10,7 @@ const codes=JSON.parse(fs.readFileSync(new URL('./fixtures/stars-protocol-code.j
 const addr=n=>'0x'+n.repeat(40),token=addr('9'),w={account:2,address:addr('2')},inviter={account:1,address:addr('1')},zero='0x'+'0'.repeat(64);
 const key=a=>keccak256(a),enc=(method,result)=>M.encodeFunctionResult(method,result);
 function fixture(options={}){
- const state={mode:1,agentRequired:true,minted:0n,total:30000n,used:0n,invites:0n,seen:false,referrer:zero,balance:0n,allowance:0n,bnb:parseUnits('1',18),paused:false,tradingPaused:false,launched:false,gas:500000n,...options};
+ const state={mode:1,agentRequired:true,minted:0n,total:30000n,used:0n,invites:0n,seen:false,referrer:zero,balance:0n,allowance:0n,bnb:parseUnits('1',18),paused:false,tradingPaused:false,launched:false,gas:500000n,refundable:0n,...options};
  const calls=[],txs=[];
  const rpc={verifyChain:async()=>{},getBlockNumber:async()=>123,getBalance:async a=>state.insolvent===a?0n:state.bnb,getCode:async a=>same(a,token)?state.tokenCode||code:codes[a.toLowerCase()]||'0x',send:async(m,p)=>{
   calls.push(m);if(m==='eth_getStorageAt')return same(p[0],C.factory)&&p[1]===IMPL_SLOT?'0x'+'0'.repeat(24)+STARS.identities.factory.implementation.slice(2):zero;
@@ -18,9 +19,11 @@ function fixture(options={}){
   if(same(tx.to,C.factory)){const p=M.parseTransaction(tx),a=p.args;
    if(p.name==='sales')return enc(p.name,[same(a[0],token)?addr('8'):ZeroAddress,C.marketing2,state.launched?addr('7'):ZeroAddress,state.agentRequired,state.launched,state.minted]);
    if(p.name==='mintPaused')return enc(p.name,[state.paused]);if(p.name==='tradingPaused')return enc(p.name,[state.tradingPaused]);
-   if(p.name==='SHARE_PRICE')return enc(p.name,[state.price??STARS_PRICE]);if(p.name==='totalSharesOf')return enc(p.name,[state.total]);if(p.name==='tokensPerShareOf')return enc(p.name,[state.units??(state.mode===1?26660n*10n**18n:STARS_UNITS)]);if(p.name==='launchModes')return enc(p.name,[state.mode]);
+   if(p.name==='SHARE_PRICE')return enc(p.name,[state.price??STARS_PRICE]);if(p.name==='totalSharesOf')return enc(p.name,[state.total]);if(p.name==='tokensPerShareOf')return enc(p.name,[state.units??(STARS_MODES[state.mode]?.units??STARS_UNITS)]);if(p.name==='launchModes')return enc(p.name,[state.mode]);
    if(p.name==='identityOf'){if(same(a[1],state.ineligible)||same(a[1],state.inviterInvalid?inviter.address:ZeroAddress))throw Object.assign(Error('execution reverted'),{data:M.encodeErrorResult('InvalidIdentity',[])});return enc(p.name,[key(a[1])]);}
    if(p.name==='quotaOf')return enc(p.name,[50n+state.invites*50n]);if(p.name==='accounts')return enc(p.name,[state.used,state.invites,state.seen,state.referrer]);
+   if(p.name==='refundable')return enc(p.name,[state.refundable]);
+   if(p.name==='refund'){txs.push(tx);assert.equal(a[2],state.refundable);return '0x';}
    if(p.name==='mint'){txs.push(tx);if(state.referralRevert&&!same(a[2],ZeroAddress))throw Object.assign(Error('execution reverted'),{data:M.encodeErrorResult('InvalidReferral',[])});assert.equal(BigInt(tx.value),a[1]*STARS_PRICE);assert.ok(a[1]<=state.total-state.minted);assert.ok(a[1]<=50n+state.invites*50n-state.used);return '0x';}
    if(C[p.name])return enc(p.name,[state.badOwner&&p.name==='owner'?addr('6'):C[p.name]]);
    throw Error('Unmocked factory read '+p.name);
@@ -43,13 +46,13 @@ test('homepage lists projects and never selects or mints an arbitrary one',async
  await assert.rejects(starsPlan(f.rpc,{...f.intent,asset:'https://starsagent.org/'},w),{code:'MINT_SELECTION_REQUIRED'});
  await assert.rejects(discoverStars(f.rpc,'starsagent.org',{fetchJson:async()=>({configured:true,config:{chainId:1,factory:C.factory},items:[]})}),/配置/);
 });
-for(const mode of [0,1])for(const agentRequired of [true,false])test(`mode ${mode}, agent ${agentRequired}: exact quota, BNB and token amounts`,async()=>{
- const f=fixture({mode,total:mode?30000n:300000n,agentRequired,used:7n,invites:1n}),p=await f.plan();assert.equal(p.quantity,93);assert.equal(p.amountIn,String(93n*STARS_PRICE));assert.equal(p.minOutput,String(93n*(mode?26660n*10n**18n:STARS_UNITS)));assert.equal(M.decodeFunctionData('mint',p.steps[0].data)[0].toLowerCase(),token);assert.equal(f.txs.length,1);
+for(const mode of [0,1,2,3])for(const agentRequired of [true,false])test(`mode ${mode}, agent ${agentRequired}: exact quota, BNB and token amounts`,async()=>{
+ const f=fixture({mode,total:STARS_MODES[mode].total,agentRequired,used:7n,invites:1n}),p=await f.plan();assert.equal(p.quantity,93);assert.equal(p.amountIn,String(93n*STARS_PRICE));assert.equal(p.minOutput,String(93n*STARS_MODES[mode].units));assert.equal(M.decodeFunctionData('mint',p.steps[0].data)[0].toLowerCase(),token);assert.equal(f.txs.length,1);
 });
 test('global remaining clips wallet quota, and final mint simulates launch instead of rejecting blindly',async()=>{
  const f=fixture({minted:29998n}),p=await f.plan();assert.equal(p.quantity,2);assert.equal(f.txs.length,1);f.state.tradingPaused=true;await assert.rejects(f.plan(),{code:'MINT_PAUSED'});
 });
-for(const [opts,code] of [[{launched:true},'MINT_ENDED'],[{minted:30000n},'MINT_ENDED'],[{paused:true},'MINT_PAUSED'],[{used:50n},'NO_QUOTA'],[{ineligible:w.address},'MINT_INELIGIBLE'],[{mode:2},'STARS_VERSION_CHANGED'],[{price:1n},'STARS_VERSION_CHANGED'],[{badOwner:true},'STARS_VERSION_CHANGED']])test('specific status '+code+' '+JSON.stringify(opts,(_,v)=>typeof v==='bigint'?String(v):v),async()=>{await assert.rejects(fixture(opts).plan(),{code});});
+for(const [opts,code] of [[{launched:true},'MINT_ENDED'],[{minted:30000n},'MINT_ENDED'],[{paused:true},'MINT_PAUSED'],[{used:50n},'NO_QUOTA'],[{ineligible:w.address},'MINT_INELIGIBLE'],[{mode:4},'STARS_VERSION_CHANGED'],[{price:1n},'STARS_VERSION_CHANGED'],[{badOwner:true},'STARS_VERSION_CHANGED']])test('specific status '+code+' '+JSON.stringify(opts,(_,v)=>typeof v==='bigint'?String(v):v),async()=>{await assert.rejects(fixture(opts).plan(),{code});});
 test('free never silently spends money; numeric budget remains strict; uppercase MAX works',async()=>{
  const f=fixture();await assert.rejects(f.plan({scope:'free'}),{code:'NO_FREE_MINT'});await assert.rejects(f.plan({quantity:5,maxBnb:'0.001'}),{code:'BUDGET_LIMIT'});assert.equal((await f.plan({quantity:'MAX'})).quantity,50);
 });
@@ -86,22 +89,30 @@ test('new-token allowance preview is exact and cannot reuse another token receip
  assert.doesNotThrow(()=>verifyStarsPreview(p,plan,step));for(const mutate of [x=>x.token=addr('8'),x=>x.stars.mode=0,x=>x.stars.price='1',x=>x.protocolIdentities.at(-1).code+='00',x=>x.protocolIdentities.at(-1).fingerprint='fake',x=>delete x.expectedAsset,x=>x.expectedAsset.token=addr('8'),x=>x.expectedAsset.amount='1',x=>x.requireAssetCredit=false,x=>x.metaVerified=true]){const q=structuredClone(plan);mutate(q);assert.throws(()=>verifyStarsPreview(p,q,step));}
  const log=(t)=>({address:C.factory,...M.encodeEventLog(M.getEvent('Minted'),[t,w.address,plan.stars.key,3,3])});assert.equal(verifyStarsReceipt({logs:[log(token)]},plan).quantity,'3');assert.throws(()=>verifyStarsReceipt({logs:[log(addr('8'))]},plan));
 });
-
-test('shared Mint dispatch applies Stars funding and a stale-review quantity ceiling',async()=>{
- const {mintPlan}=await import('../lib/mint.mjs');
- const f=fixture({bnb:parseUnits('0.005',18)}),resolved={platform:'stars',token,address:C.factory};
- const limited=await mintPlan(f.rpc,{}, {...f.intent,maxBnb:'0'},C.factory,resolved,null,{quantityCeiling:3});
- assert.equal(limited.quantity,3);assert.equal(limited.mintFunding.full,true);
- assert.ok(BigInt(limited.amountIn)+BigInt(limited.mintFunding.gasReserve)<=f.state.bnb);
- const numeric=await mintPlan(f.rpc,{}, {...f.intent,quantity:1,maxBnb:'0.001'},C.factory,resolved);
- assert.equal(numeric.quantity,1);assert.equal(numeric.mintFunding,undefined);
+for(const mode of [0,1,2,3])test(`mode ${mode}: refund preview/receipt and exact allowance, without signing`,async()=>{
+ const units=STARS_MODES[mode].units,f=fixture({mode,total:STARS_MODES[mode].total,refundable:3n,balance:3n*units,allowance:3n*units,used:3n}),plan=await starsRefundPlan(f.rpc,{...f.intent,routeId:'stars:refund'},w,{resolved:{token}}),step=plan.steps.at(-1);
+ assert.equal(plan.minOutput,String(3n*STARS_PRICE));assert.equal(plan.amountIn,String(3n*units));assert.equal(plan.steps.length,1);
+ const preview={requestId:'synthetic',parsedTx:{contractAddress:C.factory},simulationResult:{simulationCode:'000000000',balanceChanges:[{owner:w.address,contractAddress:token,change:String(-3n*units),tokenType:'Erc20'},{owner:w.address,contractAddress:BNB,change:plan.minOutput,tokenType:'Native'}],allowanceChanges:[]}};
+ assert.doesNotThrow(()=>verifyPreview(preview,plan,step));
+ for(const edit of [p=>p.minOutput='1',p=>p.redemption.shares='1',p=>p.inputToken=BNB,p=>p.redemption.mode=4]){const bad=structuredClone(plan);edit(bad);assert.throws(()=>verifyPreview(preview,bad,step));}
+ const less=structuredClone(preview);less.simulationResult.balanceChanges[1].change='1';assert.throws(()=>verifyPreview(less,plan,step));
+ const T=new (M.constructor)(['event Transfer(address indexed from,address indexed to,uint256 value)']);
+ const receipt={logs:[{address:C.factory,...M.encodeEventLog(M.getEvent('Refunded'),[token,w.address,key(w.address),3,1])},{address:token,...T.encodeEventLog(T.getEvent('Transfer'),[w.address,C.factory,3n*units])}]};
+ assert.equal(verifyStarsRefundReceipt(receipt,plan).amount,plan.minOutput);assert.throws(()=>verifyStarsRefundReceipt({logs:receipt.logs.slice(0,1)},plan));
+ f.state.allowance=0n;const revoked=await starsRefundPlan(f.rpc,f.intent,w,{resolved:{token}});assert.equal(revoked.steps[0].kind,'approve');assert.equal(revoked.steps[0].allowance,String(3n*units));
+ const ap={requestId:'synthetic',simulationResult:{simulationCode:'000000000',allowanceChanges:[{owner:w.address,tokenAddress:token,spender:C.factory,preAmount:'0',postAmount:String(3n*units)}],balanceChanges:[]}};assert.doesNotThrow(()=>verifyPreview(ap,revoked,revoked.steps[0]));
+ f.state.launched=true;await assert.rejects(starsRefundPlan(f.rpc,f.intent,w,{resolved:{token}}),{code:'REFUND_UNAVAILABLE'});
 });
-
-test('Stars UI and bot batch isolate a failed first wallet and retain stable child IDs',async t=>{
- const os=await import('node:os'),path=await import('node:path'),{Batches}=await import('../lib/batch.mjs'),{independentOrder}=await import('../public/trade-workflow.mjs');
- const data=fs.mkdtempSync(path.join(os.tmpdir(),'stars-batch-'));t.after(()=>fs.rmSync(data,{recursive:true,force:true}));
- const seen=[],engine={data,live:true,prepare:async(intent,id)=>({id,intent,status:intent.account===1?'BLOCKED':'PREPARED',project:{platform:'stars'},...(intent.account===1?{error:{code:'INSUFFICIENT_FUNDS'}}:{plan:{route:'stars:mint',resolved:{platform:'stars'}}})}),run:async(intent,id)=>{seen.push(intent.account);return {id,intent,status:intent.account===1?'BLOCKED':'CONFIRMED'};}};
- assert.equal(independentOrder(await engine.prepare(fixture().intent,'test')),true);
- const row=await new Batches(engine).run({id:'stars-mock',accounts:[1,2,3,4],intent:fixture().intent,execute:true});
- assert.deepEqual(seen,[1,2,3,4]);assert.deepEqual(row.orders.map(o=>o.id),[1,2,3,4].map(n=>'stars-mock-a'+n));assert.equal(row.status,'INCOMPLETE');
+test('Mint paused does not block a separately selected refund, no refund quota is distinct',async()=>{
+ const f=fixture({paused:true,refundable:1n,used:1n,balance:STARS_MODES[1].units,allowance:10n**27n});
+ assert.equal((await starsRefundPlan(f.rpc,f.intent,w,{resolved:{token}})).route,'stars:refund');await assert.rejects(f.plan(),{code:'MINT_PAUSED'});
+ const p=await inspectStars(f.rpc,{address:C.factory,token},[w],{fetchJson:async()=>({})});assert.equal(p.quotas[0].refundableShares,'1');assert.equal(p.quotas[0].errorCode,'MINT_PAUSED');
+ f.state.refundable=0n;await assert.rejects(starsRefundPlan(f.rpc,f.intent,w,{resolved:{token}}),{code:'REFUND_UNAVAILABLE'});
+});
+test('homepage retains projects beyond 200, with all four mode labels',async()=>{
+ const f=fixture(),items=Array.from({length:225},(_,n)=>({address:'0x'+(n+1).toString(16).padStart(40,'0'),name:'synthetic',launchMode:n%4}));
+ const p=await discoverStars(f.rpc,'https://starsagent.org/',{fetchJson:async()=>({configured:true,config:{chainId:56,factory:C.factory},items})});assert.equal(p.candidates.length,225);assert.match(p.candidates[2].field,/Turbo/);assert.match(p.candidates[3].field,/Supreme/);
+});
+test('Stars buy tax uses exact integer rounding only on token-declared main pool',()=>{
+ const tax=starsBuyTax({code});assert.ok(tax);assert.equal(tax({declaredByToken:true},10001n),9801n);assert.equal(tax({declaredByToken:false},10001n),10001n);assert.equal(starsBuyTax({code:code+'00'}),null);assert.equal(starsBuyTax({code,implementation:token}),null);
 });

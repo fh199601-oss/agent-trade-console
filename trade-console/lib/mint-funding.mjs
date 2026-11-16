@@ -4,7 +4,7 @@ import {normalizeMintQuantity} from '../public/mint-quantity.mjs';
 const fail=(code,message)=>Object.assign(Error(message),{code});
 const positive=n=>n>0n?n:0n;
 const refErrors=new Interface(['error InvalidReferrer()','error InvalidInviter()','error ReferrerNotEligible()']);
-export const balanceMint=i=>i.side==='mint'&&normalizeMintQuantity(i.quantity)==='max'&&!['corla:claim','corla:refund'].includes(i.routeId);
+export const balanceMint=i=>i.side==='mint'&&normalizeMintQuantity(i.quantity)==='max'&&!['corla:claim','corla:refund','stars:refund'].includes(i.routeId);
 export function invitationFailure(e){
  if(['REFERRAL_UNAVAILABLE','REFERRAL_NOT_VERIFIED','MINT_REFERRAL'].includes(e?.code))return true;
  try{if(refErrors.parseError(e.data))return true;}catch{}
