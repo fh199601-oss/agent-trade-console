@@ -5,7 +5,8 @@ import path from 'node:path';
 import {Transaction,ZeroHash,getAddress,keccak256} from 'ethers';
 import {ERC20,read,same,save,load} from '../common.mjs';
 import {verifyPreview} from '../engine.mjs';
-import {hasPreviewRisks} from '../preview-risks.mjs';
+import {addressRatingReview} from './address-ratings.mjs';
+import {randomUUID} from 'node:crypto';
 import {describeError} from '../../public/error-message.mjs';
 import {FastSaleService,validateFastSettings} from './service.mjs';
 import {TAX_BSC_SALE,BscVenue,SALE,saleEvents,TRANSFER_MESSAGE} from './bsc.mjs';
@@ -241,13 +242,22 @@ export class LiveFastSale extends FastSaleService {
  }
  close(){return this.trigger?.close();}
  // Intent is durable before execute. Receipt recovery never calls execute again.
- async walletCall(j,r,field,step){
+ async walletCall(j,r,field,step,consent){
   if(r[field]||!this.canSubmit(j,field))return;
   if(this.bindings&&!this.bindings().some(w=>w.account===r.account&&same(w.address,r.address)))throw Error('钱包编号的绑定已变化');
   await this.bridge.ready(r.account,{external:true});
   const preview=await this.bridge.call(r.account,['contract-call','preview','--binanceChainId','56','--from',r.address,'--to',step.to,'--value','0','--inputData',step.data]);
   verifyPreview(preview,{wallet:r.address,amountIn:'0'},{...step,value:'0'});
-  if(hasPreviewRisks(preview.risks))throw Error('钱包预览有风险提示，已停止提交');
+  const ratings=addressRatingReview(preview,j,r,field,step);
+  const digest=JSON.stringify([field,r.address,j.executor,step.to,keccak256(step.data),ratings]);
+  if(!this.canSubmit(j,field))throw Error('任务已暂停或删除');
+  if(ratings&&(!consent||consent.ticket!==r.ratingReview?.ticket||consent.digest!==digest||consent.until<Date.now())){
+   r.ratingReview={ticket:randomUUID(),digest,until:Date.now()+120000,ratings,field};
+   r.status=field==='approval'?'APPROVAL_REVIEW':'REGISTRATION_REVIEW';
+   r.message='币安模拟通过，仅返回地址评级。请核对下方预览。';return;
+  }
+  if(consent&&!ratings)throw Error('钱包风险预览已变化，请重新核对本次操作');
+  delete r.ratingReview;
   if(!this.canSubmit(j,field))throw Error('任务已停止，该钱包尚未提交');
   const orig=r[field]={requestId:preview.requestId,to:step.to,dataHash:keccak256(step.data),status:'SUBMITTING'};
   this.persist();
@@ -286,7 +296,7 @@ export class LiveFastSale extends FastSaleService {
    await eachWallet(j.rows.filter(r=>['APPROVAL_PENDING','REGISTRATION_PENDING'].includes(r.status)),async r=>{
     try{await this.reconcileRow(j,r);}catch(e){r.message=message(e);if([r.approval,r.registration].some(o=>o?.status==='REVERTED'))r.status='FAILED';}
    });
-   if(j.status==='AUTHORIZING'&&!j.rows.some(r=>['WAIT_AUTH','APPROVAL_PENDING'].includes(r.status)))j.status=j.rows.some(r=>r.status==='AUTHORIZED')?'AUTHORIZED':'REVIEW';
+   if(j.status==='AUTHORIZING'&&!j.rows.some(r=>['WAIT_AUTH','APPROVAL_PENDING','APPROVAL_REVIEW'].includes(r.status)))j.status=j.rows.some(r=>r.status==='AUTHORIZED')?'AUTHORIZED':'REVIEW';
    if(j.status==='REGISTERING'&&j.rows.some(r=>r.plan)&&this.trigger){j.status='ARMED';}
    if(j.status==='REGISTERING'&&j.rows.every(r=>['SKIPPED','FAILED'].includes(r.status)))j.status='REVIEW';
    if(j.status==='ARMED'&&this.trigger)await this.prepareReady(j);
@@ -305,20 +315,35 @@ export class LiveFastSale extends FastSaleService {
   await this.continueWallets(j,'approval');return structuredClone(j);
  }
  canSubmit(j,field){return !j.deletedAt&&(field==='approval'?j.status==='AUTHORIZING':['REGISTERING','ARMED'].includes(j.status));}
- async continueWallets(j,field){
+ async confirmRatings({id,asset,field,reviews}){
+  const job=this.jobs.find(j=>j.id===id);
+  if(!job||!same(asset,job.asset)||!same(job.executor,this.adapter.executor)||!['approval','registration'].includes(field)||!this.canSubmit(job,field)||!Array.isArray(reviews)||!reviews.length||reviews.length>100)throw Error('当前任务不能确认此预览');
+  if(this.walletWork.has(id+':'+field))throw Error('正在处理本批钱包，请稍候');
+  const consents=new Map();
+  for(const {account,ticket} of reviews){
+   const row=job.rows.find(r=>r.account===account),review=row?.ratingReview;
+   if(!review||review.field!==field||review.ticket!==ticket||row.status!==(field==='approval'?'APPROVAL_REVIEW':'REGISTRATION_REVIEW')||consents.has(account))throw Error('钱包预览已变化，请刷新后核对');
+   consents.set(account,review);
+  }
+  const venue=await this.adapter.verifiedVenue(job.asset);
+  if(venue.blockedReason||!same(venue.pair,job.venue.pair)||['tokenHash','quoteHash','sourceHash'].some(k=>venue[k]!==job.venue[k]))throw Error('主池或合约已变化，请重新核验');
+  if(!this.canSubmit(job,field))throw Error('任务状态已变化');
+  await this.continueWallets(job,field,consents);return structuredClone(job);
+ }
+ async continueWallets(j,field,consents){
   if(needsDividendGas(j.venue)&&!this.adapter.dividendGas)throw Error(incompatibleGas);
   const key=j.id+':'+field;
   if(this.walletWork.has(key))return this.walletWork.get(key);
   const work=(async()=>{
-   if(field==='approval')await this.approveRows(j);else await this.registerRows(j);
+   if(field==='approval')await this.approveRows(j,consents);else await this.registerRows(j,consents);
    await this.reconcile(j);
   })();
   this.walletWork.set(key,work);
   try{await work;}finally{this.walletWork.delete(key);}
  }
- async approveRows(j){
+ async approveRows(j,consents){
   const asset=j.asset;
-  await eachWallet(j.rows.filter(r=>r.status==='WAIT_AUTH'||r.status==='APPROVAL_PENDING'&&!r.approval),async r=>{
+  await eachWallet(j.rows.filter(r=>consents? r.status==='APPROVAL_REVIEW'&&consents.has(r.account)&&consents.get(r.account).ticket===r.ratingReview?.ticket : r.status==='WAIT_AUTH'||r.status==='APPROVAL_PENDING'&&!r.approval),async r=>{
    if(!this.canSubmit(j,'approval')||r.approval)return;
    try{
     const [[n],[allowance]]=await Promise.all([read(this.rpc,asset,ERC20,'balanceOf',[r.address]),read(this.rpc,asset,ERC20,'allowance',[r.address,this.adapter.executor])]);
@@ -333,7 +358,7 @@ export class LiveFastSale extends FastSaleService {
     r.cap=String(n);r.attempts=0;
     if(allowance===n){r.status='AUTHORIZED';r.message='当前余额已有等额授权';}
     else{
-     r.status='APPROVAL_PENDING';await this.walletCall(j,r,'approval',{kind:'approve',to:asset,spender:this.adapter.executor,allowance:r.cap,data:ERC20.encodeFunctionData('approve',[this.adapter.executor,n])});
+     r.status='APPROVAL_PENDING';await this.walletCall(j,r,'approval',{kind:'approve',to:asset,spender:this.adapter.executor,allowance:r.cap,data:ERC20.encodeFunctionData('approve',[this.adapter.executor,n])},consents?.get(r.account));
     }
    }catch(e){if(!r.approval&&!this.canSubmit(j,'approval'))r.status='WAIT_AUTH';else{r.status='FAILED';r.message=message(e);}}this.persist();
   });
@@ -348,7 +373,7 @@ export class LiveFastSale extends FastSaleService {
    if(JSON.stringify(config)!==JSON.stringify(j.settings)||groupAccounts(j.selectedAccounts||j.rows.map(r=>r.account))!==groupAccounts(accounts))throw Error('已启动任务的钱包或参数不能覆盖');
    return structuredClone(j);
   }
-  if(!['AUTHORIZED','AUTHORIZING'].includes(j.status)||j.status==='AUTHORIZING'&&j.rows.some(r=>r.status==='WAIT_AUTH')||!selectedRows.some(r=>r.status==='AUTHORIZED'))throw Error('请等待所选钱包授权成功后开始任务');
+  if(!['AUTHORIZED','AUTHORIZING'].includes(j.status)||j.status==='AUTHORIZING'&&selectedRows.some(r=>r.status==='WAIT_AUTH'||r.status==='APPROVAL_REVIEW')||!selectedRows.some(r=>r.status==='AUTHORIZED'))throw Error('请等待所选钱包授权成功后开始任务');
   if(this.starting.has(id))throw Error('该批次正在处理');
   this.starting.add(id);
   try{
@@ -364,15 +389,15 @@ export class LiveFastSale extends FastSaleService {
    if(j.deletedAt||j.status==='PAUSED')throw Error('任务已停止，尚未登记卖出');
    settingsFor(settings,v,this.adapter.executor);
    j.venue=v;j.settings=config;j.selectedAccounts=[...accounts];j.status='REGISTERING';
-   for(const r of j.rows.filter(r=>!selected.has(r.account))){r.status='SKIPPED';r.message='开始任务时未选中此钱包';}
+   for(const r of j.rows.filter(r=>!selected.has(r.account))){delete r.ratingReview;r.status='SKIPPED';r.message='开始任务时未选中此钱包';}
    for(const r of j.rows.filter(r=>r.status==='APPROVAL_PENDING')){r.status='SKIPPED';r.message='开始时授权尚未确认，未加入本次卖出';}
    this.persist();
    await this.continueWallets(j,'registration');return structuredClone(j);
   }finally{this.starting.delete(id);}
  }
- async registerRows(j){
+ async registerRows(j,consents){
   const v=j.venue,config=j.settings;
-  await eachWallet(j.rows.filter(r=>(!j.selectedAccounts||j.selectedAccounts.includes(r.account))&&(r.status==='AUTHORIZED'||r.status==='REGISTRATION_PENDING'&&!r.registration)),async r=>{
+  await eachWallet(j.rows.filter(r=>(!j.selectedAccounts||j.selectedAccounts.includes(r.account))&&(consents? r.status==='REGISTRATION_REVIEW'&&consents.has(r.account)&&consents.get(r.account).ticket===r.ratingReview?.ticket : r.status==='AUTHORIZED'||r.status==='REGISTRATION_PENDING'&&!r.registration)),async r=>{
    if(!this.canSubmit(j,'registration')||r.registration)return;
    try{
     const [allowance]=await read(this.rpc,j.asset,ERC20,'allowance',[r.address,this.adapter.executor]);
@@ -395,7 +420,7 @@ export class LiveFastSale extends FastSaleService {
     if(!this.canSubmit(j,'registration'))return;
     r.planCap=String(cap);
     const data=SALE.encodeFunctionData('registerSale',[v,cap,config.minOut,config.trigger,same(v.quote,TAX_BSC_SALE.wrapped),percent,config.expiryHours]);
-    r.status='REGISTRATION_PENDING';await this.walletCall(j,r,'registration',{kind:'register',to:this.adapter.executor,data});
+    r.status='REGISTRATION_PENDING';await this.walletCall(j,r,'registration',{kind:'register',to:this.adapter.executor,data},consents?.get(r.account));
    }catch(e){if(!r.registration&&!this.canSubmit(j,'registration'))r.status='AUTHORIZED';else{r.status='FAILED';r.message=message(e);}}this.persist();
   });
  }
@@ -405,6 +430,7 @@ export class LiveFastSale extends FastSaleService {
    const result=await super.control(id,action);
    if(j&&(j.status==='PAUSED'||j.deletedAt)){
     for(const r of j.rows){
+     if(r.status==='APPROVAL_REVIEW'||r.status==='REGISTRATION_REVIEW'){r.status=r.ratingReview?.field==='approval'?'WAIT_AUTH':'AUTHORIZED';delete r.ratingReview;}
      if(r.status==='APPROVAL_PENDING'&&!r.approval)r.status='WAIT_AUTH';
      if(r.status==='REGISTRATION_PENDING'&&!r.registration)r.status='AUTHORIZED';
     }

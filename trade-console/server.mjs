@@ -123,7 +123,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
   const send=(code,v,type='application/json')=>{res.writeHead(code,{'content-type':type+'; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer','content-security-policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"});res.end(type==='application/json'?json(v):v);};
   try{
    guard(req);const u=new URL(req.url,'http://'+req.headers.host),p=u.pathname;
-   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,instance,capabilities:{fastSaleVersion:8,fastSaleSimulationOnly:!deployed,multiWalletVersion:11,sellSlippageMaxBps:9900,shallowPoolVersion:1,previewSubmitSpeedVersion:2,openingPreapprovalVersion:1,starsVersion:2,gangVersion:2,sellCoordinationVersion:7,queuedSellPreviewVersion:3,manualSellPreparationVersion:4,tradePreparationVersion:6,instantGuardsVersion:2,sellQuoteIsolationVersion:3,rpcRecoveryVersion:1,genericMintVersion:3,infinitySellVersion:1,sellFeeGuardVersion:4,sellRouteValueVersion:1,primaryPoolSpeedVersion:2,primaryTradePolicyVersion:1,sellFeeThresholdPpm:HIGH_FEE_PPM,feeRouteSearchVersion:1,sellGasVersion:1,openingVersion:8,tradeWarmupVersion:2,recoveryVersion:1,instantReview:true,corlaVersion:3,corlaAutomationVersion:3,taskCenterVersion:2,originalTrackingVersion:1},token,mode:live?'LIVE':'SIMULATION',wallets:walletBindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list(),corla:corla.list()});
+   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,instance,capabilities:{fastSaleVersion:9,fastSaleSimulationOnly:!deployed,multiWalletVersion:11,sellSlippageMaxBps:9900,shallowPoolVersion:1,previewSubmitSpeedVersion:2,openingPreapprovalVersion:1,starsVersion:2,gangVersion:2,sellCoordinationVersion:7,queuedSellPreviewVersion:3,manualSellPreparationVersion:4,tradePreparationVersion:6,instantGuardsVersion:2,sellQuoteIsolationVersion:3,rpcRecoveryVersion:1,genericMintVersion:3,infinitySellVersion:1,sellFeeGuardVersion:4,sellRouteValueVersion:1,primaryPoolSpeedVersion:2,primaryTradePolicyVersion:1,sellFeeThresholdPpm:HIGH_FEE_PPM,feeRouteSearchVersion:1,sellGasVersion:1,openingVersion:8,tradeWarmupVersion:2,recoveryVersion:1,instantReview:true,corlaVersion:3,corlaAutomationVersion:3,taskCenterVersion:2,originalTrackingVersion:1},token,mode:live?'LIVE':'SIMULATION',wallets:walletBindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list(),corla:corla.list()});
    if(p.startsWith('/api/'))auth(req);
    if(req.method==='POST'&&p==='/api/parallel'){
     const {requests}=await body(req,524288);
@@ -193,6 +193,10 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
     if(!deployed||!Array.isArray(b.accounts)||!b.accounts.length||b.accounts.some(a=>!walletBindings().some(w=>w.account===a)))throw Error('主网执行合约或钱包选择无效');
     checkFastOverlap(b.asset,b.accounts);
     return send(200,await fastSale.start(b));
+   }
+   if(req.method==='POST'&&p==='/api/fast-sale/confirm-ratings'){
+    const b=await body(req);if(!deployed||!Array.isArray(b.reviews))throw Error('当前部署或钱包预览无效');
+    checkFastOverlap(b.asset,b.reviews.map(r=>r.account));return send(200,await fastSale.confirmRatings(b));
    }
    if(req.method==='POST'&&p==='/api/fast-sale/control'){const b=await body(req);return send(200,await fastSale.control(b.id,b.action));}
    if(req.method==='GET'&&p==='/api/updates')return send(200,await updates.check());

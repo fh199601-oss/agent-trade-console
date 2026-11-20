@@ -33,7 +33,7 @@ async function fixture(t,{count=100,thin=false,failAccount=0,unknownAccount=0,sl
  assert.equal(bindings().length,100);const data=fs.mkdtempSync(path.join(os.tmpdir(),'hundred-wallets-'));t.after(()=>fs.rmSync(data,{recursive:true,force:true}));
  let previewCount=0,externalSales=0;
  let ri=reserveIn??(thin?1000000n:10000000000n)*unit,ro=100n*unit,seq=0,block=100;
- const sent=[],requests=new Map(),receiptGate=deferred(),slowGate=deferred(),allSent=deferred(),target=count-(failAccount?1:0),balances=new Map(wallets.map(w=>[w.address.toLowerCase(),amountForAccount(w.account)]));
+ const sent=[],requests=new Map(),receiptGate=deferred(),slowGate=deferred(),allSent=deferred(),peersSent=deferred(),target=count-(failAccount?1:0),balances=new Map(wallets.map(w=>[w.address.toLowerCase(),amountForAccount(w.account)]));
  const externalSell=()=>{const x=ri*414214n/1000000n,y=out(x,ri,ro);ri+=x;ro-=y;block++;externalSales++;};
  const rpc={getBlockNumber:async()=>block,call:async tx=>{
   if(latency)await wait(latency);
@@ -52,7 +52,7 @@ async function fixture(t,{count=100,thin=false,failAccount=0,unknownAccount=0,sl
    const f=V2_ROUTER_ABI.parseTransaction({data:args[args.indexOf('--inputData')+1]}),id='synthetic-'+(++seq);requests.set(id,{account,f,used:false});
    return {requestId:id,simulationResult:{simulationCode:'000000000',balanceChanges:[{owner:wallets[account-1].address,contractAddress:WBNB,change:String(out(f.args[0]*netPercent/100n,ri,ro))}]}};
   }
-  assert.equal(args[1],'execute');const r=requests.get(args.at(-1));assert.equal(r.account,account);assert.equal(r.used,false);r.used=true;sent.push({account,at:Date.now(),r});if(sent.length===target)allSent.resolve();
+  assert.equal(args[1],'execute');const r=requests.get(args.at(-1));assert.equal(r.account,account);assert.equal(r.used,false);r.used=true;sent.push({account,at:Date.now(),r});if(slowAccount&&sent.length===count-1&&!sent.some(r=>r.account===slowAccount))peersSent.resolve();if(sent.length===target)allSent.resolve();
   if(submitDelayMs)await wait(submitDelayMs);
   if(account===unknownAccount)throw Object.assign(Error('模拟提交后连接中断'),{dispatched:true});
   return {txHash:'0x'+String(++seq).padStart(64,'0')};
@@ -74,7 +74,7 @@ async function fixture(t,{count=100,thin=false,failAccount=0,unknownAccount=0,sl
   ri+=x;ro-=y;block++;balances.set(o.plan.wallet.toLowerCase(),0n);e.status='CONFIRMED';e.confirmedAt=Date.now();e.receipt={status:'0x1',blockNumber:'0x'+block.toString(16)};settled.push({account:o.intent.account,credit:y,minimum:f.args[1]});
  };
  const start=Date.now(),running=autoRun?parallelWallets(wallets.slice(0,count),w=>engine.run({...intent(w.account),slippageBps},'hundred-'+w.account,{execute:true,authorization:'synthetic simulation only',swapReceiptWaitMs:0,...options})):null;
- return {data,engine,sent,settled,requests,start,running,allSent,receiptGate,slowGate,target,externalSales:()=>externalSales,preparationStats:()=>({maxPreparationActive,maxPreparationLimit})};
+ return {data,engine,sent,settled,requests,start,running,allSent,peersSent,receiptGate,slowGate,target,externalSales:()=>externalSales,preparationStats:()=>({maxPreparationActive,maxPreparationLimit})};
 }
 test('100 wallets: whole-group impact proof preserves every minimum across shuffled fill orders',()=>{
  const rows=wallets.map(w=>record(w.account));assert.ok(parallelSellProof(rows));
@@ -103,7 +103,7 @@ test('100-wallet thin pool re-quotes after changing prices, never widens slippag
  t.diagnostic(JSON.stringify({simulationOnly:true,thinPoolWallets:100,allConfirmedMs:Date.now()-f.start,firstCredit:String(f.settled[0].credit),lastCredit:String(f.settled.at(-1).credit)}));
 });
 test('one slow preview does not prevent the other 99 wallets from dispatching',async t=>{
- const f=await fixture(t,{slowAccount:1});const until=Date.now()+12000;while(f.sent.length<99&&Date.now()<until)await tick();
+ const f=await fixture(t,{slowAccount:1});await bounded(f.peersSent.promise,45000);
  const before=f.sent.length;f.slowGate.resolve();await bounded(f.allSent.promise,12000);f.receiptGate.resolve();const results=await f.running;
  assert.equal(before,99);assert.equal(results.filter(o=>o.status==='CONFIRMED').length,100,JSON.stringify(results.filter(o=>o.status!=='CONFIRMED').map(o=>[o.intent.account,o.status,o.error])));assert.equal(f.sent.length,100);
 });
@@ -145,7 +145,7 @@ test('real wallet bridge keeps 100 queues independent and isolates a failed wall
 });
 test('100 wallets: one slow journal cannot stall peers or let its own order submit early',async t=>{
  const gate=deferred(),f=await fixture(t,{journalGate:()=>gate.promise});t.after(()=>{gate.resolve();f.receiptGate.resolve();});
- const until=Date.now()+12000;while(f.sent.length<99&&Date.now()<until)await tick();assert.equal(f.sent.length,99);assert.equal(f.sent.some(r=>r.account===1),false);assert.equal(f.engine.get('hundred-1').status,'SUBMITTING');
+ await bounded(f.peersSent.promise,45000);assert.equal(f.sent.length,99);assert.equal(f.sent.some(r=>r.account===1),false);assert.equal(f.engine.get('hundred-1').status,'SUBMITTING');
  const original=await f.engine.execute('hundred-1',{authorization:'duplicate click'});assert.equal(original.duplicateSuppressed,true);assert.equal(f.sent.length,99);
  gate.resolve();await bounded(f.allSent.promise,12000);f.receiptGate.resolve();const results=await f.running;assert.equal(results.filter(o=>o.status==='CONFIRMED').length,100);assert.equal(f.sent.length,100);
 });

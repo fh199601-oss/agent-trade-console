@@ -144,3 +144,41 @@ test('历史成交只读补齐明细，多次刷新同一批次只读取一次�
  assert.equal(reads,1);assert.equal(calls.length,0);
  assert.deepEqual(row.fill,{amount:'20',output:'16',nativePaid:false,block:17});
 });
+
+test('地址评级预览逐钱包确认，仅执行已核对的精确授权与登记，重复确认不重发',async t=>{
+ const {service,asset,trigger,wallets,calls}=setup(t);
+ const selected=wallets.slice(1),executor=service.adapter.executor,call=service.bridge.call.bind(service.bridge);
+ let warn=false,unexpected=false;
+ service.bridge.call=async(account,args)=>{
+  const p=await call(account,args);if(args[1]!=='preview')return p;
+  const owner=wallets.find(w=>w.account===account).address,to=args[args.indexOf('--to')+1];
+  const level={riskLevel:-1,riskDetails:[]};
+  p.risks={riskDetails:warn?[{code:'TEST',title:'测试风险'}]:[],riskBehaviors:[],addresses:{[owner]:level,[executor]:level,[asset]:{riskLevel:1,riskDetails:[]}}};
+  p.simulationResult.authorityChanges=[];
+  if(to===asset){
+   const [,amount]=ERC20.decodeFunctionData('approve',args.at(-1));
+   p.parsedTx.spender=executor;
+   p.simulationResult.allowanceChanges=[{owner,tokenAddress:asset,spender:executor,postAmount:String(unexpected?amount+1n:amount),preAmount:'0'}];
+  }
+  return p;
+ };
+ const get=()=>service.jobs.find(j=>j.id==='ratings'),payload=(field,rows)=>({id:'ratings',asset,field,reviews:rows.map(r=>({account:r.account,ticket:r.ratingReview.ticket}))});
+ await service.authorize({id:'ratings',asset,wallets:selected});const j=get();
+ assert.ok(j.rows.every(r=>r.status==='APPROVAL_REVIEW'));assert.equal(calls.length,0);
+ await service.reconcile(j);assert.equal(j.status,'AUTHORIZING');
+ const first=payload('approval',j.rows.slice(0,1));
+ await assert.rejects(service.confirmRatings({...first,reviews:[{account:3,ticket:first.reviews[0].ticket}]}));
+ j.rows[0].ratingReview.until=0;
+ await service.confirmRatings(first);assert.equal(calls.length,0);assert.notEqual(j.rows[0].ratingReview.ticket,first.reviews[0].ticket);
+ const valid=payload('approval',j.rows.slice(0,1));
+ await Promise.allSettled([service.confirmRatings(valid),service.confirmRatings(valid)]);assert.equal(calls.length,1);
+ await assert.rejects(service.confirmRatings(valid));assert.equal(calls.length,1);
+ warn=true;await service.confirmRatings(payload('approval',j.rows.slice(1,2)));warn=false;
+ assert.match(j.rows[1].message,/测试风险/);assert.equal(calls.length,1);
+ unexpected=true;await service.confirmRatings(payload('approval',j.rows.slice(2)));unexpected=false;
+ assert.equal(j.rows[2].status,'FAILED');assert.equal(calls.length,1);
+ await service.start({id:'ratings',asset,accounts:[2],selectedOnly:true,settings:{source:'opening',trigger,percent:100,expiryHours:24,minOut:'1'}});
+ assert.equal(j.rows[0].status,'REGISTRATION_REVIEW');assert.equal(calls.length,1);
+ await service.confirmRatings(payload('registration',[j.rows[0]]));
+ assert.equal(j.status,'ARMED');assert.deepEqual(calls.map(c=>c.name),['approve','registerSale']);
+});

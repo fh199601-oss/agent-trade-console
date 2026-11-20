@@ -7,7 +7,7 @@ function units(raw,decimals){
  const s=raw.padStart(decimals+1,'0'),fraction=s.slice(-decimals).replace(/0+$/,'');
  return s.slice(0,-decimals)+(fraction?'.'+fraction:'');
 }
-const labels={AUTHORIZED:'授权成功',AUTHORIZING:'正在授权',WAIT_AUTH:'等候授权',APPROVAL_PENDING:'授权原单待核对',REGISTERING:'正在登记钱包计划',REGISTRATION_PENDING:'计划原单待核对',READY:'已就绪',ARMED:'监测中',WAIT_CLAIM:'等待领取到账',WAIT_TAX:'等待税率回落',FAILED:'失败',PENDING:'卖出原单待核对',SOLD:'已卖出',REVIEW:'需要核对',RETRY:'待重试',EXPIRED:'已过期',PAUSED:'已暂停',COMPLETED:'已结束',SKIPPED:'已跳过'};
+const labels={APPROVAL_REVIEW:'待核对授权',REGISTRATION_REVIEW:'待核对登记',AUTHORIZED:'授权成功',AUTHORIZING:'正在授权',WAIT_AUTH:'等候授权',APPROVAL_PENDING:'授权原单待核对',REGISTERING:'正在登记钱包计划',REGISTRATION_PENDING:'计划原单待核对',READY:'已就绪',ARMED:'监测中',WAIT_CLAIM:'等待领取到账',WAIT_TAX:'等待税率回落',FAILED:'失败',PENDING:'卖出原单待核对',SOLD:'已卖出',REVIEW:'需要核对',RETRY:'待重试',EXPIRED:'已过期',PAUSED:'已暂停',COMPLETED:'已结束',SKIPPED:'已跳过'};
 const belowMinimum=r=>r.status==='REVIEW'&&(r.reason==='MINIMUM_NOT_MET'||r.message==='报价低于钱包最低到账');
 export function createFastSalePanel({api,getSelection,document:doc=document}){
  const $=id=>doc.getElementById(id);
@@ -46,6 +46,14 @@ export function createFastSalePanel({api,getSelection,document:doc=document}){
    if(/^0x[\da-f]{64}$/i.test(r.receipt||'')){
     const link=node('a','链上回执 ↗');link.href='https://bscscan.com/tx/'+r.receipt;link.target='_blank';link.rel='noopener noreferrer';row.append(link);
    }
+   if(r.ratingReview&&['APPROVAL_REVIEW','REGISTRATION_REVIEW'].includes(r.status)){
+    const preview=node('details','');preview.append(node('summary','钱包预览详情'));
+    const amount=units(String(r.cap),job.venue.tokenDecimals);
+    if(r.ratingReview.field==='approval')row.append(node('span',' 本次授权 '+amount+' 枚。'));
+    preview.append(node('p','持币钱包 '+r.address+' · 代币 '+job.asset),node('p','执行合约 '+job.executor+' · 授权额度 '+amount+' 枚'));
+    if(r.ratingReview.field==='registration')preview.append(node('p','登记卖出 '+job.settings.percent+'% · 触发地址 '+job.settings.trigger+' · 最低到账 '+units(String(job.settings.minOut),job.venue.quoteDecimals)+' '+job.venue.quoteSymbol+' · 有效期 '+job.settings.expiryHours+' 小时'));
+    preview.append(node('p','币安地址评级 '+r.ratingReview.ratings.map(([a,n])=>a+'（'+n+'）').join('、')+'。风险明细为空。'));row.append(preview);
+   }
    list.append(row);
   }
   wrap.append(list);return list;
@@ -74,7 +82,7 @@ export function createFastSalePanel({api,getSelection,document:doc=document}){
    target&&stored?'此地址已在本机保存，点击即可启用。':
    target?'首次使用此地址，请点击「导入私钥」。':'选择生成触发钱包或导入自己的私钥，地址会自动填入。';
   const chosen=new Set(accounts()),n=job?.rows.filter(r=>chosen.has(r.account)&&r.status==='AUTHORIZED').length||0;
-  $('fastStart').disabled=busy||!live||!(job?.status==='AUTHORIZED'||job?.status==='AUTHORIZING'&&!job.rows.some(r=>r.status==='WAIT_AUTH'))||!n||!usable;
+  $('fastStart').disabled=busy||!live||!(job?.status==='AUTHORIZED'||job?.status==='AUTHORIZING'&&!job.rows.some(r=>chosen.has(r.account)&&['WAIT_AUTH','APPROVAL_REVIEW'].includes(r.status)))||!n||!usable;
   $('fastStart').textContent=n?'开始任务 · '+n+' 个已授权钱包':'开始任务';
   let validation='';
   try{config();}catch(e){validation=e.message;}
@@ -90,7 +98,14 @@ export function createFastSalePanel({api,getSelection,document:doc=document}){
   if(venue?.blockedReason)hint+=' '+venue.blockedReason;
   $('fastMinimumHint').textContent=hint;
   const results=$('fastResults'),scroll=results.querySelector('.fast-wallet-list')?.scrollTop||0;
-  results.replaceChildren();if(job){results.append(node('h3','钱包处理结果'));renderRows(results,job.rows.filter(r=>chosen.has(r.account)),job).scrollTop=scroll;}
+  results.replaceChildren();if(job){results.append(node('h3','钱包处理结果'));const rows=job.rows.filter(r=>chosen.has(r.account));renderRows(results,rows,job).scrollTop=scroll;
+   for(const [field,status,label] of [['approval','APPROVAL_REVIEW','授权'],['registration','REGISTRATION_REVIEW','登记']]){
+    const reviews=rows.filter(r=>r.status===status&&r.ratingReview?.field===field).map(r=>({account:r.account,ticket:r.ratingReview.ticket}));
+    if(!reviews.length||job.deletedAt||!['AUTHORIZING','REGISTERING','ARMED'].includes(job.status))continue;
+    const button=node('button','确认 '+reviews.length+' 个钱包的'+label,'secondary');button.type='button';button.disabled=busy;
+    button.onclick=()=>action(async()=>{await api('fast-sale/confirm-ratings',{id:job.id,asset:job.asset,field,reviews});say('请查看逐钱包处理结果。');},true);
+    results.append(button);
+   }}
  }
  function renderHoldings(){
   const wrap=$('fastHoldings'),top=wrap.scrollTop;wrap.replaceChildren();if(!holdings||!same(holdings.token,asset()))return;
