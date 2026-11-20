@@ -18,7 +18,7 @@ export class TriggerClient {
   this.pending.set(id,{resolve,reject,timer});this.worker.postMessage({id,action,args,options});
  });}
  async init(options){const r=await this.request('init',[],options);this.wallet={address:r.address};return r;}
- warm(){return this.request('warm');}prepare(id,ids){return this.request('prepare',[id,ids]);}
+ warm(){return this.request('warm');}prepare(id,ids,method){return this.request('prepare',[id,ids,method]);}
  broadcast(id){return this.request('broadcast',[id]);}follow(id){return this.request('follow',[id]);}
  async close(){try{await this.request('close');}finally{await this.worker.terminate();this.fail();}}
 }

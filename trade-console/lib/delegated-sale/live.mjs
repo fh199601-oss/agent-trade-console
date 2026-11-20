@@ -1,3 +1,4 @@
+import {batchGas,standardBatch,dividendBatch,needsDividendGas,incompatibleGas} from './dividend-gas.mjs';
 import {managedDirectory,managedSupported,profileDirectory,publicManagedAddress} from './managed-trigger.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -28,7 +29,7 @@ async function credentialAction(action,options){
  try{return await client.request(action,[],options);}finally{await client.worker.terminate();}
 }
 export class LiveFastSale extends FastSaleService {
- constructor({rpc,bridge,data,bindings,managedRoot=managedDirectory(),deployment}){
+ constructor({rpc,bridge,data,bindings,managedRoot=managedDirectory(),deployment={}}){
   const file=path.join(data,'fast-sale-mainnet-jobs.json'),adapter=new BscVenue(rpc,deployment);
   super({adapter,trigger:{},store:{load:()=>load(file,[]),save:j=>save(file,j)}});
   this.managedRecord=path.join(data,'fast-sale-managed-address.json');
@@ -199,8 +200,11 @@ export class LiveFastSale extends FastSaleService {
    const rpc=this.rpc;
    client=new TriggerClient(async(method,params)=>{
     if(method!=='eth_sendRawTransaction')return rpc.send(method,params);
-    const tx=Transaction.from(params[0]),batch=EXECUTE.decodeFunctionData('executeBatch',tx.data)[0];
-    if(tx.chainId!==56n||!same(tx.to,this.adapter.executor)||(!client.wallet||!same(tx.from,client.wallet.address))||tx.value!==0n||tx.gasLimit>12_000_000n||batch.length<1||batch.length>20)throw Error('触发交易签名范围不符');
+    const tx=Transaction.from(params[0]),fn=EXECUTE.parseTransaction({data:tx.data});
+    const spec=fn?.name===dividendBatch.method&&this.adapter.dividendGas?dividendBatch:standardBatch;
+    if(fn?.name!==spec.method)throw Error('触发交易方法与本机执行合约不符');
+    const batch=fn.args[0];
+    if(tx.chainId!==56n||!same(tx.to,this.adapter.executor)||(!client.wallet||!same(tx.from,client.wallet.address))||tx.value!==0n||tx.gasLimit!==batchGas(spec,batch.length)||batch.length<1||batch.length>spec.size)throw Error('触发交易签名范围不符');
     const endpoints=rpc.endpoints,url=endpoints?.custom||rpc.url;
     const transport=endpoints?.transport?.fetch?.bind(endpoints.transport)||fetch;
     const res=await transport(url,{method:'POST',headers:{'content-type':'application/json'},signal:AbortSignal.timeout(8000),body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})});
@@ -294,6 +298,7 @@ export class LiveFastSale extends FastSaleService {
   const existing=this.jobs.find(j=>j.id===id);
   if(existing){if(existing.deletedAt)throw Error('该任务已删除');if(!same(existing.asset,asset)||walletSet(existing.rows)!==walletSet(wallets))throw Error('批次钱包或代币已发生变化');return structuredClone(existing);}
   const venue=await this.adapter.verifiedVenue(asset);
+  if(venue.blockedReason)throw Error(venue.blockedReason);
   if(this.jobs.some(j=>activePhase(j)&&same(j.asset,asset)&&j.rows.some(r=>!['FAILED','SKIPPED','SOLD','EXPIRED'].includes(r.status)&&wallets.some(w=>same(w.address,r.address)))))throw Error('所选钱包已有此币的授权批次，请查看下方原任务');
   const j={id,asset,executor:this.adapter.executor,venue,status:'AUTHORIZING',createdAt:Date.now(),rows:wallets.map(w=>({...w,status:'WAIT_AUTH'})),settings:{},batches:[]};
   this.jobs.push(j);this.persist();
@@ -301,6 +306,7 @@ export class LiveFastSale extends FastSaleService {
  }
  canSubmit(j,field){return !j.deletedAt&&(field==='approval'?j.status==='AUTHORIZING':['REGISTERING','ARMED'].includes(j.status));}
  async continueWallets(j,field){
+  if(needsDividendGas(j.venue)&&!this.adapter.dividendGas)throw Error(incompatibleGas);
   const key=j.id+':'+field;
   if(this.walletWork.has(key))return this.walletWork.get(key);
   const work=(async()=>{
@@ -348,10 +354,12 @@ export class LiveFastSale extends FastSaleService {
   try{
    await this.ensureSigner(config.trigger);await this.trigger.warm();const balance=await this.rpc.send('eth_getBalance',[config.trigger,'latest']);
    const count=selectedRows.filter(r=>r.status==='AUTHORIZED').length;
-   const gasLimit=600000n*BigInt(Math.ceil(count/this.adapter.batchSize))+530000n*BigInt(count);
+   const spec=this.adapter.batchSpec(j.venue);
+   const gasLimit=600000n*BigInt(Math.ceil(count/spec.size))+spec.gasPerRow*BigInt(count);
    const gasPrice=BigInt(await this.rpc.send('eth_gasPrice',[]));
    if(BigInt(balance)<gasLimit*gasPrice)throw Error('触发地址的 BNB 不足以支付本批卖出的 Gas 上限');
    const v=await this.adapter.verifiedVenue(j.asset);
+   if(v.blockedReason)throw Error(v.blockedReason);
    if(!same(v.pair,j.venue.pair)||v.tokenHash!==j.venue.tokenHash||v.sourceHash!==j.venue.sourceHash||v.quoteHash!==j.venue.quoteHash)throw Error('授权后主池或合约已变化，请核对');
    if(j.deletedAt||j.status==='PAUSED')throw Error('任务已停止，尚未登记卖出');
    settingsFor(settings,v,this.adapter.executor);

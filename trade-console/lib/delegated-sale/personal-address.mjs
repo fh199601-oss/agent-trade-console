@@ -10,6 +10,6 @@ export function personalSalt(payer) {
   if (address === ZeroAddress) throw Error('部署钱包地址无效');
   return solidityPackedKeccak256(['bytes32', 'address'], [domain, address]);
 }
-export function personalExecutor(payer) {
-  return getCreate2Address(DEPLOY_PROXY, personalSalt(payer), INIT_HASH);
+export function personalExecutor(payer, initHash=INIT_HASH) {
+  return getCreate2Address(DEPLOY_PROXY, personalSalt(payer), initHash);
 }

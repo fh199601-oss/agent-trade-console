@@ -1,10 +1,12 @@
+import {standardBatch,dividendBatch,batchGas,dividendInitHash} from './dividend-gas.mjs';
+import {personalExecutor} from './personal-address.mjs';
 import {pinnedBscSale} from './bsc.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {Wallet,Interface,keccak256,getAddress} from 'ethers';
 
-export const EXECUTE=new Interface(['function executeBatch(bytes32[] ids)']);
+export const EXECUTE=new Interface(['function executeBatch(bytes32[] ids)','function executeDividendBatch(bytes32[] ids)']);
 const eq=(a,b)=>a?.toLowerCase()===b?.toLowerCase();
 export const LOCAL_CHAIN=31337;
 export function bounded(promise,ms=8000){let timer;return Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('触发节点响应超时；保留原单继续核对')),ms);})]).finally(()=>clearTimeout(timer));}
@@ -14,7 +16,7 @@ export class FastTrigger {
   if(!wallet?.signTransaction||!journal||!rpc)throw Error('触发端缺少本地签名器、节点或原单日志');
   this.wallet=wallet;this.rpc=(method,params)=>bounded(Promise.resolve().then(()=>rpc(method,params)));this.executor=getAddress(executor);this.executorHash=executorHash;
   if(chainId!==LOCAL_CHAIN&&!(chainId===56&&pinnedBscSale(executor,executorHash,payer)))throw Error('实盘签名须使用固定的已核验执行合约');
-  this.chainId=chainId;this.journal=journal;this.now=now;this.queue=Promise.resolve();this.flight=new Map();
+  this.payer=payer;this.dividendGas=!!pinnedBscSale(executor,executorHash,payer)?.dividendGas;this.chainId=chainId;this.journal=journal;this.now=now;this.queue=Promise.resolve();this.flight=new Map();
  }
  async warm() {
    const signerAddress=this.wallet?.address;if(!signerAddress)throw Error('触发端已锁定');
@@ -30,17 +32,22 @@ export class FastTrigger {
    for(const r of records){
     if(!eq(r.from,this.wallet.address))throw Error('原单日志属于其他触发者');
     if(eq(r.executor,this.executor))continue;
-    throw Error('原单日志属于其他执行合约，请核对本机触发端。');
+    const known=this.payer?[personalExecutor(this.payer),personalExecutor(this.payer,dividendInitHash)]:[];
+    if(this.chainId!==56||!known.some(a=>eq(a,r.executor)))throw Error('原单日志属于未知执行合约');
+    if(['PREPARED','CONFIRMED','REVERTED'].includes(r.status))continue;
+    if(!r.hash||!['CONFIRMED','REVERTED'].includes((await this.follow(r.id)).status))throw Error('旧版执行合约还有待核对的触发原单');
    }
    this.nonce=Math.max(Number(BigInt(nonce)),...records.filter(r=>Number.isSafeInteger(r.nonce)).map(r=>r.nonce+1));
    this.gasPrice=BigInt(gas);this.warmedAt=this.now();return {ready:true,address:this.wallet.address,chainId:this.chainId};
   });
  }
  serial(fn){const p=this.queue.then(fn);this.queue=p.catch(()=>{});return p;}
- async prepare(id,ids) {
+ async prepare(id,ids,method=standardBatch.method) {
   return this.serial(async()=>{
    if(!/^[a-zA-Z0-9_.:-]{1,160}$/.test(id)||!Array.isArray(ids)||!ids.length||ids.length>64||new Set(ids).size!==ids.length||ids.some(x=>!/^0x[a-fA-F0-9]{64}$/.test(x)))throw Error('触发批次参数无效');
-   const data=EXECUTE.encodeFunctionData('executeBatch',[ids]);
+   const spec=method===dividendBatch.method&&this.dividendGas?dividendBatch:standardBatch;
+   if(spec.method!==method||this.chainId===56&&ids.length>spec.size)throw Error('触发批次与执行合约的 Gas 范围不符');
+   const data=EXECUTE.encodeFunctionData(method,[ids]);
    const old=this.journal.get(id);
    if(old){if(!eq(old.executor,this.executor)||old.data!==data)throw Error('同一批次 ID 不能更换钱包计划');return this.public(old);}
    if(this.nonce===undefined)throw Error('触发端尚未完成模拟链核验');
@@ -59,7 +66,8 @@ export class FastTrigger {
     if(!eq(row.executor,this.executor))throw Error('此原单属于其他版本的执行合约');
     if(row.status!=='PREPARED')return row;
     if(!this.wallet||this.nonce===undefined||this.now()-this.warmedAt>30000)throw Object.assign(Error('触发端已锁定或预热过期；未提交'),{noDispatch:true});
-    const nonce=this.nonce,tx={to:this.executor,data:row.data,value:0n,chainId:this.chainId,nonce,type:0,gasPrice:this.gasPrice,gasLimit:this.chainId===56?600000n+BigInt(row.ids.length)*530000n:14_000_000n};
+    const spec=this.dividendGas&&EXECUTE.parseTransaction({data:row.data})?.name===dividendBatch.method?dividendBatch:standardBatch;
+    const nonce=this.nonce,tx={to:this.executor,data:row.data,value:0n,chainId:this.chainId,nonce,type:0,gasPrice:this.gasPrice,gasLimit:this.chainId===56?batchGas(spec,row.ids.length):14_000_000n};
     const raw=await this.wallet.signTransaction(tx);
     row={...row,raw,hash:keccak256(raw),nonce,status:'SIGNED'};
     this.journal.put(row);this.nonce=nonce+1;return row;

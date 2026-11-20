@@ -90,6 +90,27 @@ test('并发领取回执和开盘检查对同一计划只编组一次',async()=>
  assert.equal(j.batches.flatMap(b=>b.ids).length,100);
 });
 
+test('开盘前等待不写任务日志，到期仍结束原计划',async()=>{
+ const f=fixture();await f.service.authorize({...f.input,wallets:f.input.wallets.slice(0,1)});
+ f.adapter.opening=async()=>({open:false,pair:a(888)});
+ let saves=0;const save=f.store.save;f.store.save=x=>{saves++;save(x);};
+ const runtime=new FastSaleRuntime(f.service);
+ await runtime.tick();await runtime.tick();assert.equal(saves,0);
+ f.advance(49*3600000);await runtime.tick();runtime.close();
+ assert.equal(f.service.jobs[0].rows[0].status,'EXPIRED');assert.equal(f.service.jobs[0].status,'COMPLETED');
+});
+
+test('同一主池的独立任务同时触发，一个广播响应慢时另一个仍提交',async()=>{
+ const f=fixture();await f.service.authorize({...f.input,wallets:f.input.wallets.slice(0,1)});
+ await f.service.authorize({...f.input,id:'second',wallets:f.input.wallets.slice(1,2)});
+ let release;const gate=new Promise(r=>release=r),sent=[];
+ const broadcast=f.trigger.broadcast;f.trigger.broadcast=async id=>{sent.push(id);if(id.startsWith('job:'))await gate;return broadcast(id);};
+ const trigger=f.service.notifyOpening(f.input.asset,await f.adapter.opening());
+ await new Promise(r=>setImmediate(r));
+ try{assert.deepEqual(sent,['job:batch:0','second:batch:0']);assert.equal(f.service.jobs[1].batches[0].status,'PENDING');}
+ finally{release();await trigger;}
+});
+
 test('已确认的高税回滚等待逐钱包模拟，暂停或原主池被替换时不触发',async()=>{
  const f=fixture(),rows=f.input.wallets.slice(0,3);
  f.adapter.taxAware=true;

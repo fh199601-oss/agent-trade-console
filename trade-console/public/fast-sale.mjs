@@ -52,7 +52,7 @@ export function createFastSalePanel({api,getSelection,document:doc=document}){
  }
  function buttons(){
   const job=jobFor(),live=state.mode==='LIVE'&&state.enabled;
-  $('fastAuthorize').disabled=busy||!live||!same(holdings?.token,asset())||!accounts().length||!!job&&['AUTHORIZING','REGISTERING','ARMED','PAUSED'].includes(job.status);
+  $('fastAuthorize').disabled=busy||!live||!venue||!!venue.blockedReason||!same(holdings?.token,asset())||!accounts().length||!!job&&['AUTHORIZING','REGISTERING','ARMED','PAUSED'].includes(job.status);
   const target=triggerAddress(),usable=validCA(target)&&same(target,state.trigger||state.managedAddress);
   const ready=validCA(target)&&same(target,state.trigger);
   const keyActions=live&&state.privateKeyActions;
@@ -78,14 +78,16 @@ export function createFastSalePanel({api,getSelection,document:doc=document}){
   $('fastStart').textContent=n?'开始任务 · '+n+' 个已授权钱包':'开始任务';
   let validation='';
   try{config();}catch(e){validation=e.message;}
-  $('fastStart').disabled||=!!validation;
+  $('fastStart').disabled||=!!validation||!!venue?.blockedReason;
   $('fastSave').disabled=busy||!live||!!validation||!validCA(target);
   $('fastUnit').textContent=venue?.quoteSymbol||'计价币';
   let hint=validation||'每个钱包单独核对最低到账，单位为 '+venue.quoteSymbol+'。';
   if(!state.taxAware&&/^[1-9]\d?$/.test($('fastPercent').value)&&Number($('fastPercent').value)%25!==0)hint+=' 自定义比例按开始任务时的持仓折算为固定数量；执行时最多卖到该数量或剩余持仓。';
-  if(venue?.marketPending)hint+=' 预定主池地址已核验。现在即可授权并点击「开始任务」提前登记，开盘后自动触发。';
+  if(venue?.marketPending&&!venue.blockedReason)hint+=' 预定主池地址已核验。代币到账后可授权并点击「开始任务」提前登记，开盘后自动触发。';
   if(state.taxAware&&venue)hint+=' 按主池实收和钱包税后到账结算。转账税与池费合计达到 50% 时，该钱包等待税率回落。';
   if(venue?.transferMismatch)hint+=' 此主池已有转账实收不符的卖出回执，极速合约无法处理该次扣费，可在快捷交易预览。';
+  if(venue?.tax)hint+=' 核验买入税 '+venue.tax.buyBps/100+'%，卖出税 '+venue.tax.sellBps/100+'%。';
+  if(venue?.blockedReason)hint+=' '+venue.blockedReason;
   $('fastMinimumHint').textContent=hint;
   const results=$('fastResults'),scroll=results.querySelector('.fast-wallet-list')?.scrollTop||0;
   results.replaceChildren();if(job){results.append(node('h3','钱包处理结果'));renderRows(results,job.rows.filter(r=>chosen.has(r.account)),job).scrollTop=scroll;}
@@ -96,7 +98,13 @@ export function createFastSalePanel({api,getSelection,document:doc=document}){
   for(const r of holdings.wallets.filter(r=>available.has(r.account))){
    const label=node('label',''),check=node('input','');check.type='checkbox';check.checked=!unchecked.has(r.account);
    check.addEventListener('change',()=>{if(check.checked)unchecked.delete(r.account);else unchecked.add(r.account);buttons();});
-   label.append(check,node('span',r.account+' 号 · '+(r.error?'持仓读取失败 · '+r.error:'持仓 '+r.balance)));wrap.append(label);
+   label.append(check,node('span',r.account+' 号 · '+(r.error?'持仓读取失败 · '+r.error:'持仓 '+r.balance)));
+   if(!r.error&&venue?.tax&&/^\d+$/.test(r.raw||'')&&/^(100|[1-9]\d?)$/.test($('fastPercent').value)){
+    const amount=BigInt(r.raw)*BigInt($('fastPercent').value)/100n;
+    const net=amount-amount*BigInt(venue.tax.sellBps)/10000n;
+    label.append(node('span','计划卖 '+units(String(amount),venue.tokenDecimals)+' · 预计入池 '+units(String(net),venue.tokenDecimals)));
+   }
+   wrap.append(label);
   }
   wrap.scrollTop=top;
  }
@@ -141,14 +149,14 @@ export function createFastSalePanel({api,getSelection,document:doc=document}){
    if(accounts.includes(Number(previous)))pick.value=previous;
   }
   const pending=['SUBMITTING','SUBMITTED'].includes(d.state);
-  if(pending)pick.value=String(d.account);
-  pick.disabled=pending||deployBusy;
+  if(pending||d.upgradeAccount)pick.value=String(d.upgradeAccount||d.account);
+  pick.disabled=pending||!!d.upgradeAccount||deployBusy;
   button.disabled=deployBusy||(!pending&&!pick.value);
   const review=deployReview?.account===Number(pick.value)&&deployReview?.executor===d.executor&&d.state==='PREVIEWED';
-  button.textContent=pending?'核对原部署':review?'确认部署我的合约':'预览我的合约';
+  button.textContent=pending?'核对原部署':review?'确认部署我的合约':d.upgradeAccount?'预览升级个人合约':'预览我的合约';
   $('fastDeployNotice').textContent=pending?'已提交，正在等待个人合约核验。':review?
    '预计 Gas '+d.fee+' BNB。个人执行合约 '+d.executor:
-   d.state==='REVERTED'?'原部署已上链回滚，可重新预览。':'选择自己的付款钱包。部署一次，之后所有代币可复用。';
+   d.state==='REVERTED'?'原部署已上链回滚，可重新预览。':d.upgradeAccount?'使用原付款钱包部署分红版。新地址启用后，所选代币须重新授权和登记。':'选择自己的付款钱包。部署一次，之后所有代币可复用。';
  }
  if($('fastDeploy')){
   $('fastDeployAccount').onchange=()=>{deployReview=null;renderDeployment(state.deployment);};
@@ -174,9 +182,16 @@ export function createFastSalePanel({api,getSelection,document:doc=document}){
   $('fastExecutor').value=s.executor||'';
   const verifiedAddress=s.trigger||s.managedAddress||'';
   $('fastKnownTriggers').replaceChildren(...(s.managedAddresses||[s.managedAddress]).filter(Boolean).map(address=>{const item=node('option','');item.value=address;return item;}));
-  $('fastReadiness').textContent=s.deployment?.state==='OTHER_WALLET'?'本机记录的部署付款钱包不在当前绑定列表，请核对原钱包入口。':s.deployment?.available?'首次使用请先部署自己的执行合约。':s.reason||'授权各钱包当前余额。开始任务时登记卖出比例、期限和最低到账，成交款直接回各原钱包。';
+  $('fastReadiness').textContent=s.deployment?.state==='OTHER_WALLET'?'本机记录的部署付款钱包不在当前绑定列表，请核对原钱包入口。':s.deployment?.available&&!s.deployment.upgradeAccount?'首次使用请先部署自己的执行合约。':s.reason||'授权各钱包当前余额。开始任务时登记卖出比例、期限和最低到账，成交款直接回各原钱包。';
   if(!hydrated&&s.settings){const x=s.settings;$('fastTrigger').value=x.trigger||'';$('fastSource').value=x.source||'opening';$('fastPercent').value=String(x.percent||100);$('fastExpiry').value=String(x.expiryHours||48);}
   if(!hydrated&&(s.trigger||!$('fastTrigger').value))$('fastTrigger').value=verifiedAddress;
+  if(!hydrated&&!asset()&&doc.location?.hash==='#fastSale'){
+   const token=new URLSearchParams(doc.location.search).get('openingSellPreview');
+   if(validCA(token)){
+    $('fastAsset').value=token;$('fastSource').value='opening';$('fastPercent').value='100';
+    void loadAsset();
+   }
+  }
   hydrated=true;buttons();const wrap=$('fastJobs'),expanded=new Set([...wrap.querySelectorAll('details[open]')].map(e=>e.dataset.id));wrap.replaceChildren();
   for(const j of [...s.jobs||[]].reverse()){
    const box=node('details','','fast-job');box.dataset.id=j.id;box.open=expanded.has(j.id);
@@ -233,13 +248,13 @@ export function createFastSalePanel({api,getSelection,document:doc=document}){
     $('fastMinimum').value=saved?.minAmount&&same(saved.quote,v.quote)&&saved.quoteDecimals===v.quoteDecimals?saved.minAmount:v.quoteDecimals<3?['1','0.1','0.01'][v.quoteDecimals]:'0.001';
     minimumDirty=false;
    }
-   buttons();
+   renderHoldings();buttons();
   }).catch(e=>{if(current()){venue=null;venueError=e.message;buttons();}});
   loading=Promise.all([balances,market]).finally(()=>{if(current())loading=null;});return loading;
  }
  $('fastUseCA').addEventListener('click',loadAsset);
  $('fastAsset').addEventListener('input',()=>{resetAsset();say('');if(validCA(asset()))lookupTimer=setTimeout(loadAsset,180);});
- $('fastPercent').addEventListener('input',buttons);$('fastMinimum').addEventListener('input',()=>{minimumDirty=true;buttons();});
+ $('fastPercent').addEventListener('input',()=>{renderHoldings();buttons();});$('fastMinimum').addEventListener('input',()=>{minimumDirty=true;buttons();});
  $('fastTrigger').addEventListener('input',()=>{$('fastKey').value='';$('fastPassword').value='';say('');buttons();});$('fastMinimum').addEventListener('change',buttons);
  $('fastSave').addEventListener('click',()=>action(async()=>{await api('fast-sale/settings',config());say('设置已保存');}));
  $('fastSetup').addEventListener('click',()=>action(async()=>{

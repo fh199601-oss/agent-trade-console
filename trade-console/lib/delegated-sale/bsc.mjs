@@ -1,3 +1,4 @@
+import {dividendInitHash,dividendRuntimeHash,standardBatch,dividendBatch,needsDividendGas,checkHeelsIdentity,incompatibleGas} from './dividend-gas.mjs';
 import {personalExecutor} from './personal-address.mjs';
 import {Interface,ZeroAddress,id,keccak256,getCreate2Address,solidityPackedKeccak256} from 'ethers';
 import {codeIdentity} from '../discovery.mjs';
@@ -5,10 +6,12 @@ import {ERC20,WBNB,read,same} from '../common.mjs';
 import {openingReads} from '../opening-read.mjs';
 export const TAX_BSC_SALE=Object.freeze({chainId:56,factory:'0xca143ce32fe78f1f7019d7d551a6402fc5350c73',wrapped:WBNB,executorHash:'0x03a65e203b402f68ec81f5ac4e1c2979ab449ddfda16885d1ec1248ba9940f01',taxAware:true});
 export function pinnedBscSale(address,hash,payer){
- if(!payer||hash!==TAX_BSC_SALE.executorHash)return;
+ if(!payer)return;
+ const dividendGas=hash===dividendRuntimeHash;
+ if(!dividendGas&&hash!==TAX_BSC_SALE.executorHash)return;
  try{
-  const executor=personalExecutor(payer);
-  if(same(executor,address))return {...TAX_BSC_SALE,executor,payer};
+  const executor=personalExecutor(payer,dividendGas?dividendInitHash:undefined);
+  if(same(executor,address))return {...TAX_BSC_SALE,executor,executorHash:hash,payer,...(dividendGas?{dividendGas:true}:{})};
  }catch{}
 }
 export function activeDeployment(manifest,jobs=[]){
@@ -27,7 +30,7 @@ export const SALE=new Interface([
  'function verify('+venueType+' v,bool preparing) view returns(bool)',
  'function registerSale('+venueType+' v,uint112 cap,uint128 minOut,address trigger,bool nativeOutput,uint8 percent,uint8 hoursValid) returns(bytes32)',
  'function plans(bytes32) view returns(address owner,address trigger,bytes32 venue,uint112 cap,uint128 minOut,uint48 deadline,uint8 state,bool paused,bool nativeOutput)',
- 'function executeBatch(bytes32[] ids)',
+ 'function executeBatch(bytes32[] ids)','function executeDividendBatch(bytes32[] ids)',
  'function sellPercent(bytes32) view returns(uint8)','function active(address,address) view returns(bytes32)',
  'event Registered(bytes32 indexed id,address indexed owner,address token,uint256 cap,uint256 deadline)',
  'event Sold(bytes32 indexed id,address indexed owner,uint256 amount,uint256 output,bool nativePaid)',
@@ -35,6 +38,7 @@ export const SALE=new Interface([
 ]);
 const view=new Interface(['function WBNB() view returns(address)','function router() view returns(address)','function sale() view returns(address)','function token() view returns(address)','function wrappedNative() view returns(address)','function factory() view returns(address)','function getPair(address,address) view returns(address)','function INIT_CODE_PAIR_HASH() view returns(bytes32)','function token0() view returns(address)','function token1() view returns(address)','function getReserves() view returns(uint112,uint112,uint32)',...['pair','pancakePair','uniswapV2Pair','lpPair'].map(x=>'function '+x+'() view returns(address)')]);
 export const TRANSFER_MESSAGE='执行合约检测到转账实收与计划不符，本钱包卖出已回滚；可在快捷交易重新预览。';
+const heelsTax=new Interface(['function BUY_TAX_BPS() view returns(uint256)','function SELL_TAX_BPS() view returns(uint256)','function AUTO_PROCESS_GAS() view returns(uint256)']);
 const transfer=new Interface(['function transferFrom(address,address,uint256) returns(bool)']);
 const transferMismatch=id('UnsupportedTransfer()').slice(0,10);
 const highFee=id('HighTransferFee()').slice(0,10);
@@ -45,7 +49,8 @@ export class BscVenue {
  constructor(rpc,deployment={}){
   const pin=pinnedBscSale(deployment.executor,deployment.executorHash,deployment.payer);
   if(!pin)throw Error('未知的主网执行合约版本');
-  this.rpc=rpc;this.chainId=56;this.executor=pin.executor;this.executorHash=pin.executorHash;this.payer=pin.payer;this.taxAware=!!pin.taxAware;this.venues=new Map();this.batchSize=20;}
+  this.rpc=rpc;this.chainId=56;this.executor=pin.executor;this.executorHash=pin.executorHash;this.payer=pin.payer;this.taxAware=!!pin.taxAware;this.venues=new Map();this.batchSize=20;this.dividendGas=!!pin.dividendGas;}
+ batchSpec(venue){return this.dividendGas&&needsDividendGas(venue)?dividendBatch:standardBatch;}
  async identity(){
   const [chain,code]=await Promise.all([this.rpc.send('eth_chainId',[]),this.rpc.send('eth_getCode',[this.executor,'latest'])]);
   if(BigInt(chain)!==56n||keccak256(code)!==this.executorHash)throw Error('BNB 主网执行合约地址或代码核验失败');
@@ -106,6 +111,13 @@ export class BscVenue {
    const [r0,r1]=await read(this.rpc,pair,view,'getReserves');
    v.openAtVerification=r0>0n&&r1>0n;
   }
+  if(needsDividendGas(v)){
+   checkHeelsIdentity(v);
+   const [[buy],[sell],[gas]]=await Promise.all(['BUY_TAX_BPS','SELL_TAX_BPS','AUTO_PROCESS_GAS'].map(name=>read(this.rpc,token,heelsTax,name)));
+   if(buy!==100n||sell!==200n||gas!==750000n)throw Error('HEELS 链上税率或分红 Gas 与核验代码不一致');
+   v.tax={buyBps:Number(buy),sellBps:Number(sell)};
+   if(!this.dividendGas)v.blockedReason=incompatibleGas;
+  }
   this.venues.set(token.toLowerCase(),v);return v;
  }
  async transferCompatibility(v,owner,amount){
@@ -126,6 +138,7 @@ export class BscVenue {
  }
  async opening(asset){
   const v=this.venues.get(asset.toLowerCase())||await this.verifiedVenue(asset);
+  if(v.blockedReason)return {open:false,blockedReason:v.blockedReason,token:v.token,pair:v.pair};
   if(this.taxAware){
    // Read the registered venue and its reserves in the same block, once for
    // all holders. verify returns token ordering; either boolean is valid.
@@ -163,8 +176,8 @@ export class BscVenue {
   if(!receipt||!same(receipt.transactionHash,b.hash))return null;
   return {hash:b.hash,status:BigInt(receipt.status)===1n?'CONFIRMED':'REVERTED',receipt};
  }
- async simulateTaxBatch(trigger,rows){
-  const call={from:trigger,to:this.executor,gas:'0xb71b00',data:SALE.encodeFunctionData('executeBatch',[rows.map(r=>r.plan.id)])};
+ async simulateTaxBatch(trigger,rows,venue){
+  const call={from:trigger,to:this.executor,gas:'0xb71b00',data:SALE.encodeFunctionData(this.batchSpec(venue).method,[rows.map(r=>r.plan.id)])};
   const [block]=await this.rpc.send('eth_simulateV1',[{blockStateCalls:[{calls:[call]}],validation:false},'latest']);
   const result=block?.calls?.[0];
   if(block?.calls?.length!==1||result.status!=='0x1')throw Error('节点未能模拟原计划的税后到账');

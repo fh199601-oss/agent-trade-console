@@ -96,13 +96,14 @@ export class FastSaleService {
  async prepareRows(j){
   const rows=j.rows.filter(r=>r.status==='READY'&&!r.batch);
   // 64 + 36 for 100 wallets. Each item has its own EVM revert/gas boundary.
-  const size=this.adapter.batchSize||64;
+  const spec=this.adapter.batchSpec?.(j.venue);
+  const size=spec?.size||this.adapter.batchSize||64;
   for(let offset=0;offset<rows.length;offset+=size){
    if(j.deletedAt||j.status==='PAUSED')return;
    const group=rows.slice(offset,offset+size),id=j.id+':batch:'+j.batches.length;
    const batch={id,ids:group.map(r=>r.plan.id),status:'PREPARING'};
    j.batches.push(batch);for(const r of group)r.batch=id;this.persist();
-   try{const signed=await this.trigger.prepare(id,batch.ids);batch.status=signed.status;batch.hash=signed.hash;}
+   try{const signed=await this.trigger.prepare(id,batch.ids,spec?.method);batch.status=signed.status;batch.hash=signed.hash;}
    catch(e){batch.status='REVIEW';batch.message=describeError(e);for(const r of group){r.status='REVIEW';r.message=describeError(e);}}
    this.persist();
   }
@@ -118,13 +119,16 @@ export class FastSaleService {
  }
  async notifyOpening(asset,snapshot){
   const jobs=this.jobs.filter(j=>same(j.asset,asset)&&j.status==='ARMED');
+  const submissions=[];
   for(const j of jobs){
+   if(snapshot?.blockedReason&&same(snapshot.token,asset)){j.status='PAUSED';j.pausedFrom='ARMED';j.message=snapshot.blockedReason;this.persist();continue;}
    if(this.adapter.taxAware&&same(snapshot?.token,asset)&&snapshot.pair&&!same(snapshot.pair,j.venue.pair)&&(snapshot.changed||snapshot.open)){
     j.status='PAUSED';j.pausedFrom='ARMED';j.message='开盘主池与登记计划不同。请核对新主池后删除旧任务，并重新登记。';this.persist();continue;
    }
    if(!snapshot?.open||!this.adapter.matchesPrimary(j.venue,snapshot))continue;
-   await this.fire(j.id);
+   if(j.batches.some(b=>b.status==='PREPARED'))submissions.push(this.fire(j.id));
   }
+  await Promise.all(submissions);
  }
  async afterClaim(claim){
   // A UI field, a submitted hash or a simulation preview is not a settled claim.
@@ -145,6 +149,7 @@ export class FastSaleService {
    // No quote/holder reads on the trigger path. Every plan settles current
    // balances/reserves atomically on chain, with the holder's immutable minimum.
    const batches=j.batches.filter(b=>b.status==='PREPARED');
+   if(!batches.length)return;
    for(const b of batches)for(const r of j.rows.filter(r=>r.batch===b.id)){r.status='PENDING';r.attempts++;}
    this.persist();
    await Promise.all(batches.map(async b=>{try{Object.assign(b,await this.trigger.broadcast(b.id));}catch(e){b.status=e.noDispatch?'PREPARED':'UNKNOWN';b.message=e.noDispatch?'等待触发端后台预热；尚未提交':'触发提交需核对原单';if(e.noDispatch)for(const r of j.rows.filter(r=>r.batch===b.id)){r.status='READY';r.attempts--;}}this.persist();}));
@@ -175,12 +180,12 @@ export class FastSaleService {
   const rows=j.rows.filter(r=>r.status==='WAIT_TAX'&&this.now()/1000<=r.plan.deadline);
   if(j.status!=='ARMED'||!this.trigger||!rows.length||this.now()<(j.nextTaxCheck||0))return;
   j.nextTaxCheck=this.now()+3000;
-  const size=this.adapter.batchSize||20;
+  const size=this.adapter.batchSpec?.(j.venue)?.size||this.adapter.batchSize||20;
   const groups=[];
   for(let i=0;i<rows.length;i+=size)groups.push(rows.slice(i,i+size));
   await Promise.all(groups.map(async group=>{
    try{
-    const eligible=await this.adapter.simulateTaxBatch(j.settings.trigger,group);
+    const eligible=await this.adapter.simulateTaxBatch(j.settings.trigger,group,j.venue);
     if(j.deletedAt||j.status!=='ARMED')return;
     for(const row of eligible){
      if(row.status!=='WAIT_TAX'||this.now()/1000>row.plan.deadline)continue;

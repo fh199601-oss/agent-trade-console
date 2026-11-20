@@ -73,12 +73,16 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
  const fastRuntime=new FastSaleRuntime(fastSale);if(fastSale.status().enabled)fastRuntime.start();
  const deploymentManager=new PersonalDeployment({
   data,rpc,witness:deploymentWitness||new Rpc('https://bsc-dataseed1.defibit.io'),bridge,bindings:walletBindings,enabled:()=>live&&engine.live&&!providedFastSale,
-  activate(manifest){
+  async activate(manifest){
    const verified=activeDeployment(manifest,load(path.join(data,'fast-sale-mainnet-jobs.json'),[]));
-   if(!verified?.payer||deployed)throw Error('本机执行合约或任务状态已变化');
+   const previous=fastSale;
+   if(!verified?.payer||!walletBindings().some(w=>same(w.address,verified.payer))||
+      deployed&&(deployed.dividendGas||!verified.dividendGas||!same(verified.payer,deployed.payer)||
+      previous.walletWork?.size||previous.starting?.size||previous.busy?.size||previous.firing?.size||previous.unlocking||previous.importing||previous.backingUp))throw Error('本机执行合约或任务状态已变化');
    const service=new LiveFastSale({rpc,bridge,data,bindings:walletBindings,deployment:verified});
    save(path.join(data,'fast-deployment.json'),manifest);
    deployed=verified;fastSale=service;fastRuntime.service=service;fastRuntime.start();
+   await previous.close?.();
   }
  });
 
@@ -119,7 +123,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
   const send=(code,v,type='application/json')=>{res.writeHead(code,{'content-type':type+'; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer','content-security-policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"});res.end(type==='application/json'?json(v):v);};
   try{
    guard(req);const u=new URL(req.url,'http://'+req.headers.host),p=u.pathname;
-   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,instance,capabilities:{fastSaleVersion:7,fastSaleSimulationOnly:!deployed,multiWalletVersion:11,sellSlippageMaxBps:9900,shallowPoolVersion:1,previewSubmitSpeedVersion:2,openingPreapprovalVersion:1,starsVersion:2,gangVersion:2,sellCoordinationVersion:7,queuedSellPreviewVersion:3,manualSellPreparationVersion:4,tradePreparationVersion:6,instantGuardsVersion:2,sellQuoteIsolationVersion:3,rpcRecoveryVersion:1,genericMintVersion:3,infinitySellVersion:1,sellFeeGuardVersion:4,sellRouteValueVersion:1,primaryPoolSpeedVersion:2,primaryTradePolicyVersion:1,sellFeeThresholdPpm:HIGH_FEE_PPM,feeRouteSearchVersion:1,sellGasVersion:1,openingVersion:8,tradeWarmupVersion:2,recoveryVersion:1,instantReview:true,corlaVersion:3,corlaAutomationVersion:3,taskCenterVersion:2,originalTrackingVersion:1},token,mode:live?'LIVE':'SIMULATION',wallets:walletBindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list(),corla:corla.list()});
+   if(req.method==='GET'&&p==='/api/bootstrap')return send(200,{service:'agent-trade-console',installationId:load(path.join(LOCAL,'install.json'))?.installationId,instance,capabilities:{fastSaleVersion:8,fastSaleSimulationOnly:!deployed,multiWalletVersion:11,sellSlippageMaxBps:9900,shallowPoolVersion:1,previewSubmitSpeedVersion:2,openingPreapprovalVersion:1,starsVersion:2,gangVersion:2,sellCoordinationVersion:7,queuedSellPreviewVersion:3,manualSellPreparationVersion:4,tradePreparationVersion:6,instantGuardsVersion:2,sellQuoteIsolationVersion:3,rpcRecoveryVersion:1,genericMintVersion:3,infinitySellVersion:1,sellFeeGuardVersion:4,sellRouteValueVersion:1,primaryPoolSpeedVersion:2,primaryTradePolicyVersion:1,sellFeeThresholdPpm:HIGH_FEE_PPM,feeRouteSearchVersion:1,sellGasVersion:1,openingVersion:8,tradeWarmupVersion:2,recoveryVersion:1,instantReview:true,corlaVersion:3,corlaAutomationVersion:3,taskCenterVersion:2,originalTrackingVersion:1},token,mode:live?'LIVE':'SIMULATION',wallets:walletBindings(),settings:settings(),readiness:[...readiness.values()],orders:engine.list(30),opening:opening.list(),corla:corla.list()});
    if(p.startsWith('/api/'))auth(req);
    if(req.method==='POST'&&p==='/api/parallel'){
     const {requests}=await body(req,524288);
@@ -153,7 +157,7 @@ export function createServer({rpc=new Rpc(process.env.BSC_RPC_URL||undefined),br
     if(!fastSale.adapter?.verifiedVenue)throw Error('当前模式未启用主池核验');
     const v=await fastSale.adapter.verifiedVenue(address(u.searchParams.get('ca')));
     const transferMismatch=!fastSale.adapter.taxAware&&fastSale.jobs?.some(j=>same(j.asset,v.token)&&same(j.venue?.pair,v.pair)&&j.venue?.tokenHash===v.tokenHash&&j.rows.some(r=>r.reason==='TRANSFER_MISMATCH'));
-    return send(200,{token:v.token,quote:v.quote,quoteSymbol:v.quoteSymbol,quoteDecimals:v.quoteDecimals,marketPending:!!v.marketPending,transferMismatch:!!transferMismatch});
+    return send(200,{token:v.token,quote:v.quote,quoteSymbol:v.quoteSymbol,quoteDecimals:v.quoteDecimals,tokenDecimals:v.tokenDecimals,tax:v.tax,dividendGas:!!fastSale.adapter.dividendGas,blockedReason:v.blockedReason,marketPending:!!v.marketPending,transferMismatch:!!transferMismatch});
    }
    if(req.method==='GET'&&p==='/api/fast-sale'){
     await fastSale.refreshPastFills?.();
