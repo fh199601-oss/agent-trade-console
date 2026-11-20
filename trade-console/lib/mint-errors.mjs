@@ -7,7 +7,7 @@ export function mintError(error,sourceAbi=null){
  let decoded;try{decoded=data&&abi.parseError(data);}catch{}
  if(!decoded&&sourceAbi)try{decoded=data&&new Interface(sourceAbi).parseError(data);}catch{}
  if(!decoded)return error;
- if(['InvalidReferrer','InvalidInviter','ReferrerNotEligible'].includes(decoded.name))return Object.assign(new Error('合约拒绝当前邀请人（'+decoded.name+'）；需要先满足项目邀请资格，不会省略邀请继续铸造'),{code:'MINT_STATE',data,details:error.details,executionError:true,cause:error});
+ if(['InvalidReferrer','InvalidInviter','ReferrerNotEligible'].includes(decoded.name))return Object.assign(new Error('合约拒绝当前邀请人（'+decoded.name+'）；将尝试不带邀请重新模拟；合约必需资格仍须满足'),{code:'MINT_REFERRAL',data,details:error.details,executionError:true,cause:error});
  const exact=decoded.name==='Error'?String(decoded.args[0]):decoded.name;
  const custom=decoded.name!=='Error'&&decoded.name!=='Panic'?{name:decoded.name,args:Array.from(decoded.args).slice(0,16).map(v=>JSON.stringify(v,(_,x)=>typeof x==='bigint'?String(x):x)?.slice(0,320))}:null;
  const stateCode=/^(?:AlreadyMinted|AlreadyClaimed|AlreadyRegistered|AgentLimitReached|Already minted|Already claimed|Free already claimed|Sold out|SOLD_OUT|Free pool empty|Free quota exhausted|Wallet limit reached)$/.test(exact)?'NO_QUOTA':/^(?:Not a free mint ID|Not an agent|NotAgent|NoAgentId)$/.test(exact)?'MINT_INELIGIBLE':/^(?:SaleEnded|MintEnded|Mint ended|Sale ended)$/.test(exact)?'MINT_ENDED':null;

@@ -1,0 +1,119 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {keccak256,id} from 'ethers';
+import {PersonalDeployment,deploymentInput,inspectDeployment} from '../lib/delegated-sale/personal-deployment.mjs';
+import {DEPLOY_PROXY,INIT_HASH,PROXY_HASH,personalExecutor} from '../lib/delegated-sale/personal-address.mjs';
+import {TAX_BSC_SALE,pinnedBscSale,BscVenue} from '../lib/delegated-sale/bsc.mjs';
+import {save} from '../lib/common.mjs';
+
+const address=n=>'0x'+n.toString(16).padStart(40,'0');
+const proxy='0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3';
+const init=fs.readFileSync(new URL('../lib/delegated-sale/executor-init.txt',import.meta.url),'utf8').trim();
+// solc 0.8.38 immutableReferences on the published build. Materialize the verified BSC runtime offline.
+function runtime(){
+ const bytes=Buffer.from(init.slice(2),'hex').subarray(662,662+14755);
+ for(const [value,offsets] of [
+  [TAX_BSC_SALE.factory,[1498,4750,6516,6734,6989,7328,11840]],
+  ['0x9e8d17faaee69b053be6ac65b2b2c317741d770cb5fbdd9512536d17e9e076ca',[1396,4717]],
+  ['0x60e4bcb14447615ab7c14fda2c2d70ca4191570e8841c75618e627c8f72662f8',[557,7271]],
+  [TAX_BSC_SALE.wrapped,[302,608,3919,4155,4857,8638]],
+  ['0xb7d84205eaaf83ce7b3940c6beaad6d22790255e34a9a2b486aa8cdfff118fe6',[1447,4824]]
+ ])for(const at of offsets)Buffer.from(value.slice(2).padStart(64,'0'),'hex').copy(bytes,at);
+ return '0x'+bytes.toString('hex');
+}
+const code=runtime();
+function fixture(t){
+ const data=fs.mkdtempSync(path.join(os.tmpdir(),'personal-executor-'));t.after(()=>fs.rmSync(data,{recursive:true,force:true}));
+ const ctx={code:'0x',submitted:0,activated:0,receipt:null};
+ const hash=id('synthetic deployment');
+ const rpc={send:async(method,args)=>{
+  switch(method){
+   case 'eth_chainId':return '0x38';
+   case 'eth_getCode':return args[0]===DEPLOY_PROXY?proxy:ctx.code;
+   case 'eth_call':return args[0].to?personalExecutor(args[0].from):code;
+   case 'eth_estimateGas':return '0x300000';
+   case 'eth_gasPrice':return '0x5f5e100';
+   case 'eth_getTransactionByHash':return {hash,from:address(1),to:DEPLOY_PROXY,input:deploymentInput(address(1)),value:'0x0'};
+   case 'eth_getTransactionReceipt':return ctx.receipt;
+   default:throw Error('unexpected mock RPC');
+  }
+ }};
+ const bridge={ready:async()=>{},call:async(n,args)=>{
+  if(args[1]==='preview')return {requestId:'fake-'+n,risks:[],parsedTx:{contractAddress:DEPLOY_PROXY},simulationResult:{simulationCode:'000000000'}};
+  assert.deepEqual(args,['contract-call','execute','--requestId','fake-'+n]);ctx.submitted++;
+  if(ctx.disconnect)throw Error('synthetic disconnect');
+  return {txHash:hash};
+ }};
+ const config={data,rpc,witness:rpc,bindings:()=>[1,2].map(n=>({account:n,address:address(n)})),bridge,enabled:()=>true,
+  activate:m=>{ctx.activated++;save(path.join(data,'fast-deployment.json'),m);}};
+ return {config,make:()=>new PersonalDeployment(config),ctx,hash};
+}
+test('personal address binds the payer and the exact audited constructor; arbitrary destinations cannot be selected',()=>{
+ assert.equal(keccak256(proxy),PROXY_HASH);assert.equal(keccak256(init),INIT_HASH);assert.equal(keccak256(code),TAX_BSC_SALE.executorHash);
+ const first=personalExecutor(address(1)), other=personalExecutor(address(2));
+ assert.notEqual(first,other);
+ assert.equal(pinnedBscSale(first,TAX_BSC_SALE.executorHash,address(1)).executor,first);
+ assert.equal(pinnedBscSale(first,TAX_BSC_SALE.executorHash,address(2)),undefined);
+ assert.equal(pinnedBscSale(first,TAX_BSC_SALE.executorHash),undefined);
+ assert.throws(()=>new BscVenue({}, {...TAX_BSC_SALE,executor:other,payer:address(1)}));
+});
+test('preview is read-only; payment needs a matching wallet and ticket, replay follows original',async t=>{
+ const {ctx,make,hash}=fixture(t);const service=make(),r=await service.run('preview',{account:1});
+ assert.equal(ctx.submitted,0);assert.ok(r.ticket&&r.fee);
+ await assert.rejects(service.run('execute',{account:2,ticket:r.ticket}));
+ await assert.rejects(service.run('execute',{account:1,ticket:'wrong'}));
+ const submit=()=>service.run('execute',{account:1,ticket:r.ticket});await Promise.allSettled([submit(),submit()]);
+ assert.equal(ctx.submitted,1);assert.equal((await make().run('check',{})).state,'SUBMITTED');
+ await submit();assert.equal(ctx.submitted,1);ctx.receipt={transactionHash:hash,status:'0x1'};ctx.code=code;
+ const ready=await make().run('check',{});assert.equal(ready.executor,personalExecutor(address(1)));assert.equal(ready.state,'PERSONAL');
+ assert.equal(ctx.activated,1);
+});
+test('disconnect after dispatch survives restart and recovers by deterministic address',async t=>{
+ const {ctx,make}=fixture(t);const service=make();const r=await service.run('preview',{account:1});
+ ctx.disconnect=true;await service.run('execute',{account:1,ticket:r.ticket});await make().run('preview',{account:1});
+ await assert.rejects(make().run('preview',{account:2}));assert.equal(ctx.submitted,1);
+ ctx.code=code;assert.equal((await make().run('check',{})).state,'PERSONAL');assert.equal(ctx.submitted,1);
+});
+test('reinstall reuses existing verified personal contract with zero wallet calls',async t=>{
+ const {config,make,ctx}=fixture(t);ctx.code=code;config.bridge=null;
+ assert.equal((await make().run('preview',{account:2})).executor,personalExecutor(address(2)));
+ assert.equal(ctx.submitted,0);
+});
+test('both observers must agree, and reject wrong network, proxy and runtime',async t=>{
+ const {config,make,ctx}=fixture(t);
+ for(const [method,wrong] of [['eth_chainId','0x1'],['eth_getCode','0x01']]){
+  await assert.rejects(inspectDeployment({send:(m,a)=>m===method?wrong:config.rpc.send(m,a)},personalExecutor(address(1))));
+ }
+ ctx.code='0x6001';await assert.rejects(make().run('preview',{account:1}),/代码指纹/);
+ ctx.code='0x';config.witness={send:(m,a)=>m==='eth_getCode'&&a[0]!==DEPLOY_PROXY?code:config.rpc.send(m,a)};
+ await assert.rejects(make().run('preview',{account:1}),/尚未一致/);assert.equal(ctx.submitted,0);
+});
+test('dashboard deploy endpoints check authentication and activate the personal executor for the same session and after restart',async t=>{
+ const {config,ctx,hash}=fixture(t);
+ const {createServer}=await import('../server.mjs');
+ const start=async()=>{
+  const app=createServer({data:config.data,rpc:config.rpc,deploymentWitness:config.witness,bridge:config.bridge,walletBindings:config.bindings,engine:{live:true,list:()=>[],running:new Set()},live:true});
+  await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));
+  const root='http://127.0.0.1:'+app.server.address().port;
+  const post=async(action,body,authorized=true)=>fetch(root+'/api/fast-sale/deployment/'+action,{method:'POST',headers:{'content-type':'application/json',...(authorized?{'x-console-token':app.token}:{})},body:JSON.stringify(body)});
+  return {app,root,post,close:()=>new Promise(resolve=>app.server.close(resolve))};
+ };
+ const first=await start();
+ try{
+  assert.match(await (await fetch(first.root)).text(),/id="fastDeploy"/);
+  assert.ok((await first.post('preview',{account:1},false)).status>=400);
+  const r=await (await first.post('preview',{account:1})).json();
+  assert.ok(r.ticket);assert.equal(ctx.submitted,0);
+  const submitted=await (await first.post('execute',{account:1,ticket:r.ticket})).json();
+  assert.equal(submitted.state,'SUBMITTED');
+  ctx.receipt={transactionHash:hash,status:'0x1'};ctx.code=code;
+  assert.equal((await (await first.post('check',{})).json()).state,'PERSONAL');
+  assert.equal(first.app.fastSale.status().executor,personalExecutor(address(1)));
+ }finally{await first.close();}
+ const restarted=await start();
+ try{assert.equal(restarted.app.fastSale.status().executor,personalExecutor(address(1)));assert.equal(ctx.submitted,1);}
+ finally{await restarted.close();}
+});

@@ -89,6 +89,16 @@ async function saleState(rpc,token){
   return {block,sale,paused,tradingPaused,price,total,units,mode,token};
  });
 }
+// Before launch the pool is not deployed. The pinned token template and
+// factory/seeder implementations still prove its official trading router.
+// This proof authorizes only early allowance preparation, never a swap.
+export async function starsPreapprovalVenue(rpc,token,identity){
+ try{verifyStarsTokenCode(identity?.code);}catch{return null;}
+ const [proof,s]=await Promise.all([verifyStars(rpc),saleState(rpc,token)]);
+ verifyStarsTokenCode(identity.code,s.sale.marketing2);
+ if(s.sale.launched||s.tradingPaused)return null;
+ return {router:STARS_TEMPLATE.router,quote:STARS_TEMPLATE.wbnb,protocolIdentities:[proof.identity,...proof.protocolIdentities]};
+}
 export async function starsState(rpc,w,token=C.token,{saleState:given,allowClosed=false}={}){
  const s=given||await saleState(rpc,token);if(!allowClosed&&(s.sale.launched||s.sale.minted>=s.total))throw fail('该项目认购已满并开盘，不能继续 Mint；代币已在钱包中，可使用快捷交易','MINT_ENDED');
  if(!allowClosed&&s.paused)throw fail('Stars 平台已暂停 Mint','MINT_PAUSED');

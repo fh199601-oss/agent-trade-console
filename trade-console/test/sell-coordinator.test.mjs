@@ -47,3 +47,22 @@ for(const [fastReturn,staggered] of [[false,false],[true,false],[false,true]])te
  assert.deepEqual(submitted.map(s=>String(s.minimum)),['990000','792000','633600'].slice(0,wallets.length));assert.ok(results.every(o=>o.plan.slippage.bps===100));
  const before=submits;await e.execute('sale0',{authorization:'same fixture'});assert.equal(submits,before);
 });
+test('100-wallet healthy queue can progress beyond one minute without timing out its tail',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const c=new SellCoordinator(),owner=await c.enter('large'),queue=Array.from({length:99},()=>c.enter('large'));let current=owner;
+ for(const waiting of queue){t.mock.timers.tick(1100);current.release();current=await waiting;}
+ current.release();assert.equal(c.tails.size,0);assert.equal(c.waiters.size,0);assert.equal(c.plans.size,0);
+});
+test('shallow preparation window is FIFO and bounded; one slow wallet cannot stop the other slots',async()=>{
+ const c=new SellCoordinator(),active=await Promise.all(Array.from({length:8},()=>c.prepareParallel('pool'))),started=[];
+ const rest=Array.from({length:92},(_,n)=>c.prepareParallel('pool').then(ticket=>{started.push(n);return ticket;}));
+ await tick();assert.equal(started.length,0);assert.equal(c.preparations.get('pool').active,8);
+ const other=await c.prepareParallel('other');other.release();
+ // Keep wallet 1 stalled. Each remaining slot still makes forward progress.
+ for(let n=0;n<92;n++){const slot=1+n%7;active[slot].release();active[slot]=await rest[n];assert.equal(active[slot].waited,true);assert.ok(c.preparations.get('pool').active<=8);}
+ assert.deepEqual(started,Array.from({length:92},(_,n)=>n));for(const a of active){a.release();a.release();}assert.equal(c.preparations.size,0);
+});
+test('shallow preparation timeouts release only waiting tickets and retain original owners',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const c=new SellCoordinator({idleTimeoutMs:100,maxWaitMs:150}),owners=await Promise.all(Array.from({length:8},()=>c.prepareParallel('pool')));
+ const waiting=assert.rejects(c.prepareParallel('pool'),e=>e.code==='SELL_POOL_BUSY');t.mock.timers.tick(101);await waiting;
+ assert.equal(c.preparations.get('pool').active,8);assert.equal(c.preparations.get('pool').queue.length,0);owners.forEach(t=>t.release());assert.equal(c.preparations.size,0);
+});

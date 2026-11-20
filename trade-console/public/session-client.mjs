@@ -5,7 +5,8 @@ const failure=v=>Object.assign(Error(v?.error?.message||v?.error||'本地服务�
 export function createConsoleClient({fetchImpl=(...args)=>fetch(...args),onSession=()=>{}}={}){
  let session=null,loading=null;
  async function send(path,body,token){
-  const response=await fetchImpl('/api/'+path,{method:body===undefined?'GET':'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'content-type':'application/json',...(token?{'x-console-token':token}:{})},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(body===undefined?45000:120000)}).catch(e=>{throw Error(e.name==='TimeoutError'?'请求超时，请在本地操作记录核对原单；不要重复提交。':e.message);});
+  const credentialRequest=['fast-sale/import-key','fast-sale/export-key','fast-sale/generated'].includes(path);
+  const response=await fetchImpl('/api/'+path,{method:body===undefined?'GET':'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'content-type':'application/json',...(token?{'x-console-token':token}:{})},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(body===undefined?45000:credentialRequest?365000:path==='fast-sale/backup'?175000:120000)}).catch(e=>{throw Error(e.name==='TimeoutError'?'请求超时，请在本地操作记录核对原单；不要重复提交。':e.message);});
   return {response,value:await response.json()};
  }
  function refreshSession(){
@@ -17,7 +18,7 @@ export function createConsoleClient({fetchImpl=(...args)=>fetch(...args),onSessi
   })();loading.finally(()=>{loading=null;}).catch(()=>{});return loading;
  }
  async function request(path,body){
-  if(!/^(?:[a-z][a-z0-9-]*(?:\?.*)?|opening\/(?:check|arm|stop)|tasks\/(?:resume|pause|delete|restore|edit|candidates|add))$/.test(path)||path==='bootstrap')throw Error('本地接口路径无效');
+  if(!/^(?:[a-z][a-z0-9-]*(?:\?.*)?|opening\/(?:check|arm|stop)|fast-sale\/(?:settings|setup|unlock|generated|import-key|export-key|backup|authorize|start|control)|tasks\/(?:resume|pause|delete|restore|edit|candidates|add))$/.test(path)||path==='bootstrap')throw Error('本地接口路径无效');
   if(!session)await refreshSession();
   const used=session.token,{response,value}=await send(path,body,used);
   if(response.ok)return value;
@@ -30,5 +31,15 @@ export function createConsoleClient({fetchImpl=(...args)=>fetch(...args),onSessi
   // Exactly one retry. Concurrent or late failures share the renewed token.
   const retry=await send(path,body,session.token);if(!retry.response.ok)throw failure(retry.value);return retry.value;
  }
- return {request,refreshSession};
+ async function requestMany(requests,{onResult=()=>{}}={}){
+  if(!session)await refreshSession();
+  const response=await fetchImpl('/api/parallel',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'content-type':'application/json','x-console-token':session.token},body:JSON.stringify({requests}),signal:AbortSignal.timeout(120000)});
+  if(!response.ok){const value=await response.json();if(response.status===401&&value?.details?.requestAccepted===false)await refreshSession();throw failure(value);}
+  if(!response.headers.get('content-type')?.includes('application/x-ndjson'))throw Error('并发操作响应无效，请核对原单');
+  const expected=new Set(requests.map(r=>r.body.id)),seen=new Set(),rows=[],reader=response.body.getReader(),decoder=new TextDecoder();let pending='';
+  const accept=line=>{if(!line.trim())return;const row=JSON.parse(line);if(!expected.has(row.id)||seen.has(row.id)||row.value&&row.value.id!==row.id)throw Error('并发操作返回了不匹配的原单');seen.add(row.id);rows.push(row);onResult(row);};
+  try{while(true){const {value,done}=await reader.read();pending+=decoder.decode(value,{stream:!done});let end;while((end=pending.indexOf('\n'))>=0){accept(pending.slice(0,end));pending=pending.slice(end+1);}if(done)break;}if(pending.trim())accept(pending);if(seen.size!==expected.size)throw Error('部分钱包响应中断，请核对原单');return rows;}
+  finally{reader.releaseLock();}
+ }
+ return {request,requestMany,refreshSession};
 }

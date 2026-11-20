@@ -40,12 +40,18 @@ function v3Spot(rpc,pool,block){
  return value;
 }
 export async function quotedPoolFees(rpc,pool,amounts,token,block){
- const proof=poolFeeProof(pool,amounts,token,block);
- if(pool.kind!=='v3'||!pool.token0||!pool.token1||![pool.token0,pool.token1].some(t=>same(t,token))||!(Number.isSafeInteger(block)&&block>=0||/^0x[\da-f]+$/i.test(String(block))))return proof;
- try{
-  const [sqrt]=await v3Spot(rpc,pool.pool,block);
-  return v3SpotFees(pool,amounts,token,block,sqrt);
- }catch{return proof;} // Unknown depth never qualifies for the primary fast path.
+ return prepareQuotedPoolFees(rpc,pool,token,block)(amounts);
+}
+// The pool price is independent of the wallet's full-size quote. Start both
+// reads together at the SAME pinned block, then derive fees once both finish.
+// Catch immediately: a rejected quote must not leave an unhandled spot read.
+export function prepareQuotedPoolFees(rpc,pool,token,block){
+ const eligible=pool.kind==='v3'&&pool.token0&&pool.token1&&[pool.token0,pool.token1].some(t=>same(t,token))&&(Number.isSafeInteger(block)&&block>=0||/^0x[\da-f]+$/i.test(String(block)));
+ const price=eligible?v3Spot(rpc,pool.pool,block).then(([sqrt])=>sqrt,()=>null):null;
+ return async amounts=>{
+  const proof=poolFeeProof(pool,amounts,token,block),sqrt=price?await price:null;
+  return sqrt?v3SpotFees(pool,amounts,token,block,sqrt):proof;
+ };
 }
 export function v3SpotFees(pool,amounts,token,block,sqrt){
  const proof=poolFeeProof(pool,amounts,token,block);
@@ -115,7 +121,7 @@ function simulatedShortfall(plan,preview){
  try{
   if(!plan.requireSellCredit||plan.steps?.at(-1)?.kind!=='sell'||!preview)return null;
   const quoted=parseUnits(String(plan.quote.toCoinAmount),plan.outputDecimals??18);
-  let credit=0n;for(const c of preview.balanceChanges||[]){if(!same(c.owner,plan.wallet)||!(same(c.contractAddress,plan.outputToken)||native(c.contractAddress)&&native(plan.outputToken)))continue;const n=BigInt(c.change);if(n>0n)credit+=n;}
+  let credit=0n;for(const c of preview.balanceChanges||[]){if(!same(c.owner,plan.wallet)||!(same(c.contractAddress,plan.outputToken)||native(c.contractAddress)&&native(plan.outputToken)))continue;credit+=BigInt(c.change);}
   if(quoted<=0n||credit<=0n)return null;
   return credit>=quoted?0:Number((quoted-credit)*1000000n/quoted);
  }catch{return null;}
@@ -132,7 +138,9 @@ export function assessSellFees(plan,preview,{beforeSell=false}={}){
  }catch{}
  const poolFeePpm=ppm(curve?.poolFeePpm??proof?.poolFeePpm);
  const taxPpm=curve?.taxPpm??(plan.audit?.available?percentPpm(plan.audit.taxes?.sellTax):null);
- const additionalLossPpm=opaque?null:simulatedShortfall(plan,preview);
+ const observed=opaque?null:simulatedShortfall(plan,preview);
+ const measured=ppm(plan.transferQuote?.lossPpm);
+ const additionalLossPpm=measured===null?observed:Math.max(measured,observed??0);
  // Preview shortfall can include the same transfer tax; use the larger
  // observed estimate instead of double-counting it. It may also be price movement.
  const effectiveTax=taxPpm===null?additionalLossPpm:Math.max(taxPpm,additionalLossPpm||0);
@@ -142,7 +150,7 @@ export function assessSellFees(plan,preview,{beforeSell=false}={}){
  // reuse an approval preview as a sale preview or infer that unknown means 0.
  let canCheckSellCredit=false;
  try{canCheckSellCredit=!opaque&&poolFeePpm!==null&&plan.requireSellCredit===true&&plan.steps?.at(-1)?.kind==='sell'&&!!plan.outputToken&&parseUnits(String(plan.quote?.toCoinAmount),plan.outputDecimals??18)>0n;}catch{}
- const pendingSellPreview=taxPpm===null&&additionalLossPpm===null&&canCheckSellCredit;
+ const pendingSellPreview=taxPpm===null&&observed===null&&canCheckSellCredit;
  const quoteLossPpm=ppm(proof?.quoteLossPpm);
  const totalFeePpm=compoundFees([poolFeePpm===null?null:Math.max(poolFeePpm,quoteLossPpm||0),effectiveTax]),reasons=[];
  if(opaque)reasons.push('聚合器不公开且不能固定实际池子与池费，可能再次走高费池；此路线禁止提交');

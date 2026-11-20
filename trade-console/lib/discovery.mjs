@@ -15,8 +15,9 @@ import {discoverCorla,corlaInput} from './corla.mjs';
 import {discoverBinancians} from './binancians.mjs';
 import {binanciansInput} from '../public/binancians-input.mjs';
 import {normalizeAssetInput} from '../public/asset-input.mjs';
-import {starsInput,discoverStars} from './stars.mjs';
 import {bagentInput,discoverBagent} from './bagent.mjs';
+import {starsInput,discoverStars} from './stars.mjs';
+import {papInput,discoverPap} from './pap.mjs';
 import {htmlAddressPairs} from './html-addresses.mjs';
 const memory=new Map(),pending=new Map(),scopeIds=new WeakMap();let nextScope=0;
 const scopeId=v=>{if(!v)return 0;if(!scopeIds.has(v))scopeIds.set(v,++nextScope);return scopeIds.get(v);};
@@ -82,6 +83,7 @@ export async function discover(asset,options={}){
  try{return structuredClone(await task);}finally{if(pending.get(key)===task)pending.delete(key);}
 }
 async function discoverImpl(asset,{rpc,fetchText=publicText,sourceLoader=sourceFor,chainFallback=false,learn=false,chainLearner=null,corlaRouting=true}={}){
+ if(rpc&&corlaRouting&&papInput(asset))return measure('papDiscovery',()=>discoverPap(rpc,asset,{fetchText}));
  if(rpc&&corlaRouting&&starsInput(asset))return measure('starsDiscovery',()=>discoverStars(rpc,asset));
  if(rpc&&corlaRouting&&(chainFallback||learn)&&/^0x[\da-f]{40}$/i.test(asset)){
   const stars=await measure('starsDiscovery',()=>discoverStars(rpc,asset));if(stars)return stars;

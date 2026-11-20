@@ -22,7 +22,7 @@ export class Rpc extends ReadRpc{
   if(this.activeReads>=16)await measure('rpcQueue',()=>new Promise(resolve=>this.waitingReads.push(resolve)));
   else this.activeReads++;
   try{allowed();count('rpcDispatchedReads');return await measure('rpcRead',async()=>{
-   try{return await (method==='eth_getStorageAt'?this.storage(...params):super.send(method,params));}
+   try{return await (method==='eth_getStorageAt'?this.storage(...params):method==='eth_simulateV1'?this.singleRead(method,params):super.send(method,params));}
    catch(e){
     // Some providers reject an entire batch with id:null or omit a costly
     // eth_call result. Recover only the missing read, once, as a single request.
@@ -34,7 +34,7 @@ export class Rpc extends ReadRpc{
   finally{const next=this.waitingReads.shift();if(next)next();else this.activeReads--;}
  }
  async singleRead(method,params){
-  if(!new Set(['eth_chainId','eth_blockNumber','eth_call','eth_getCode','eth_getBalance','eth_gasPrice','eth_getBlockByNumber','eth_getTransactionByHash','eth_getTransactionReceipt','eth_getLogs','eth_getTransactionCount','eth_estimateGas']).has(method))throw Error('RPC signing/broadcast is forbidden');
+  if(!new Set(['eth_chainId','eth_blockNumber','eth_call','eth_getCode','eth_getBalance','eth_gasPrice','eth_getBlockByNumber','eth_getTransactionByHash','eth_getTransactionReceipt','eth_getLogs','eth_getTransactionCount','eth_estimateGas','eth_simulateV1']).has(method))throw Error('RPC signing/broadcast is forbidden');
   const id=++this.nextId,response=await this.fetch(this.url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id,method,params}),signal:AbortSignal.timeout(this.timeoutMs)});
   if(!response.ok)throw Error('RPC HTTP '+response.status);const r=await response.json();
   if(r.error)throw Object.assign(Error(r.error.message),{code:r.error.code,data:r.error.data});

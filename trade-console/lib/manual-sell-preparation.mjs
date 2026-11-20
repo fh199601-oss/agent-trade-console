@@ -12,7 +12,7 @@ const firstCallKey=p=>hash({account:p.account,wallet:p.wallet,step:p.steps[0]});
 // account binding, holding, allowance or route falls back to normal planning.
 export class ManualSellPreparation {
  constructor({plan,preview,busy=()=>false,now=Date.now,ttlMs=6000,maxPreparationMs=30000,limit=4}){
-  Object.assign(this,{plan,preview,busy,now,ttlMs,maxPreparationMs,limit});this.entries=new Map();this.pending=new Map();this.epochs=new Map();this.after=new Map();this.closed=false;
+  Object.assign(this,{plan,preview,busy,now,ttlMs,maxPreparationMs,limit});this.entries=new Map();this.pending=new Map();this.epochs=new Map();this.after=new Map();this.queued=new Map();this.closed=false;
  }
  intent(input){
   const allowed=new Set(['account','side','asset','percent','currency','slippageBps','slippageMode']);
@@ -26,6 +26,26 @@ export class ManualSellPreparation {
  accept(plan){return plan.manualRouteRecovery&&queuedSellEligible(plan,plan.steps.length-1)&&plan.steps.every(s=>['approve','sell'].includes(s.kind));}
  shouldPreview(plan){return plan.steps[0].kind==='approve';}
  compatible(previous,next){return this.key(previous)===this.key(next);}
+ requestMany(inputs,allowed=()=>true){
+  const intents=inputs.map(i=>this.intent(i));
+  if(intents.length>200||new Set(intents.map(i=>this.slot(i))).size!==intents.length)throw Error('预热最多支持 200 个不重复的钱包操作');
+  if(this.closed||!allowed())return 0;
+  const selected=new Set(intents.map(i=>this.slot(i)));for(const a of this.queued.keys())if(!selected.has(a))this.queued.delete(a);
+  // Updating demand preserves the waiting order, so the first four wallets
+  // cannot monopolize every warmup round. Queue READS only, never execution.
+  for(const intent of intents)this.queued.set(this.slot(intent),{intent,allowed,at:this.now()});
+  const scheduled=this.queued.size;this.drain();return scheduled;
+ }
+ drain(){
+  if(this.closed)return;
+  for(const [a,row] of this.queued){
+   if(this.pending.size>=this.limit)break;
+   if(this.pending.has(row.intent.account))continue;
+   this.queued.delete(a);
+   if(!row.allowed()||this.now()-row.at>this.maxPreparationMs)continue;
+   this.request(row.intent,row.allowed);
+  }
+ }
  request(input,allowed=()=>true){
   const intent=this.intent(input),a=intent.account,slot=this.slot(intent),key=this.key(intent),now=this.now();
   if(this.closed||!allowed()||this.busy(a)||this.pending.has(a)||this.pending.size>=this.limit)return null;
@@ -55,14 +75,14 @@ export class ManualSellPreparation {
     // result can never reinsert an entry or start/continue any operation.
     if(!this.closed&&(entry.consumed||valid()&&this.entries.get(slot)===entry))entry.preview=preview;
    }catch{/* Foreground obtains its own preview; retain only the planning seed. */}
-  }).catch(()=>{}).finally(()=>{if(this.pending.get(a)===task)this.pending.delete(a);});
+  }).catch(()=>{}).finally(()=>{if(this.pending.get(a)===task)this.pending.delete(a);this.drain();});
   this.pending.set(a,task);return task;
  }
  take(intent){
-  const a=intent.account,slot=this.slot(intent),entry=this.entries.get(slot);this.entries.delete(slot);this.epochs.set(a,(this.epochs.get(a)||0)+1);
+  const a=intent.account,slot=this.slot(intent),entry=this.entries.get(slot);for(const [k,row]of this.queued)if(row.intent.account===a)this.queued.delete(k);this.entries.delete(slot);this.epochs.set(a,(this.epochs.get(a)||0)+1);
   const ready=entry?.readyAt??entry?.startedAt;
   if(this.closed||!entry||this.key(intent)!==entry.key||this.now()<entry.startedAt||this.now()<ready||this.now()-ready>=this.ttlMs)return null;
   entry.consumed=true;return entry;
  }
- close(){this.closed=true;this.entries.clear();}
+ close(){this.closed=true;this.entries.clear();this.queued.clear();}
 }

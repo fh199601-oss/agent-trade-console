@@ -54,7 +54,7 @@ function mintNumbers(o){
  if(!symbol||!Number.isInteger(decimals)||decimals<0||decimals>36)return null;
  if(binancians&&!/^\d+$/.test(String(p.fill?.targetCost)))return null;
  const cost=binancians?BigInt(p.fill.targetCost):BigInt(p.amountIn)*(corla?BigInt(quantity):1n);
- return {quantity,cost,decimals,symbol,token:p.budgetToken||p.inputToken,maximum:corla||binancians,budgetCap:binancians?(currency==='BNB'?o.intent.maxBnb:o.intent.maxUsdt):undefined,approval:p.steps?.[0]?.kind==='approve'};
+ return {quantity,cost,decimals,symbol,token:p.budgetToken||p.inputToken,maximum:corla||binancians,budgetCap:binancians&&!p.mintFunding?.full?(currency==='BNB'?o.intent.maxBnb:o.intent.maxUsdt):undefined,approval:p.steps?.[0]?.kind==='approve'};
 }
 export function compactReviewGroups(rows){
  const grouped=new Map(),seen=new Set();

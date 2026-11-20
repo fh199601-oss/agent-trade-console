@@ -3,7 +3,7 @@ import {load,save} from './common.mjs';
 import {RpcTransport} from './rpc-transport.mjs';
 
 const PUBLIC=['https://bsc-dataseed.bnbchain.org','https://bsc-dataseed1.defibit.io','https://bsc-dataseed1.ninicoin.io'];
-const READS=new Set(['eth_chainId','eth_blockNumber','eth_call','eth_getCode','eth_getStorageAt','eth_getBalance','eth_gasPrice','eth_getBlockByNumber','eth_getTransactionByHash','eth_getTransactionReceipt','eth_getLogs','eth_getTransactionCount','eth_estimateGas']);
+const READS=new Set(['eth_chainId','eth_blockNumber','eth_call','eth_getCode','eth_getStorageAt','eth_getBalance','eth_gasPrice','eth_getBlockByNumber','eth_getTransactionByHash','eth_getTransactionReceipt','eth_getLogs','eth_getTransactionCount','eth_estimateGas','eth_simulateV1']);
 const transient=r=>r?.error&&!/revert|invalid (argument|param)|insufficient funds/i.test(r.error.message||'')&&(/rate|limit|busy|timeout|timed out|unavailable|overload|upstream|header not found|missing trie/i.test(r.error.message||'')||[-32005,-32016,-32603].includes(r.error.code));
 const missingReceipt=r=>r?.result===null;
 const unavailable=()=>Object.assign(Error('RPC 网络读取失败，备用节点也未返回有效结果；钱包登录未因此改变，网络恢复后会自动重试'),{code:'RPC_UNAVAILABLE'});

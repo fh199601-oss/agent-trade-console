@@ -67,6 +67,6 @@ test('identity-counter family checks parsed bodies; a comment cannot hide change
 });
 test('live price and referral reverts stay contract-state failures; missing quote stays an adapter gap',()=>{
  const abi=new Interface(['error InvalidReferrer()','error PriceDeviation()']);
- for(const name of ['InvalidReferrer','PriceDeviation']){const error=mintError({data:abi.encodeErrorResult(name)},abi.fragments);assert.equal(error.code,'MINT_STATE');assert.equal(failureKind(error),'eligibility_or_state');}
+ for(const name of ['InvalidReferrer','PriceDeviation']){const error=mintError({data:abi.encodeErrorResult(name)},abi.fragments);assert.equal(error.code,name==='InvalidReferrer'?'MINT_REFERRAL':'MINT_STATE');assert.equal(failureKind(error),name==='InvalidReferrer'?'referral':'eligibility_or_state');}
  assert.equal(failureKind({code:'MINT_ADAPTER_INCOMPLETE',message:'未读取到与付款币一致的有效报价'}),'adapter_needed');
 });

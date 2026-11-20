@@ -43,7 +43,7 @@ export class OpeningApprovalPreviews{
     const preview=await this.preview(plan,intent);
     if(!allowed()||this.busy(account))return;
     this.entries.set(key,preview);
-    for(const [k,v]of this.entries)if(this.now()-v.at>this.ttlMs||this.entries.size>32)this.entries.delete(k);
+    for(const [k,v]of this.entries)if(this.now()-v.at>this.ttlMs||this.entries.size>256)this.entries.delete(k);
    }catch{/* Optional warm failure never stops the real operation. */}
    finally{this.pending.delete(account);}
   }));

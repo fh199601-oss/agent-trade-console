@@ -3,7 +3,7 @@ import {hash} from './common.mjs';
 // One operation, one first step, memory only. These are reads started during
 // the official preview, not permission to submit or a cross-order state cache.
 export class InstantGuards {
- constructor({now=Date.now,maxAgeMs=1000,limit=64}={}){Object.assign(this,{now,maxAgeMs,limit});this.entries=new Map();}
+ constructor({now=Date.now,maxAgeMs=1000,limit=256}={}){Object.assign(this,{now,maxAgeMs,limit});this.entries=new Map();}
  key(o){return hash({intent:o.intent,plan:o.plan});}
  current(entry,o){const age=this.now()-entry.startedAt;return age>=0&&age<=this.maxAgeMs&&entry.key===this.key(o);}
  start(o,check){

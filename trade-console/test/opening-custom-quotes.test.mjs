@@ -59,7 +59,9 @@ test('explicit BNB output cannot silently become a nonstandard quote token',asyn
  const h=fixture();h.open();assert.equal((await h.detector.scan(token,{currency:'BNB'})).open,false);assert.ok(h.hintReads()>0); // Hint discovery is now needed to check a possible second hop.
 });
 test('nonstandard quote direct plan uses current percentage, actual quote precision and preserves native-output choice',async()=>{
- const h=fixture();h.open();const snapshot=await h.detector.scan(token),w=bindings()[0];
+ // This test supplies a complete snapshot and forbids rediscovery. The fixture
+ // deliberately returns a non-economic quote; a focused scan must expand it.
+ const h=fixture();h.open();const snapshot=await h.detector.scan(token,{expand:true}),w=bindings()[0];
  const intent={account:w.account,side:'sell',asset:token,percent:'50',currency:'AUTO',slippageBps:5000};
  const preparation=new OpeningPreparation(h.rpc,{identityFor:async()=>({target:token,fingerprint:'synthetic'})});
  const p=await openingPlan(h.rpc,{},intent,{snapshot,preparation,scan:()=>assert.fail('fresh detection must be reused')});

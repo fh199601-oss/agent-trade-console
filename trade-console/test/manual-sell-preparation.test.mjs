@@ -25,7 +25,9 @@ test('read-only preparations are memory-only, single-use, exact-intent bound and
 });
 test('four independent wallets warm concurrently; failed, busy, unsupported and high-fee plans never become usable',async()=>{
  const gate=deferred(),seen=[],cache=new ManualSellPreparation({plan:async i=>{seen.push(i.account);await gate.promise;if(i.account===wallets[1].account)throw Error('offline');return i.account===wallets[2].account?{...simple(),poolFees:{poolFeePpm:850150}}:simple();},preview:async()=>({review:{}})});
- const tasks=wallets.slice(0,4).map(w=>cache.request(intent(w.account)));assert.equal(cache.request(intent(wallets[4].account)),null);assert.equal(cache.request(intent()),null);
+ // Capacity needs a fifth synthetic slot, not a fifth real logged-in wallet.
+ const fifth=Math.max(...wallets.map(w=>w.account))+1,validate=cache.intent.bind(cache);cache.intent=i=>i.account===fifth?{...validate({...i,account:wallets[0].account}),account:fifth}:validate(i);
+ const tasks=wallets.slice(0,4).map(w=>cache.request(intent(w.account)));assert.equal(cache.request(intent(fifth)),null);assert.equal(cache.request(intent()),null);
  await tick();assert.equal(seen.length,4);gate.resolve();await Promise.all(tasks);
  assert.ok(cache.take(validateIntent(intent())));assert.equal(cache.take(validateIntent(intent(wallets[1].account))),null);assert.equal(cache.take(validateIntent(intent(wallets[2].account))),null);assert.ok(cache.take(validateIntent(intent(wallets[3].account))));
  const blocked=new ManualSellPreparation({busy:()=>true,plan:()=>assert.fail(),preview:()=>assert.fail()});assert.equal(blocked.request(intent()),null);

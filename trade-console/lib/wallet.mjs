@@ -3,6 +3,17 @@ import {createInterface} from 'node:readline';
 import path from 'node:path';
 import {ROOT,LOCAL,wallet,same,load} from './common.mjs';
 let seq=0;
+export function safeWalletTiming(value){
+ if(!value||typeof value!=='object')return undefined;
+ const number=v=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=3600000;
+ const result={};for(const k of ['lockWaitMs','addressCheckMs','commandMs'])if(number(value[k]))result[k]=value[k];
+ for(const k of ['address','command'])if(value[k]&&typeof value[k]==='object'){
+  const row={};for(const field of ['elapsedMs','moduleMs'])if(number(value[k][field]))row[field]=value[k][field];
+  if(typeof value[k].moduleReused==='boolean')row.moduleReused=value[k].moduleReused;
+  row.network=(Array.isArray(value[k].network)?value[k].network:[]).slice(0,16).filter(n=>n&&['chainCatalog','officialPreview','officialExecute','walletApi','other'].includes(n.phase)&&number(n.ms)).map(n=>({phase:n.phase,ms:n.ms,cached:n.cached===true,...(Number.isInteger(n.status)&&n.status>=100&&n.status<=599?{status:n.status}:{})}));result[k]=row;
+ }
+ return result;
+}
 export class Wallets{
  constructor({responseTimeoutMs=120000}={}){this.responseTimeoutMs=responseTimeoutMs;this.workers=new Map();this.queues=new Map();this.readyCache=new Map();this.readyInflight=new Map();this.warmInflight=new Map();this.foregroundEpoch=new Map();this.warmBackoff=new Map();this.timings=[];}
  flushLate(state){for(const [id,late] of state.late||[])if(late.response){try{late.onLateResponse(late.response);state.late.delete(id);}catch{/* Retry durable storage on the next wallet response/call. */}}}
@@ -10,7 +21,7 @@ export class Wallets{
   this.flushLate(state);
   const p=state.pending.get(r.id),late=state.late?.get(r.id);if(!p&&!late)return;
   const response=r.result?.success===true?{data:r.result.data}:{error:Object.assign(Error(r.result?.error?.message||'钱包响应无效'),{code:r.result?.error?.code,errorName:r.result?.error?.name,responseReceived:true,dispatched:r.result?.error?.commandDispatched!==false})};
-  if(p){state.pending.delete(r.id);clearTimeout(p.timer);if(response.error)p.reject(response.error);else p.resolve(response.data);}
+  if(p){state.pending.delete(r.id);clearTimeout(p.timer);p.timing?.(safeWalletTiming(r.timing));if(response.error)p.reject(response.error);else p.resolve(response.data);}
   else{late.response??=response;this.flushLate(state);}
  }
  worker(account){
@@ -46,7 +57,8 @@ export class Wallets{
     }
     reject(Object.assign(Error('钱包响应超时；后台继续接收原结果并核对，不重复提交'),{dispatched:true}));
    },this.responseTimeoutMs);
-   w.pending.set(id,{timer,resolve:v=>{this.timings.push({account,operation:args.slice(0,2).join(' '),ms:Date.now()-start,queueMs:start-queuedAt,totalMs:Date.now()-queuedAt});if(this.timings.length>1000)this.timings.splice(0,this.timings.length-1000);resolve(v);},reject});
+   let transport;
+   w.pending.set(id,{timer,timing:v=>{transport=v;try{options.onTiming?.(v);}catch{/* Diagnostics must never change a submission outcome. */}},resolve:v=>{this.timings.push({account,operation:args.slice(0,2).join(' '),ms:Date.now()-start,queueMs:start-queuedAt,totalMs:Date.now()-queuedAt,...(transport?{transport}:{})});if(this.timings.length>1000)this.timings.splice(0,this.timings.length-1000);resolve(v);},reject});
    w.process.stdin.write(JSON.stringify({id,args:args.includes('--json')?args:[...args,'--json'],...(options.readOnlyTimeoutMs?{readOnlyTimeoutMs:options.readOnlyTimeoutMs}:{}),...(options.background?{background:true}:{})})+'\n',e=>{if(e){clearTimeout(timer);w.pending.delete(id);reject(Object.assign(e,{dispatched:false}));}});
   });});this.queues.set(account,op);op.finally(()=>{if(this.queues.get(account)===op)this.queues.delete(account);}).catch(()=>{});return op;
  }
@@ -55,6 +67,8 @@ export class Wallets{
   const expected=wallet(account).address,c=this.readyCache.get(account);
   const checkExternal=result=>{if(external&&(!result.devMode?.enabled||!(Date.parse(result.devMode.expiresAt)>Date.now())))throw Error('请在币安 App → Agentic Wallet → 设置中启用 Developer Mode');return result;};
   if(!force&&c&&c.validUntil>Date.now()&&same(expected,c.address))return checkExternal(c);
+  // Optional approval warming must not start a cold three-command wallet
+  // preflight ahead of an imminent sale. The regular bounded warmer handles it.
   if(background)throw Object.assign(Error('钱包预检尚未就绪，跳过本轮只读预热'),{code:'WARM_YIELDED',dispatched:false});
   if(this.readyInflight.has(account))return checkExternal(await this.readyInflight.get(account));
   const pending=this.checkReady(account,expected);this.readyInflight.set(account,pending);
@@ -67,13 +81,17 @@ export class Wallets{
   if(rows?.length!==1||!same(rows[0].address,expected))throw invalid('钱包地址与绑定不一致');
   const s=await call(account,['wallet','settings']);const session=Date.parse(s.sessionExpireTime);
   if(!Number.isFinite(session)||session<=Date.now())throw invalid('钱包会话已过期');
+  // Cache only the complete status/address/settings check. The official CLI
+  // still authenticates each command and the numbered wrapper verifies the
+  // live address under its lock before signing. Refresh while idle every minute
+  // with a bounded five-minute grace, never beyond the server session expiry.
   const result={account,address:expected,status:'CONNECTED',sessionExpireTime:s.sessionExpireTime,inactiveSignOutTime:s.inactiveSignOutTime,maxSigninDuration:s.maxSigninDuration,devMode:s.devMode,checkedAt:Date.now(),validUntil:Math.min(Date.now()+300000,session)};
   this.readyCache.set(account,result);return result;
  }
  async warm(account){
-  if((this.warmBackoff.get(account)?.until||0)>Date.now())return null;
   if(this.queues.has(account)||this.readyInflight.has(account))return null;
   if(this.warmInflight.has(account))return this.warmInflight.get(account);
+  if((this.warmBackoff.get(account)?.until||0)>Date.now())return null;
   const epoch=this.foregroundEpoch.get(account)||0,expected=wallet(account).address;
   const call=(a,args)=>{
    if((this.foregroundEpoch.get(account)||0)!==epoch)throw Object.assign(Error('只读预热让位于当前操作'),{code:'WARM_YIELDED'});

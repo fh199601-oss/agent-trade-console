@@ -1,3 +1,5 @@
+import {netTransfer} from './net-transfer.mjs';
+import {withV2NetQuote,quotedTaxSide} from './v2-transfer-quote.mjs';
 import {InfinityPools,infinityQuote,infinitySaleData,infinityApprovals,infinitySettlement} from './infinity.mjs';
 import {Interface,read,ERC20,WBNB,BNB,wallet,same,formatUnits} from './common.mjs';
 import {OpeningPools,freshOpeningSnapshot,refreshOpeningPoolProvenance} from './opening-pools.mjs';
@@ -6,7 +8,7 @@ import {OpeningPreparation} from './opening-preparation.mjs';
 import {openingValues} from './opening-value.mjs';
 import {sellAmount} from './sell-policy.mjs';
 import {multiHopSettlement} from './opening-multihop.mjs';
-import {poolFeeProof,quotedPoolFees,v3SpotFees,V3_PRICE,compareFeeRoutes,adequatePrimaryRoute,HIGH_FEE_PPM,feePercent} from './trade-fees.mjs';
+import {poolFeeProof,prepareQuotedPoolFees,v3SpotFees,V3_PRICE,compareFeeRoutes,adequatePrimaryRoute,HIGH_FEE_PPM,feePercent} from './trade-fees.mjs';
 import {openingReads} from './opening-read.mjs';
 import {POOL} from './opening-pools.mjs';
 import {checkedRead,transientRead} from './read-failure.mjs';
@@ -50,9 +52,17 @@ export async function refreshOpeningSell(rpc,plan,{slippagePromise}={}){
  if(minimum<=0n||d.kind==='v2'&&(quoted[0].length!==(pool.path?.length||2)||quoted[0][0]!==amount))throw Error('开盘卖出刷新报价无效');
  const step={...plan.steps.at(-1),data:saleData(d,pool,plan.token,plan.wallet,amount,minimum,same(plan.outputToken,BNB))};
  const fees=d.kind==='v2'?poolFeeProof(freshPool,quoted[0],plan.token,batch.block):v3SpotFees(freshPool,[amount,output],plan.token,batch.block,batch.results[1].value[0]);
- return {...plan,opening:freshPool,state:freshPool,poolFees:fees,minOutput:String(minimum),quote:{...plan.quote,toCoinAmount:formatUnits(output,plan.outputDecimals??18)},quoteRefreshedAt:Date.now(),steps:[...plan.steps.slice(0,-1),step]};
+ const fresh={...plan,opening:freshPool,state:freshPool,poolFees:fees,minOutput:String(minimum),quote:{...plan.quote,toCoinAmount:formatUnits(output,plan.outputDecimals??18)},quoteRefreshedAt:Date.now(),steps:[...plan.steps.slice(0,-1),step]};
+ if(d.kind==='v2'&&(plan.transferQuote||quotedTaxSide(plan,'sell'))){
+  delete fresh.transferQuote;delete fresh.quote.netCoinAmount;
+  const protectedFloor=plan.transferQuote?plan.minOutput:plan.authorizationMinOutput;
+  const adjusted=await withV2NetQuote(rpc,fresh,{minimumOutput:protectedFloor});
+  if(protectedFloor!==undefined&&BigInt(adjusted.minOutput)<BigInt(protectedFloor))throw Error('刷新报价不足原先确认的税后最低到账');
+  return adjusted;
+ }
+ return fresh;
 }
-export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPools(rpc).scan(t,o),snapshot,preparation,identityFor,holdingHint,initialHolding,failedPreviews=[],excludedRoutes=[],lowFeeOnly=false,expand=false,outputToken,minimumOutput,slippagePromise}={}){
+export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPools(rpc).scan(t,o),snapshot,preparation,identityFor,holdingHint,initialHolding,failedPreviews=[],excludedRoutes=[],lowFeeOnly=false,expand=false,outputToken,minimumOutput,slippagePromise,requiredPool}={}){
  // Pool discovery and token/holding reads are independent. Only metadata is
  // cached: the balance and every allowance are read afresh for this operation.
  // Box a concurrently requested policy now, including on an early scan error.
@@ -64,9 +74,12 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
  const initialAge=Date.now()-initialHolding?.at;
  const sameOperationHolding=!intent.openingOnly&&initialAge>=0&&initialAge<=750&&same(initialHolding?.token,intent.asset)&&same(initialHolding?.wallet,w)&&/^\d{1,78}$/.test(initialHolding?.balance)&&BigInt(initialHolding.balance)<2n**256n;
  const tokenReads=checkedRead('sellTokenState','卖出代币资料或持仓读取',()=>Promise.all([prep.token(intent.asset),...(intent.openingOnly?[]:[sameOperationHolding?[BigInt(initialHolding.balance)]:read(rpc,intent.asset,ERC20,'balanceOf',[w])])])).then(value=>({value}),error=>({error}));
- snapshot=reused?snapshot:await checkedRead('sellPoolScan','卖出池子查询',()=>scan(intent.asset,{currency:intent.currency,expand}));
- const candidates=snapshot.pools.filter(p=>p.liquid&&matchesCurrency(p,intent.currency)&&dexFor(p)&&!excludedRoutes.includes(poolRouteKey(p))&&(!outputToken||same(p.quote,same(outputToken,BNB)?WBNB:outputToken)));
- if(!candidates.length)throw Object.assign(Error(snapshot.routeIssue||(excludedRoutes.length?'本轮已核验的池子中，没有符合原到账币种的其他路线':intent.openingOnly?'等待可核验的外盘卖出池子；不会提前使用内盘卖出':'当前未找到可成交的卖出池：可能流动性尚未开放、已移除，或池型尚未支持；未提交，钱包可继续操作')),{code:intent.openingOnly?'OPENING_WAIT':'SELL_ROUTE_UNAVAILABLE'});
+ snapshot=reused?snapshot:await checkedRead('sellPoolScan','卖出池子查询',()=>scan(intent.asset,{currency:intent.currency,expand,primaryFirst:true}));
+ if(intent.primaryOnly&&!freshOpeningSnapshot(snapshot,intent.asset,6000))throw Object.assign(Error('主池快照未通过核验，继续等待'),{code:'OPENING_WAIT'});
+ const candidates=snapshot.pools.filter(p=>(!requiredPool||same(p.pool,requiredPool))&&(!intent.primaryOnly||refreshOpeningPoolProvenance(snapshot,p).declaredByToken)&&p.liquid&&matchesCurrency(p,intent.currency)&&dexFor(p)&&!excludedRoutes.includes(poolRouteKey(p))&&(!outputToken||same(p.quote,same(outputToken,BNB)?WBNB:outputToken)));
+ const expandFocused=()=>openingPlan(rpc,bridge,intent,{scan,preparation:prep,failedPreviews,excludedRoutes,lowFeeOnly,expand:true,outputToken,minimumOutput,slippagePromise});
+ if(!candidates.length&&snapshot.primaryFocused&&!requiredPool&&!intent.primaryOnly&&!expand)return expandFocused();
+ if(!candidates.length)throw Object.assign(Error((intent.primaryOnly?'等待已核验主池开放流动性；不会改走其他池子':snapshot.routeIssue)||(excludedRoutes.length?'本轮已核验的池子中，没有符合原到账币种的其他路线':intent.openingOnly?'等待可核验的外盘卖出池子；不会提前使用内盘卖出':'当前未找到可成交的卖出池：可能流动性尚未开放、已移除，或池型尚未支持；未提交，钱包可继续操作')),{code:intent.openingOnly?'OPENING_WAIT':'SELL_ROUTE_UNAVAILABLE'});
  const dexes=[...new Map(candidates.map(p=>{const d=dexFor(p);return [d.id,d];})).values()];
  const poolQuote=(pool,amount)=>{const d=dexFor(pool);return d.kind==='infinity-cl'?infinityQuote(rpc,pool,intent.asset,amount):d.kind==='v2'?read(rpc,d.router,ROUTER,'getAmountsOut',[amount,pool.path||[intent.asset,pool.quote]],pool.block??'latest'):read(rpc,d.quoter,QUOTER,'quoteExactInputSingle',[[intent.asset,pool.quote,amount,pool.fee,0]],pool.block??'latest');};
  // After a verified opening, a recent warm holding may predict a READ-ONLY
@@ -103,6 +116,7 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
  // Try independent candidates only before any preview or submission. Keep the
  // fast first batch, but do not hide a low-fee route behind eight bad quotes.
  const quoteCandidate=async(pool,signal)=>{const d=dexFor(pool);
+  const fees=prepareQuotedPoolFees(rpc,pool,intent.asset,pool.block);
   const hinted=predicted.get(pool)&&holdingHint.balance===String(balance)&&holdingHint.fingerprint===meta.identity?.fingerprint?predicted.get(pool).then(r=>{if(r.error)throw r.error;return r.value;}):null;
   const quotedRead=boundedRead(hinted||poolQuote(pool,amount),Math.max(readBudget,pool.kind==='infinity-cl'?4000:0),'SELL_QUOTE_TIMEOUT','卖出报价查询超时，未提交，可重新点击',signal);
   const checks=boundedRead(Promise.all([venues.get(d.id),QUOTES.some(q=>same(q,pool.quote))?{decimals:18}:prep.quote(pool.quote),allowances.get(d.id)]),Math.max(3000,readBudget,Number(prep.rpc?.timeoutMs)||0),'SELL_ROUTE_CHECK_TIMEOUT','卖出路由或授权核验超时，未提交，可重新点击',signal);
@@ -111,7 +125,7 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
   if(approval.error)throw Object.assign(Error('当前授权额度读取失败，未提交，可重新点击'),{code:'SELL_ROUTE_READ_FAILED'});const allowance=approval.value;
   const output=d.kind==='infinity-cl'?quoted.output:d.kind==='v2'?quoted[0].at(-1):quoted[0];if(output<=0n||d.kind==='v2'&&(quoted[0].length!==(pool.path?.length||2)||quoted[0][0]!==amount))throw Error('开盘卖出报价无效');
   if(minimumOutput!==undefined&&output<BigInt(minimumOutput))throw Error('备用路线报价不足原最低到账');
-  return {pool,d,allowance,venue,output,failed:failed(pool),outputDecimals:outputMeta.decimals,fees:d.kind==='infinity-cl'?quoted.fees:await quotedPoolFees(rpc,pool,d.kind==='v2'?quoted[0]:[amount,output],intent.asset,pool.block)};
+  return {pool,d,allowance,venue,output,failed:failed(pool),outputDecimals:outputMeta.decimals,fees:d.kind==='infinity-cl'?quoted.fees:await fees(d.kind==='v2'?quoted[0]:[amount,output])};
  };
  // Compare bounded parallel quotes. Fast/previously approved is not evidence
  // of cheap. A hung quote cannot indefinitely block the remaining candidates.
@@ -142,6 +156,11 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
  }
  if(lowFeeOnly)usable=usable.filter(r=>r.fees.poolFeePpm!==null&&Math.max(r.fees.poolFeePpm,r.fees.quoteLossPpm||0)<HIGH_FEE_PPM);
  for(const r of usable)r.pool=refreshOpeningPoolProvenance(snapshot,r.pool);
+ const transient=results.some(r=>r.status==='rejected'&&transientRead(r.reason));
+ // Focused detection is an acceleration hint, never evidence of adequate
+ // full-size depth or cheap fees. Keep the old broad search when it cannot
+ // prove that the primary wins; explicit primary-only tasks never relax.
+ if(snapshot.primaryFocused&&!requiredPool&&!intent.primaryOnly&&!expand&&!transient&&!usable.some(r=>!r.failed&&adequatePrimaryRoute(r)))return expandFocused();
  // An adequate primary wins by policy, so unrelated FX reads cannot improve
  // this decision. Keep their latency off the common primary-pool path.
  if(!usable.some(r=>!r.failed&&adequatePrimaryRoute(r)))await openingValues(rpc).compare(usable,prep);
@@ -150,8 +169,7 @@ export async function openingPlan(rpc,bridge,intent,{scan=(t,o)=>new OpeningPool
  const chosen=usable[0],lastError=results.find(r=>r.status==='rejected')?.reason;
  // A quote failure can be a thin/closed pool, not the absence of all pools.
  // Expand once BEFORE any authorization/submission; fixed output stays fixed.
- const transient=results.some(r=>r.status==='rejected'&&transientRead(r.reason));
- if(!chosen&&!transient&&!expand&&!intent.openingOnly)return openingPlan(rpc,bridge,intent,{scan,preparation:prep,failedPreviews,excludedRoutes,lowFeeOnly,expand:true,outputToken,minimumOutput,slippagePromise});
+ if(!chosen&&!transient&&!expand&&!intent.openingOnly&&!requiredPool)return openingPlan(rpc,bridge,intent,{scan,preparation:prep,failedPreviews,excludedRoutes,lowFeeOnly,expand:true,outputToken,minimumOutput,slippagePromise});
  if(!chosen&&transient)throw Object.assign(Error('卖出报价或路由核验暂未完成：'+(results.find(r=>r.status==='rejected'&&transientRead(r.reason))?.reason?.message||'网络读取失败')+'；本次未提交，可重新点击'),{code:'RPC_READ_FAILED'});
  if(!chosen)throw Object.assign(Error(lowFeeOnly?'本轮未找到池费低于 '+feePercent(HIGH_FEE_PPM)+' 且满足原到账约束的可核验路线':'可用池子尚无有效卖出报价：'+(lastError?.message||'没有可用报价')),{code:intent.openingOnly?'OPENING_WAIT':'SELL_QUOTE_UNAVAILABLE'});
  const resolvedPolicy=policy?await policy:{value:{mode:'fixed',bps:intent.slippageBps,capBps:intent.slippageBps}};if(resolvedPolicy.error)throw resolvedPolicy.error;
@@ -191,7 +209,7 @@ export function openingSettlement({receipt,token,state,wallet:owner,plan,step}){
  }
  const debits=transfers.filter(e=>e.name==='Transfer'&&same(e.asset,token)&&same(e.args.from,owner)&&!same(e.args.to,owner));
  const funding=debits.filter(e=>same(e.args.to,state.pool)&&e.args.value>0n);
- const amountIn=debits.reduce((n,e)=>n+e.args.value,0n),poolCredit=funding.reduce((n,e)=>n+e.args.value,0n);
+ const amountIn=debits.reduce((n,e)=>n+e.args.value,0n);
  if(!funding.length||amountIn<=0n||amountIn>BigInt(plan.amountIn))throw Error('未能核验本钱包实际支出或支出超出本笔金额');
  const anchor=funding.at(-1).index;
  const legs=swaps.filter(e=>e.index>anchor&&same(e.args.sender,d.router)&&same(e.args[state.kind==='v3'?'recipient':'to'],recipient));
@@ -200,11 +218,12 @@ export function openingSettlement({receipt,token,state,wallet:owner,plan,step}){
  const poolInput=state.kind==='v3'?leg.args[zero?'amount0':'amount1']:leg.args[zero?'amount0In':'amount1In'];
  const poolOutput=state.kind==='v3'?-leg.args[zero?'amount1':'amount0']:leg.args[zero?'amount1Out':'amount0Out'];
  if(poolInput<=0n||poolOutput<=0n||state.kind==='v2'&&(leg.args[zero?'amount1In':'amount0In']!==0n||leg.args[zero?'amount0Out':'amount1Out']!==0n))throw Error('开盘卖出回执方向不一致');
+ const poolCredit=netTransfer(transfers,token,owner,state.pool,funding[0].index-1,leg.index);
  if(poolInput!==poolCredit||poolInput>amountIn)throw Error('池子输入与本钱包转入不一致');
  // V3 pays output before collecting input, so use the previous pool swap as
  // the output boundary. For taxed quote tokens count only actual recipient credit.
  const previous=swaps.filter(e=>e.index<leg.index).at(-1)?.index??-1;
- const amountOut=transfers.filter(e=>e.name==='Transfer'&&same(e.asset,state.quote)&&e.index>previous&&e.index<leg.index&&same(e.args.from,state.pool)&&same(e.args.to,recipient)).reduce((n,e)=>n+e.args.value,0n);
+ const amountOut=netTransfer(transfers,state.quote,state.pool,recipient,previous,leg.index);
  if(amountOut<=0n||amountOut>poolOutput)throw Error('回执未证明本笔卖出的收款到账');
  if(nativeOut){
   const withdrawals=transfers.filter(e=>e.name==='Withdrawal'&&same(e.asset,WBNB)&&e.index>leg.index&&same(e.args.src,d.router));

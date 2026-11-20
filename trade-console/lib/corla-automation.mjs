@@ -110,6 +110,12 @@ export class CorlaAutomation{
    if(results.some(r=>r.status==='rejected')&&this.saleWarm.get(key)===entry)this.saleWarm.delete(key);
   }).finally(()=>{entry.pending=false;for(const [k,v] of this.saleWarm)if(!v.pending&&this.saleWarm.size>128)this.saleWarm.delete(k);});
  }
+ prepareApproval(j){
+  if(j.policy.sell?.preApprove!==true||!this.engine.taskPreapprovals)return;
+  const revision=j.revision||0;
+  const allowed=()=>this.allowed(j)&&j.status==='WATCHING'&&(j.revision||0)===revision&&j.policy.sell?.preApprove===true&&!j.openedAt;
+  void this.engine.taskPreapprovals.run({key:j.id,holder:j,source:{account:j.account,wallet:j.wallet,asset:j.policy.expectedToken,percent:j.policy.sell.percent,currency:j.policy.sell.currency,revision,claim:{mint:j.mint,identity:j.identity?.fingerprint,factory:j.protocolIdentities?.[0]?.fingerprint}},allowed,persist:()=>this.persist()}).catch(()=>{});
+ }
  review(j,message){j.status='REVIEW';j.message=message;this.persist();}
  rememberError(j,error){j.lastError=publicError(error);j.errorHistory=[...(j.errorHistory||[]),{at:this.now(),status:j.status,claimId:j.claimId,error:j.lastError}].slice(-12);}
  async tick(id){
@@ -146,7 +152,7 @@ export class CorlaAutomation{
      if(!this.allowed(j)||j.status!=='WATCHING')return j;
      if(BigInt(version)!==1n)return this.review(j,'认购已结束，项目处于退款阶段；未自动退款');
     }
-    if(BigInt(phase)!==3n)return j;
+    if(BigInt(phase)!==3n){this.prepareApproval(j);return j;}
     j.openedAt??=this.now();
     this.warmSale(j);
     if(j.attempts>=30)return this.review(j,'开盘后领取预览仍未通过：'+(j.lastError?.message||'请查看原单原因')+'；没有提交失败交易');
@@ -201,6 +207,7 @@ export class CorlaAutomation{
   if(o.status==='CONFIRMED'){
    if(!same(o.plan.wallet,j.wallet)||o.plan.route!=='corla:claim'||!o.steps?.some(e=>e.status==='CONFIRMED'&&BigInt(e.received||0)>0n))return this.review(j,'领取回执未证明本钱包到账');
    j.claimedAt=this.now();j.claimTx=o.steps.at(-1)?.txHash;
+   if(this.onClaimConfirmed&&await this.onClaimConfirmed(o)){j.status='DONE';j.message='领取已确认到账；后续卖出由极速卖出原任务负责';this.persist();return j;}
    if(!j.policy.sell){j.status='DONE';j.message='全部可领代币已确认到账';this.persist();return j;}
    j.sellJobId??=j.id+'-sell';j.status='SELLING';j.message='领取已到账，交接开盘自动卖出';this.persist();
    // No await between cancellation check and the idempotent handoff.

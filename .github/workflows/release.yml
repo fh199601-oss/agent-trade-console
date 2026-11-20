@@ -66,12 +66,12 @@ jobs:
           locks=json.loads((root/'tools/runtime-lock.json').read_text())['platforms']
           version=json.loads((root/'trade-console/package.json').read_text())['version']
           assert re.fullmatch(r'\d+\.\d+\.\d+',version)
-          forbidden={'.git','.baw','.env','local','wallet-containers','accounts.json','wallet-entrypoints.json','install.json','service.json','startup.json','startup-error.json','startup-error.html','startup.html','last-launch.json','rpc-settings.json'}
+          forbidden={'.git','.baw','.env','local','wallet-containers','accounts.json','wallet-entrypoints.json','install.json','service.json','startup.json','startup-error.json','startup-error.html','startup.html','last-launch.json','rpc-settings.json','personal-deployment.json','originals.json','fast-trigger','fast-sale-v1','trigger.dpapi','fast-sale-mainnet-jobs.json','fast-sale-managed-address.json','fast-sale-settings.json'}
           secret=re.compile(rb'-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----|(?:ghp_|github_pat_)[A-Za-z0-9_]{30,}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}')
           for name,want in expected.items():
               p=PurePosixPath(name)
               assert not p.is_absolute() and '..' not in p.parts and '\\' not in name
-              assert not set(p.parts)&forbidden
+              assert not {part.casefold() for part in p.parts}&forbidden and not any(part.casefold().startswith(('.env','fast-deployment','personal-deployment.json')) for part in p.parts)
               data=(root/name).read_bytes()
               assert sha(data)==want and not secret.search(data),name
           archives=sorted(out.glob('*.zip'));assert len(archives)==4
@@ -86,7 +86,7 @@ jobs:
                   for name in names:
                       p=PurePosixPath(name)
                       assert p.parts[0]=='AgentTradeConsole' and not p.is_absolute() and '..' not in p.parts and '\\' not in name
-                      assert not set(p.parts)&forbidden,name
+                      assert not {part.casefold() for part in p.parts}&forbidden and not any(part.casefold().startswith(('.env','fast-deployment','personal-deployment.json')) for part in p.parts),name
                   packed=json.loads(z.read('AgentTradeConsole/MANIFEST.json'))['files']
                   assert set(names)=={'AgentTradeConsole/'+n for n in [*packed,'MANIFEST.json']}
                   assert set(expected)<=set(packed)

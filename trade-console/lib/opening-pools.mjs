@@ -3,6 +3,7 @@ import {Interface,address,same,ZeroAddress,WBNB,USDT} from './common.mjs';
 import {DEXES,QUOTES,matchesCurrency} from './opening-dex.mjs';
 import {openingReads} from './opening-read.mjs';
 import {OpeningQuotes} from './opening-quotes.mjs';
+import {transientRead} from './read-failure.mjs';
 export {QUOTES};export const V2_FACTORY=DEXES[0].factory,V2_ROUTER=DEXES[0].router,V3_FACTORY=DEXES[2].factory;
 export const FACTORY=new Interface(['function getPair(address,address) view returns(address)','function getPool(address,address,uint24) view returns(address)']);
 export const POOL=new Interface(['function token0() view returns(address)','function token1() view returns(address)','function factory() view returns(address)','function getReserves() view returns(uint112,uint112,uint32)','function liquidity() view returns(uint128)']);
@@ -18,24 +19,35 @@ export function refreshOpeningPoolProvenance(snapshot,pool){
 export function freshOpeningSnapshot(s,token,maxAge=1200){return !!s&&checkedSnapshots.has(s)&&same(s.token,token)&&Date.now()-s.at>=0&&Date.now()-s.at<=maxAge;}
 export class OpeningPools{
  constructor(rpc,{dexes=DEXES,quotes=QUOTES,quoteDiscovery=new OpeningQuotes(rpc),infinity=typeof rpc.send==='function'?new InfinityPools(rpc):null}={}){Object.assign(this,{rpc,dexes,quotes,quoteDiscovery,infinity});this.known=new Map();this.inflight=new Map();this.discoveryAfter=new Map();this.paths=new Map();this.infinityRecent=new Map();this.infinityStarts=new WeakMap();this.watchRecent=new Map();}
- async scan(input,{currency='AUTO',expand=false,watch=false,reuseMs=0}={}){
-  const token=address(input),key=token.toLowerCase()+':'+currency+(expand?':expanded':'')+(watch?':watch':'');if(this.inflight.has(key))return this.inflight.get(key);
+ async scan(input,{currency='AUTO',expand=false,watch=false,reuseMs=0,primaryFirst=watch}={}){
+  const token=address(input),key=token.toLowerCase()+':'+currency+(expand?':expanded':'')+(watch?':watch':'')+(primaryFirst?':primary':'');if(this.inflight.has(key))return this.inflight.get(key);
   const recent=this.watchRecent.get(key),age=Date.now()-recent?.startedAt,budget=Math.min(250,Number(reuseMs)||0);
   // Independent claim wallets can hand off a few ms apart. Reuse only an
   // authenticated positive watch snapshot from this SAME short polling window.
   // Never cache a miss or renew its age; fresh wallet/allowance/fee/preview and
   // multi-wallet pool-impact checks still gate every eventual submission.
   if(watch&&age>=0&&age<=budget&&budget>0&&freshOpeningSnapshot(recent.snapshot,token,budget))return recent.snapshot;
-  const startedAt=Date.now(),task=this.inspect(token,currency,{expand,watch});this.inflight.set(key,task);
+  const startedAt=Date.now(),task=this.inspect(token,currency,{expand,watch,primaryFirst});this.inflight.set(key,task);
   try{const snapshot=await task;if(watch){if(snapshot.open)this.watchRecent.set(key,{snapshot,startedAt});else this.watchRecent.delete(key);while(this.watchRecent.size>128)this.watchRecent.delete(this.watchRecent.keys().next().value);}return snapshot;}
   catch(e){if(watch)this.watchRecent.delete(key);throw e;}finally{this.inflight.delete(key);}
  }
- async inspect(token,currency,{expand=false,watch=false}={}){
+ async inspect(token,currency,{expand=false,watch=false,primaryFirst=watch}={}){
   this.quoteDiscovery?.adoptCompleted?.(token,this.hintSource);
   // Direct on-chain getters establish primary provenance. Do not let a fast
   // dust quote outrun this small, coalesced read; optional index/history work
   // remains separate and never holds a known primary. Warm hits add no RPC.
-  await Promise.all([this.rpc.verifyChain(),this.quoteDiscovery?.primary?.(token)]);
+  await Promise.all([this.rpc.verifyChain(),this.quoteDiscovery?.primary?.(token,{watch:watch||primaryFirst})]);
+  const market=this.quoteDiscovery?.market?.(token);
+  if(market?.closed){
+   const snapshot=Object.freeze({token,block:market.block,at:Date.now(),pools:Object.freeze([]),open:false,expanded:expand,
+    routeIssue:'等待项目正式开放交易，开盘后重新核验主池与税后到账',partial:false,errors:Object.freeze([])});
+   checkedSnapshots.add(snapshot);
+   return snapshot;
+  }
+  // Poll an identified primary directly, before the broad factory/fee search.
+  // The planner must still establish full-size depth/fees; an insufficient
+  // focused result falls back to an expanded scan before any wallet preview.
+  if(primaryFirst&&!expand){const primary=await this.refreshPrimary(token,currency);if(primary)return primary;}
   const cachedPath=expand?null:await this.refreshPaths(token,currency);if(cachedPath)return cachedPath;
   const quotes=[...new Map([...this.quotes,...(this.quoteDiscovery?.known(token)||[])].map(q=>[q.toLowerCase(),q])).values()];
   const before=this.quoteDiscovery?.knownRoutes?.(token)||[];
@@ -93,6 +105,30 @@ export class OpeningPools{
   const routeIssue=open?null:observedLiquidity?'已发现流动性，但暂未找到指定到账币种的可用路径':unsupported.length?'发现尚未适配的池子线索，当前没有可核验卖出路径':null;
   const snapshot=Object.freeze({token,block:base.block,at:Date.now(),pools:Object.freeze(pools),open,expanded:expand,routeIssue,partial:errors.length>0,errors:Object.freeze(errors)});checkedSnapshots.add(snapshot);snapshotSources.set(snapshot,{discovery:this.quoteDiscovery,token});return snapshot;
  }
+ async refreshPrimary(token,currency){
+  const routes=this.quoteDiscovery?.knownRoutes?.(token)||[];
+  const primary=routes.filter(p=>p.declaredByToken);
+  // Multiple declarations/unsupported primary types require the ordinary
+  // comparison. A website hint or self-reported factory is never sufficient.
+  if(primary.length!==1)return null;
+  const p=primary[0],d=this.dexes.find(d=>same(d.factory,p.factory)&&d.kind===p.kind);
+  if(!d||!['v2','v3'].includes(d.kind)||!matchesCurrency(p,currency)||same(p.quote,token)||same(p.pool,ZeroAddress))return null;
+  if(d.kind==='v3'&&(!Number.isInteger(p.fee)||p.fee<=0||p.fee>=1000000))return null;
+  const key=[token,d.factory,p.quote,p.fee||0].join(':').toLowerCase(),old=this.known.get(key);
+  const requests=[{to:d.factory,abi:FACTORY,method:d.kind==='v2'?'getPair':'getPool',args:[token,p.quote,...(d.kind==='v3'?[p.fee]:[])]},
+   ...['token0','token1','factory',d.kind==='v2'?'getReserves':'liquidity'].map(method=>({to:p.pool,abi:POOL,method}))];
+  let batch;try{batch=await openingReads(this.rpc,requests);}catch(e){if(transientRead(e))throw e;return null;}
+  if(batch.results.some(r=>r.status!=='fulfilled')||batch.block<Math.max(old?.verifiedBlock||0,this.known.get(key)?.verifiedBlock||0))return null;
+  const [[registered],[t0],[t1],[factory],state]=batch.results.map(r=>r.value);
+  if(!same(registered,p.pool)||!same(factory,d.factory)||same(t0,t1)||!([t0,t1].some(t=>same(t,token))&&[t0,t1].some(t=>same(t,p.quote))))return null;
+  const identity={pool:p.pool,token0:t0,token1:t1,verifiedBlock:batch.block};this.known.set(key,identity);
+  if(this.known.size>512)this.known.delete(this.known.keys().next().value);
+  const liquid=d.kind==='v2'?state[0]>0n&&state[1]>0n:state[0]>0n;
+  const pool=Object.freeze({...d,...identity,token,quote:p.quote,...(d.kind==='v3'?{fee:p.fee}:{}),block:batch.block,liquid,declaredByToken:true,
+   ...(d.kind==='v2'?{reserve0:String(state[0]),reserve1:String(state[1])}:{liquidity:String(state[0])})});
+  const snapshot=Object.freeze({token,block:batch.block,at:Date.now(),pools:Object.freeze([pool]),open:liquid,primaryFocused:true,expanded:false,partial:false,errors:Object.freeze([]),routeIssue:liquid?null:'等待已核验主池开放流动性'});
+  checkedSnapshots.add(snapshot);snapshotSources.set(snapshot,{discovery:this.quoteDiscovery,token});return snapshot;
+ }
  async refreshPaths(token,currency){
   const key=token.toLowerCase()+':'+currency,cache=this.paths.get(key);if(!cache||Date.now()-cache.at>30000)return null;
   const primaries=this.quoteDiscovery?.knownRoutes(token).filter(p=>p.declaredByToken)||[];
@@ -121,21 +157,25 @@ export class OpeningPools{
   const rpc=this.rpc;
   const specs=quotes.filter(q=>!same(q,token)&&matchesCurrency({quote:q},currency)).flatMap(quote=>this.dexes.flatMap(d=>d.kind==='v2'?[{...d,quote}]:[...new Set([...d.fees,...(this.quoteDiscovery?.knownRoutes?.(token)||[]).filter(p=>same(p.factory,d.factory)&&same(p.quote,quote)&&p.fee>0&&p.fee<1000000).map(p=>p.fee)])].map(fee=>({...d,quote,fee}))));
   const keys=specs.map(s=>[token,s.factory,s.quote,s.fee||0].join(':').toLowerCase());
-  const requests=specs.map((s,n)=>{const cached=this.known.get(keys[n]);return cached?{to:cached.pool,abi:POOL,method:s.kind==='v2'?'getReserves':'liquidity'}:{to:s.factory,abi:FACTORY,method:s.kind==='v2'?'getPair':'getPool',args:[token,s.quote,...(s.kind==='v3'?[s.fee]:[])]};});
+  // Another scanner can finish discovery during this batch. Decode against
+  // the request actually sent, not a newer entry that appeared while awaiting.
+  const cachedPairs=keys.map(key=>this.known.get(key));
+  const requests=specs.map((s,n)=>{const cached=cachedPairs[n];return cached?{to:cached.pool,abi:POOL,method:s.kind==='v2'?'getReserves':'liquidity'}:{to:s.factory,abi:FACTORY,method:s.kind==='v2'?'getPair':'getPool',args:[token,s.quote,...(s.kind==='v3'?[s.fee]:[])]};});
   const chunks=await Promise.all(Array.from({length:Math.ceil(requests.length/64)},(_,n)=>openingReads(rpc,requests.slice(n*64,n*64+64),atBlock)));
   const block=chunks[0]?.block??(atBlock==='latest'?await rpc.getBlockNumber():Number(atBlock));
   if(chunks.some(c=>c.block!==block))return this.inspectQuotes(token,currency,quotes,block);
   const first={results:chunks.flatMap(c=>c.results)},pools=[],errors=[],newPairs=[];
   const add=(s,p,state)=>{const liquid=s.kind==='v2'?state[0]>0n&&state[1]>0n:state[0]>0n;const declaredByToken=!!this.quoteDiscovery?.knownRoutes?.(token).some(r=>same(r.pool,p.pool)&&r.declaredByToken);pools.push(Object.freeze({...s,...p,declaredByToken,token,block,liquid,...(s.kind==='v2'?{reserve0:String(state[0]),reserve1:String(state[1])}:{liquidity:String(state[0])})}));};
-  first.results.forEach((r,n)=>{const s=specs[n],cached=this.known.get(keys[n]);if(r.status==='rejected'){errors.push(s.id+': '+r.reason.message);if(cached)this.known.delete(keys[n]);return;}
-   if(cached){if(block<cached.verifiedBlock){this.known.delete(keys[n]);errors.push('RPC 区块回退，重新核验池子');return;}add(s,cached,r.value);}
+  first.results.forEach((r,n)=>{const s=specs[n],cached=cachedPairs[n],forget=()=>{if(cached&&this.known.get(keys[n])===cached)this.known.delete(keys[n]);};if(r.status==='rejected'){errors.push(s.id+': '+r.reason.message);forget();return;}
+   if(block<(this.known.get(keys[n])?.verifiedBlock||0)){errors.push('RPC 区块落后于已核验池子');return;}
+   if(cached){if(block<cached.verifiedBlock){forget();errors.push('RPC 区块回退，重新核验池子');return;}add(s,cached,r.value);}
    else if(!same(r.value[0],ZeroAddress))newPairs.push({s,key:keys[n],pool:address(r.value[0])});
   });
   const pending=newPairs.flatMap(p=>['token0','token1','factory',p.s.kind==='v2'?'getReserves':'liquidity'].map(method=>({to:p.pool,abi:POOL,method})));
   const parts=await Promise.all(Array.from({length:Math.ceil(pending.length/64)},(_,n)=>openingReads(rpc,pending.slice(n*64,n*64+64),block)));const results=parts.flatMap(p=>p.results);
   newPairs.forEach((p,n)=>{const r=results.slice(n*4,n*4+4);if(r.some(x=>x.status!=='fulfilled')){errors.push(p.s.id+': 新池核验暂未完成');return;}
    const [t0,t1,factory]=r.slice(0,3).map(x=>x.value[0]);if(!same(factory,p.s.factory)||!([t0,t1].some(t=>same(t,token))&&[t0,t1].some(t=>same(t,p.s.quote)))){errors.push('池子身份不匹配');return;}
-   const entry={pool:p.pool,token0:t0,token1:t1,verifiedBlock:block};this.known.set(p.key,entry);if(this.known.size>512)this.known.delete(this.known.keys().next().value);add(p.s,entry,r[3].value);
+   const entry={pool:p.pool,token0:t0,token1:t1,verifiedBlock:block};if(!this.known.has(p.key)||this.known.get(p.key).verifiedBlock<=block)this.known.set(p.key,entry);if(this.known.size>512)this.known.delete(this.known.keys().next().value);add(p.s,entry,r[3].value);
   });
   if(specs.length&&first.results.every(r=>r.status==='rejected'))throw Error('开盘池读取失败：'+errors[0]);
   return {block,pools,errors};

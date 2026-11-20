@@ -14,12 +14,25 @@ export function recoverableOpeningSale(order){
  const failedOnChain=order?.error?.code==='TRANSACTION_REVERTED'&&entry?.revertVerified===true&&reverted&&/^0x[\da-f]{64}$/i.test(entry.txHash||'');
  return order?.status==='FAILED'&&entry?.status==='FAILED'&&entry.step?.kind==='sell'&&(failedOnChain||unsubmitted)&&plan?.requireSellCredit===true&&!!dexFor(plan.opening)&&order.steps.slice(0,-1).every(e=>e.status==='CONFIRMED'&&e.step?.kind==='approve');
 }
-export async function openingRecoveryPlan(rpc,bridge,intent,original,{scan,snapshot,preparation}={}){
+export async function openingRecoveryPlan(rpc,bridge,intent,original,{scan,snapshot,preparation,samePool=false}={}){
  if(!intent.openingOnly||intent.side!=='sell'||!recoverableOpeningSale(original)||original.intent.account!==intent.account||
-  !same(original.intent.asset,intent.asset)||original.intent.percent!==intent.percent||original.intent.slippageBps!==intent.slippageBps||original.intent.currency!==intent.currency||original.intent.gasLimit!==intent.gasLimit)
+  !same(original.intent.asset,intent.asset)||original.intent.percent!==intent.percent||original.intent.slippageBps!==intent.slippageBps||original.intent.currency!==intent.currency||original.intent.gasLimit!==intent.gasLimit||original.intent.primaryOnly!==intent.primaryOnly)
   throw Error('备用卖出缺少已核验的未成交原单或原交易约束不一致');
  const previous=original.steps.at(-1).plan||original.plan,owner=wallet(intent.account).address;
  if(!same(owner,previous.wallet))throw Error('备用卖出钱包绑定已变化');
+ // A direct recovery already verifies a fresh post-detection holding, token
+ // identity, allowance and venue in openingPlan. Validate that single result
+ // against the failed original, instead of doing a duplicate serial pre-read.
+ // The aggregate endpoint cannot enforce a user-selected gas ceiling. Rebuild
+ // a verified direct route once, preserving that ceiling and the exact asset
+ // constraints, instead of silently dropping it during recovery.
+ if(samePool||intent.gasLimit!==undefined||intent.primaryOnly){
+  const plan=await openingPlan(rpc,bridge,intent,{preparation,scan,snapshot,outputToken:previous.outputToken,...(samePool?{requiredPool:previous.opening.pool}:{}),...(previous.authorizationMinOutput===undefined?{}:{minimumOutput:previous.authorizationMinOutput})});
+  if(!previous.identity?.fingerprint||plan.identity?.fingerprint!==previous.identity.fingerprint)throw Object.assign(Error('回滚后代币合约身份已变化，停止备用卖出'),{code:'OPENING_RECOVERY_IDENTITY_CHANGED'});
+  if(plan.holdingBefore!==previous.holdingBefore||plan.amountIn!==previous.amountIn||!same(plan.outputToken,previous.outputToken))throw Object.assign(Error('备用直连卖出的持仓或到账币种已变化'),{code:'OPENING_RECOVERY_HOLDINGS_CHANGED'});
+  if(samePool&&(!same(plan.opening.pool,previous.opening.pool)||!same(plan.opening.router,previous.opening.router)))throw Error('原卖出主池已变化，未更换池子重试');
+  return {...plan,recovery:{originalId:original.id,reason:original.steps.at(-1).revertVerified?'verified-revert':'not-dispatched',maxAttempts:samePool?3:1,...(samePool?{samePool:true}:{})}};
+ }
  snapshot=freshOpeningSnapshot(snapshot,intent.asset)?snapshot:await scan(intent.asset,{currency:intent.currency});
  const quoteToken=same(previous.outputToken,BNB)?WBNB:previous.outputToken;
  if(!snapshot.pools.some(p=>p.liquid&&dexFor(p)&&matchesCurrency(p,intent.currency)&&same(p.quote,quoteToken)))throw Error('备用卖出未核验到原到账币种的外盘流动性');
@@ -27,14 +40,6 @@ export async function openingRecoveryPlan(rpc,bridge,intent,original,{scan,snaps
  if(!previous.identity?.fingerprint||meta.identity?.fingerprint!==previous.identity.fingerprint)throw Object.assign(Error('回滚后代币合约身份已变化，停止备用卖出'),{code:'OPENING_RECOVERY_IDENTITY_CHANGED'});
  const amount=sellAmount(balance,intent.percent);
  if(String(balance)!==previous.holdingBefore||String(amount)!==previous.amountIn)throw Object.assign(Error('回滚后持仓已变化，停止备用卖出，避免与手动交易重复'),{code:'OPENING_RECOVERY_HOLDINGS_CHANGED'});
- // The aggregate endpoint cannot enforce a user-selected gas ceiling. Rebuild
- // a verified direct route once, preserving that ceiling and the exact asset
- // constraints, instead of silently dropping it during recovery.
- if(intent.gasLimit!==undefined){
-  const plan=await openingPlan(rpc,bridge,intent,{preparation,scan:async()=>({...snapshot,pools:snapshot.pools.filter(p=>same(p.quote,quoteToken))})});
-  if(plan.holdingBefore!==previous.holdingBefore||plan.amountIn!==previous.amountIn||!same(plan.outputToken,previous.outputToken))throw Object.assign(Error('备用直连卖出的持仓或到账币种已变化'),{code:'OPENING_RECOVERY_HOLDINGS_CHANGED'});
-  return {...plan,recovery:{originalId:original.id,reason:original.steps.at(-1).revertVerified?'verified-revert':'not-dispatched',maxAttempts:1}};
- }
  const args=['--binanceChainId','56','--fromToken',intent.asset,'--toToken',previous.outputToken,'--fromTokenQty',formatUnits(amount,meta.decimals),'--slippage',String(intent.slippageBps/100)];
  const quote=await bridge.call(intent.account,['market-order','quote',...args]);
  if(!quote.toCoinAmount||!Number.isFinite(Number(quote.toCoinAmount))||Number(quote.toCoinAmount)<=0)throw Object.assign(Error('备用卖出暂时没有有效聚合报价'),{code:'OPENING_QUOTE_UNAVAILABLE'});

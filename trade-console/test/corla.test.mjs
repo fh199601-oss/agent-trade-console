@@ -21,7 +21,7 @@ function fixture(){
  const state={params,record,status:1n,minted:1n,used:0,agentOnly:false,eligible:true,white:true,claimable:0n,refundable:0n,locked:1n,refundVersion:1n,allowance:0n,balance:10n**18n,mapped:mint,index:1n,factoryChanged:false,implChanged:false,extra:false,calls:[],simulations:0};
  const rpc={verifyChain:async()=>{},getBlockNumber:async()=>42,getBalance:async()=>state.nativeBalance??10n**18n,
   getCode:async a=>a.toLowerCase()===factory?factoryCode:a.toLowerCase()===fi?(state.factoryChanged?'0x60006003':fiCode):a.toLowerCase()===mint?(state.beacon?'0x60006000f4':code):a.toLowerCase()===impl?(state.implChanged?'0x60006004':implCode):state.beacon&&a.toLowerCase()===addr(9)?'0x6000635c60da1b00':a.toLowerCase()===addr(8)?'0x6000600500':'0x',
-  send:async(method,args)=>{if(method==='eth_call'&&state.beacon&&args[0].to.toLowerCase()===addr(9))return '0x'+impl.slice(2).padStart(64,'0');assert.equal(method,'eth_getStorageAt');return args[0].toLowerCase()===factory&&args[1]===IMPL_SLOT?'0x'+fi.slice(2).padStart(64,'0'):state.beacon&&args[0].toLowerCase()===mint&&args[1]===BEACON_SLOT?'0x'+addr(9).slice(2).padStart(64,'0'):'0x'+'0'.repeat(64);},
+  send:async(method,args)=>{if(method==='eth_gasPrice')return '0x5f5e100';if(method==='eth_estimateGas')return '0x7a120';if(method==='eth_call'&&state.beacon&&args[0].to.toLowerCase()===addr(9))return '0x'+impl.slice(2).padStart(64,'0');assert.equal(method,'eth_getStorageAt');return args[0].toLowerCase()===factory&&args[1]===IMPL_SLOT?'0x'+fi.slice(2).padStart(64,'0'):state.beacon&&args[0].toLowerCase()===mint&&args[1]===BEACON_SLOT?'0x'+addr(9).slice(2).padStart(64,'0'):'0x'+'0'.repeat(64);},
   call:async(tx,block)=>{
    if(state.beacon&&tx.to.toLowerCase()===addr(9))return '0x'+impl.slice(2).padStart(64,'0');
    const abi=tx.to.toLowerCase()===factory?F:tx.to.toLowerCase()===state.params.launch.quoteToken.toLowerCase()?ERC20:M,parsed=abi.parseTransaction(tx),n=parsed.name;state.calls.push(n);
@@ -96,7 +96,7 @@ test('Corla chain reads overlap wallet preflight but official preview cannot byp
   const bridge={ready:async()=>{await gate;if(guardFails)throw Error('fixture disconnected');},call:async(a,args)=>{assert.equal(args[1],'preview');previews++;return {requestId:'fake-only',simulationResult:{simulationCode:'000000000',balanceChanges:[]}};}};
   const engine=new Engine({rpc,bridge,data,live:false}),work=engine.prepare({...intent,account:bindings()[0].account,side:'mint',asset:'flap.sh/apps/corla/mint/'+mint},'fixture-overlap');
   try{await Promise.race([readStarted,new Promise((_,reject)=>setTimeout(()=>reject(Error('chain reads wait behind wallet preflight')),1000))]);assert.equal(previews,0);}finally{release();}
-  const result=await work;assert.equal(result.status,guardFails?'BLOCKED':'PREPARED');assert.equal(previews,guardFails?0:1);assert.equal(state.simulations,0);
+  const result=await work;assert.equal(result.status,guardFails?'BLOCKED':'PREPARED',JSON.stringify(result.error));assert.equal(previews,guardFails?0:1);assert.equal(state.simulations,0);
  }
 });
 test('claim fast path skips discovery/creation terms but still verifies registry, current credit and official simulation',async t=>{
@@ -253,4 +253,21 @@ test('claim diagnostics distinguish unopened, refund phase, already claimed and 
 test('platform-rejected name stops mint with an explicit launch failure instead of a generic RPC error',async()=>{
  const {rpc,client,state}=fixture();state.simulationError=Object.assign(Error('execution reverted'),{data:M.encodeErrorResult('BlacklistedNameOrSymbol',['BNB'])});
  await assert.rejects(corlaPlan(rpc,intent,w,{address:mint},{client}),e=>e.code==='CORLA_LAUNCH_BLOCKED'&&/名称或符号：BNB/.test(e.message));assert.equal(state.simulations,0);
+});
+
+test('production full-fill reserves per-lot Gas and supports verified six-decimal quote balance without manual budget',async()=>{
+ const {fundedMintPlan}=await import('../lib/mint-funding.mjs');
+ for(const native of [true,false]){
+  const f=fixture();f.state.nativeBalance=3250000000000000n;
+  if(!native){f.state.params.launch.quoteToken=addr(8);f.state.record.pricePerLot=f.state.params.terms.pricePerLot=1000n;f.state.balance=2400n;}
+  const input={...intent,side:'mint',asset:mint,maxBnb:'0',maxUsdt:'0'};
+  const p=await fundedMintPlan(f.rpc,input,w,i=>corlaPlan(f.rpc,i,w,{address:mint},{client:f.client,officialPreview:true}),{payment:{token:native?BNB:addr(8),decimals:native?18:6}});
+  assert.equal(p.quantity,1);assert.equal(p.fill.targetQuantity,2);assert.equal(p.mintFunding.full,true);
+  assert.equal(p.steps.at(-1).value,native?'1000000000000000':'0');if(!native)assert.equal(p.steps[0].allowance,'2000');
+ }
+});
+
+test('claim-sell preapproval is an explicit reviewed mint policy, without any extra transaction',async()=>{
+ const f=fixture();const p=await corlaPlan(f.rpc,{...intent,autoClaim:true,claimSell:{percent:'50',currency:'AUTO',slippageBps:5000,preApprove:true}},w,{address:mint},{client:f.client});
+ assert.equal(p.afterMint.sell.preApprove,true);assert.ok(p.review.some(x=>x.includes('提前授权已核验主池')));assert.equal(p.steps.filter(x=>x.kind==='approve').length,0);assert.equal(f.state.simulations,1);
 });

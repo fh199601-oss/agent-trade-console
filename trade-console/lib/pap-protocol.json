@@ -1,0 +1,60 @@
+{
+  "origin": "https://papagent.app",
+  "config": {
+    "sale": "0x6d4d9ace0905365db10ced35f7121434771ea1f9",
+    "token": "0x170f021a2abcbe7213ab2cfead7644a41ce2cc68",
+    "distributor": "0x7a34b254dd9c3cb6891469504c5b419563a1e595"
+  },
+  "abi": [
+    "function saleOpen() view returns (bool)",
+    "function saleInfo() view returns (uint256 price, uint256 perMint, uint256 totalMints, uint256 perId, uint256 totalTokens)",
+    "function remainingFor(address wallet) view returns (uint256)",
+    "function quotaOf(address wallet) view returns (uint256)",
+    "function extraQuota(address wallet) view returns (uint256)",
+    "function referrerOf(address wallet) view returns (address)",
+    "function remainingMints() view returns (uint256)",
+    "function remainingTokens() view returns (uint256)",
+    "function isAgentWallet(address wallet) view returns (bool)",
+    "function agentHandleOf(address wallet) view returns (string)",
+    "function AGENT_ID() view returns (address)",
+    "function minted() view returns (uint256)",
+    "function mintedBy(address wallet) view returns (uint256)",
+    "function raised() view returns (uint256)",
+    "function PRICE_PER_MINT() view returns (uint256)",
+    "function TOKENS_PER_MINT() view returns (uint256)",
+    "function MAX_MINTS() view returns (uint256)",
+    "function MAX_MINTS_PER_ID() view returns (uint256)",
+    "function TOTAL_FOR_SALE() view returns (uint256)",
+    "function token() view returns (address)",
+    "function mint() payable returns (uint256)",
+    "function mintMany(uint256 times) payable returns (uint256)",
+    "function mintWithReferrer(uint256 times, address referrer) payable returns (uint256)",
+    "function refunding() view returns (bool)",
+    "function refundableOf(address wallet) view returns (uint256)",
+    "function refund() returns ()",
+    "function owner() view returns (address)",
+    "function openSale()",
+    "function closeSale()",
+    "function withdraw()",
+    "function withdrawUnsold()",
+    "function grantExtraQuota(address id, uint256 amount)",
+    "function sweep(address asset)",
+    "function enableRefunds()",
+    "function transferOwnership(address newOwner)",
+    "function renounceOwnership()"
+  ],
+  "identities": {
+    "sale": {
+      "target": "0x6d4d9ace0905365db10ced35f7121434771ea1f9",
+      "fingerprint": "1842242103ed7290b368b588e95968f75b2508d6d0a1826ce41020ce03640475"
+    },
+    "token": {
+      "target": "0x170f021a2abcbe7213ab2cfead7644a41ce2cc68",
+      "fingerprint": "0e9c82a98ac4a0163483205454989d3a42e4ee74ad2dfa69c0eb2f00de4a3eee"
+    },
+    "distributor": {
+      "target": "0x7a34b254dd9c3cb6891469504c5b419563a1e595",
+      "fingerprint": "bf7bc125701c6505da25a9b10089093b2a47cc77caadfe37cc5d5902a0564363"
+    }
+  }
+}

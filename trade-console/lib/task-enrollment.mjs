@@ -49,11 +49,13 @@ export class TaskEnrollment{
   return {projects,checkedAt:this.now()};
  }
  add(input){
-  if(input?.confirmed!==true||Object.keys(input).some(k=>!['confirmed','requestId','candidateId','action','accounts','percent'].includes(k))||typeof input.requestId!=='string'||!/^[a-zA-Z0-9_-]{8,100}$/.test(input.requestId)||typeof input.candidateId!=='string'||!['claim','claim-sell','sell'].includes(input.action)||!Array.isArray(input.accounts)||!input.accounts.length||input.accounts.length>200||input.accounts.some(a=>!Number.isInteger(a)||a<1)||new Set(input.accounts).size!==input.accounts.length)throw Error('请选择项目、钱包和自动任务，并点击确认添加');
+  if(input?.confirmed!==true||Object.keys(input).some(k=>!['confirmed','requestId','candidateId','action','accounts','percent','preApprove','slippageBps'].includes(k))||typeof input.requestId!=='string'||!/^[a-zA-Z0-9_-]{8,100}$/.test(input.requestId)||typeof input.candidateId!=='string'||!['claim','claim-sell','sell'].includes(input.action)||!Array.isArray(input.accounts)||!input.accounts.length||input.accounts.length>5||input.accounts.some(a=>!Number.isInteger(a)||a<1)||new Set(input.accounts).size!==input.accounts.length)throw Error('请选择项目、钱包和自动任务，并点击确认添加');
   if(!this.engine.live)throw Error('模拟环境只允许检查，不启动实盘任务');
-  const percent=String(input.percent??'50');percentOf(100000000n,percent);const payload={candidateId:input.candidateId,accounts:[...input.accounts].sort(),action:input.action,percent},fingerprint=hash(payload),key=input.requestId;
+  if(input.preApprove!==undefined&&typeof input.preApprove!=='boolean')throw Error('提前授权选项无效');
+  const slippageBps=input.slippageBps??5000;if(!Number.isInteger(slippageBps)||slippageBps<0||slippageBps>9900)throw Error('卖出滑点范围 0–99%');
+  const percent=String(input.percent??'50');percentOf(100000000n,percent);const payload={candidateId:input.candidateId,accounts:[...input.accounts].sort(),action:input.action,percent,...(input.slippageBps===undefined?{}:{slippageBps}),...(input.preApprove===undefined?{}:{preApprove:input.preApprove})},fingerprint=hash(payload),key=input.requestId;
   if(this.inflight.has(key)){const old=this.inflight.get(key);if(old.fingerprint!==fingerprint)throw Error('同一请求不能更改任务设置');return old.promise;}
-  const promise=this.create({...input,percent},fingerprint);this.inflight.set(key,{fingerprint,promise});promise.finally(()=>this.inflight.delete(key)).catch(()=>{});return promise;
+  const promise=this.create({...input,percent,slippageBps},fingerprint);this.inflight.set(key,{fingerprint,promise});promise.finally(()=>this.inflight.delete(key)).catch(()=>{});return promise;
  }
  async create(input,fingerprint){
   const g=this.recent().find(g=>g.id===input.candidateId);if(!g)throw Error('未找到最近 30 天的真实 Mint 到账记录');
@@ -67,15 +69,15 @@ export class TaskEnrollment{
    const ready=current.wallets.find(w=>w.account===ref.account);if(!ready?.available)throw Error(ready?.reason||'当前不能添加');
    const o=g.orders.get(ref.account),w=this.binding(ref.account);if(!same(w.address,o.plan.wallet))throw Error('钱包绑定已变化');
    if(this.existing(g,ref.account,current.asset))throw Error('已有相同钱包项目任务，请修改原任务');
-   const authorization='用户在本地看板确认补建任务：'+g.name+'；钱包 '+ref.account+'；'+(input.action==='claim'?'开盘自动领取全部，不卖出':input.action==='claim-sell'?'开盘领取全部后按当前持仓卖出 '+input.percent+'%，固定滑点 50%':'检测到开盘后按当前持仓卖出 '+input.percent+'%，固定滑点 50%');
+   const authorization='用户在本地看板确认补建任务：'+g.name+'；钱包 '+ref.account+'；'+(input.action==='claim'?'开盘自动领取全部，不卖出':input.action==='claim-sell'?'开盘领取全部后按当前持仓卖出 '+input.percent+'%，固定滑点 '+input.slippageBps/100+'%':'检测到开盘后按当前持仓卖出 '+input.percent+'%，固定滑点 '+input.slippageBps/100+'%');
    let job;
    if(g.kind==='corla'){
     // This is an explicit NEW task. Never change the historical Mint intent or
     // execute unfinished subscription batches merely to enable a later claim.
-    job={id:ref.id,parents:[o.id],account:ref.account,wallet:w.address,mint:g.mint,name:g.name,identity:current.proof.identity,protocolIdentities:[current.proof.factoryIdentity],policy:{autoClaim:true,mint:g.mint,expectedToken:same(current.asset,g.mint)?ZeroAddress:current.asset,sell:input.action==='claim-sell'?{percent:input.percent,slippageBps:5000,currency:'AUTO'}:null},status:'WATCHING',createdAt:this.now(),attempts:0,lateRequestHash:fingerprint,authorization,message:'用户补建任务：监测开盘，不追加认购'};
+    job={id:ref.id,parents:[o.id],account:ref.account,wallet:w.address,mint:g.mint,name:g.name,identity:current.proof.identity,protocolIdentities:[current.proof.factoryIdentity],policy:{autoClaim:true,mint:g.mint,expectedToken:same(current.asset,g.mint)?ZeroAddress:current.asset,sell:input.action==='claim-sell'?{...(input.preApprove===undefined?{}:{preApprove:input.preApprove}),percent:input.percent,slippageBps:input.slippageBps,currency:'AUTO'}:null},status:'WATCHING',createdAt:this.now(),attempts:0,lateRequestHash:fingerprint,authorization,message:'用户补建任务：监测开盘，不追加认购'};
     manager.jobs.set(ref.id,job);try{manager.persist();}catch(e){manager.jobs.delete(ref.id);throw e;}manager.schedule();
    }else{
-    const check=await this.opening.check({asset:current.asset,accounts:[ref.account],percent:input.percent,slippageBps:5000,currency:'AUTO'});
+    const check=await this.opening.check({asset:current.asset,accounts:[ref.account],...(input.preApprove===undefined?{}:{preApprove:input.preApprove}),percent:input.percent,slippageBps:input.slippageBps,currency:'AUTO'});
     if(check.snapshot.open||check.snapshot.partial)throw Error('开盘状态已变化，请刷新项目列表');
     if(this.existing(g,ref.account,current.asset))throw Error('已有相同钱包项目任务');
     this.opening.checks.delete(check.id);check.id=ref.id;this.opening.checks.set(ref.id,check);

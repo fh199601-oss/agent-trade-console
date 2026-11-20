@@ -4,16 +4,16 @@ import argparse,hashlib,json,re
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
-FORBIDDEN={'.git','.baw','.env','local','runtime','node_modules','wallet-containers','accounts.json','wallet-entrypoints.json','install.json','service.json','startup.json','startup-error.json','startup-error.html','startup.html','last-launch.json','rpc-settings.json','.migration','evidence','reports','__pycache__'}
+FORBIDDEN={'.git','.baw','.env','local','runtime','node_modules','wallet-containers','accounts.json','wallet-entrypoints.json','install.json','service.json','startup.json','startup-error.json','startup-error.html','startup.html','last-launch.json','rpc-settings.json','personal-deployment.json','originals.json','fast-trigger','fast-sale-v1','trigger.dpapi','fast-sale-mainnet-jobs.json','fast-sale-managed-address.json','fast-sale-settings.json','.migration','evidence','reports','__pycache__'}
 
 def check_path(name):
     p=Path(name)
     parts={part.casefold() for part in p.parts}
-    if p.is_absolute() or not p.parts or '..' in p.parts or '\\' in name or ':' in name or parts&FORBIDDEN or any(part.startswith('.env') for part in parts):
+    if p.is_absolute() or not p.parts or '..' in p.parts or '\\' in name or ':' in name or parts&FORBIDDEN or any(part.startswith(('.env','fast-deployment','personal-deployment.json')) for part in parts):
         raise ValueError('拒绝私有或不安全路径：'+name)
     target=ROOT/p
     if any((ROOT/Path(*p.parts[:i])).is_symlink() for i in range(1,len(p.parts)+1)) or not target.is_file() or not target.resolve().is_relative_to(ROOT):raise ValueError('只允许仓库内普通文件：'+name)
-    if name not in {'.gitignore','.gitattributes','LICENSE'} and p.suffix not in {'.py','.mjs','.js','.c','.css','.svg','.html','.json','.md','.txt','.yml','.vbs','.command'}:raise ValueError('不支持的发行文件类型：'+name)
+    if name not in {'.gitignore','.gitattributes','LICENSE','trade-console/lib/delegated-sale/backup-dialog.ps1','trade-console/research/delegated-sale/contracts/FastSaleExecutor.sol','trade-console/research/delegated-sale/contracts/ResearchExecutor.sol'} and p.suffix not in {'.py','.mjs','.js','.c','.css','.svg','.html','.json','.md','.txt','.yml','.vbs','.command'}:raise ValueError('不支持的发行文件类型：'+name)
     return target
 
 def main():

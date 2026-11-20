@@ -73,6 +73,7 @@ export function createTaskCenter({api,notify,onFeeReview=()=>{},viewOrder=()=>{}
    // A standalone opening task can own several wallets; do not present its
    // all-wallet stop endpoint as a single-wallet action.
    if(j.wallets.length===1)row.append(actionsFor([j],account+' 号钱包任务'));
+   const approval=state?.preApproval||j.preApproval;if(approval){row.append(make('p','提前授权：'+(approval.message||'等待核验'),'helper task-wallet-message'));if(approval.orderId){const detail=make('button','授权详情','text-button');detail.addEventListener('click',()=>viewOrder(approval.orderId));row.append(detail);}}
    const message=state?.error?.message||j.message;if(message){const note=make('p',message,'helper task-wallet-message');note.title=message;row.append(note);}body.append(row);
   }
   box.append(body);return box;
@@ -89,7 +90,7 @@ export function createTaskCenter({api,notify,onFeeReview=()=>{},viewOrder=()=>{}
  }
  function render(){
   onFeeReview(snapshot.opening.flatMap(j=>(j.rows||[]).filter(r=>['SELL_FEE_REVIEW','SELL_FEES_UNVERIFIABLE'].includes(r.error?.code)&&r.orderId).map(r=>r.orderId)));
-  const keyFields=j=>[j.id,j.kind,j.status,j.title,j.wallets,j.mint,j.message,j.config,j.policy,j.revision,j.pauseReason,j.rows?.map(r=>[r.account,r.status,r.error?.message])];
+  const keyFields=j=>[j.id,j.kind,j.status,j.title,j.wallets,j.mint,j.message,j.config,j.policy,j.revision,j.pauseReason,j.preApproval,j.rows?.map(r=>[r.account,r.status,r.error?.message,r.preApproval])];
   const nextModel=taskModel(snapshot),nextPaint=JSON.stringify([snapshot.instance,resuming,[...stopping],nextModel.paused,...nextModel.active.map(keyFields),...nextModel.corlaHistory.map(keyFields),...nextModel.openingHistory.map(keyFields)]);
   if(nextPaint===paintKey){showReminder();return;}paintKey=nextPaint;
   const model=nextModel,scroll=$('activeTasks').scrollTop;
@@ -132,16 +133,18 @@ export function createTaskCenter({api,notify,onFeeReview=()=>{},viewOrder=()=>{}
  $('laterResumeTasks').addEventListener('click',dismiss);$('closeResumeTasks').addEventListener('click',dismiss);$('resumeTasksDialog').addEventListener('cancel',e=>{e.preventDefault();dismiss();});
  $('refreshTasks').addEventListener('click',()=>refresh().catch(e=>notify(e.message,true)));
  for(const d of doc.querySelectorAll('dialog'))d.addEventListener('close',()=>queueMicrotask(showReminder));
- return {refresh,getSnapshot:()=>snapshot,setFeatures(capabilities){const enabled=capabilities?.taskCenterVersion>=2;$('addTask').disabled=!enabled;$('addTask').title=enabled?'为最近已 Mint 的项目补建任务':'任务编辑功能等待后端更新';if(enabled!==editingSupported){editingSupported=enabled;paintKey='';render();}}};
+ return {refresh,getSnapshot:()=>snapshot,setFeatures(capabilities){dialogs.setPreapprovalSupported(!!capabilities?.openingPreapprovalVersion);const enabled=capabilities?.taskCenterVersion>=2;$('addTask').disabled=!enabled;$('addTask').title=enabled?'为最近已 Mint 的项目补建任务':'任务编辑功能等待后端更新';if(enabled!==editingSupported){editingSupported=enabled;paintKey='';render();}}};
 }
 
 // Kept in the existing static entry so an old running server can still load
 // the dashboard while its replacement is waiting for active tasks to finish.
 export function createTaskDialogs({api,notify,onSaved,document:doc=document}){
  const $=id=>doc.getElementById(id),make=(tag,text)=>{const e=doc.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
+ let preapprovalSupported=false;
  let editing=[],projects=[],requestId='',loading=false,adding=false,editBusy=false,epoch=0;
  const selected=()=>projects.find(p=>p.id===$('taskProject').value);
- function percentState(){const off=$('taskAction').value==='claim';$('taskAddPercent').disabled=off;$('taskAddPercentRow').hidden=off;}
+ function slippageSetting(id){const value=$(id)?.value;if(value===undefined||value==='')return {};if(!/^\d+(?:\.\d{1,2})?$/.test(value)||Number(value)>99)throw Error('卖出滑点范围 0–99%，最多两位小数');return {slippageBps:Math.round(Number(value)*100)};}
+ function percentState(){const off=$('taskAction').value==='claim';$('taskAddPercent').disabled=off;$('taskAddPercentRow').hidden=off;if($('taskAddSlippageRow'))$('taskAddSlippageRow').hidden=off;if($('taskAddPreApproveRow'))$('taskAddPreApproveRow').hidden=off;}
  function renderProject(){
   const p=selected();$('taskAddWallets').replaceChildren();$('taskAction').replaceChildren();
   if(!p){$('taskAddMessage').textContent='最近 30 天没有可用的真实 Mint 记录。';$('confirmAddTask').disabled=true;return;}
@@ -151,21 +154,23 @@ export function createTaskDialogs({api,notify,onSaved,document:doc=document}){
   $('confirmAddTask').disabled=!p.wallets.some(w=>w.available)||adding;percentState();requestId=crypto.randomUUID();
  }
  async function add(){
-  if(loading||adding)return;loading=true;const ticket=++epoch;projects=[];$('taskProject').replaceChildren();$('taskAddWallets').replaceChildren();$('taskAddMessage').textContent='正在核验最近 Mint 记录与当前开盘状态…';$('confirmAddTask').disabled=true;$('taskAddPercent').value='50';$('addTaskDialog').showModal();
+  if(loading||adding)return;loading=true;const ticket=++epoch;projects=[];$('taskProject').replaceChildren();$('taskAddWallets').replaceChildren();$('taskAddMessage').textContent='正在核验最近 Mint 记录与当前开盘状态…';$('confirmAddTask').disabled=true;$('taskAddPercent').value='50';if($('taskAddSlippage'))$('taskAddSlippage').value='50';$('addTaskDialog').showModal();
   try{const result=await api('tasks/candidates');if(ticket!==epoch)return;projects=result.projects||[];for(const p of projects){const option=make('option',p.name+(p.unavailable?' · '+p.unavailable:''));option.value=p.id;$('taskProject').append(option);}const first=projects.find(p=>p.wallets.some(w=>w.available));if(first)$('taskProject').value=first.id;renderProject();}
   catch(e){if(ticket===epoch)$('taskAddMessage').textContent='读取失败：'+e.message;}finally{loading=false;}
  }
  function edit(members,title){
   if(editBusy)return;editing=members.map(j=>({kind:j.kind,id:j.id,revision:j.revision||0}));const corlaOnly=members.every(j=>j.kind==='corla'),settings=members.map(j=>j.kind==='corla'?j.policy?.sell:j.config),values=[...new Set(settings.map(s=>s?.percent).filter(Boolean))];
   $('editTaskTitle').textContent='修改 · '+title;$('taskEditPercent').value=values.length===1?values[0]:'50';$('taskEditSellRow').hidden=!corlaOnly;$('taskEditSell').checked=!corlaOnly||settings.some(Boolean);$('taskEditPercent').disabled=!$('taskEditSell').checked;
+  const slips=[...new Set(settings.map(s=>s?.slippageBps).filter(x=>x!==undefined))];if($('taskEditSlippage'))$('taskEditSlippage').value=slips.length===1?String(slips[0]/100):'';
+  if($('taskEditPreApprove'))$('taskEditPreApprove').checked=settings.length>0&&settings.every(s=>s?.preApprove===true);
   $('taskEditMessage').textContent='修改 '+members.length+' 个任务中尚未提交的卖出；暂停的任务保存后仍保持暂停。';$('saveTaskEdit').disabled=false;$('editTaskDialog').showModal();
  }
  $('taskProject').addEventListener('change',renderProject);$('taskAction').addEventListener('change',()=>{percentState();requestId=crypto.randomUUID();});
- for(const id of ['taskAddWallets','taskAddPercent'])$(id).addEventListener('change',()=>requestId=crypto.randomUUID());
+ for(const id of ['taskAddWallets','taskAddPercent','taskAddPreApprove','taskAddSlippage'])$(id)?.addEventListener('change',()=>requestId=crypto.randomUUID());
  $('taskEditSell').addEventListener('change',()=>$('taskEditPercent').disabled=!$('taskEditSell').checked);
  $('saveTaskEdit').addEventListener('click',async()=>{
   if(editBusy)return;editBusy=true;$('saveTaskEdit').disabled=true;
-  try{const r=await api('tasks/edit',{tasks:editing,settings:{percent:$('taskEditPercent').value,sellEnabled:$('taskEditSell').checked},confirmed:true}),failed=r.results.filter(x=>!x.changed);await onSaved();
+  try{const r=await api('tasks/edit',{tasks:editing,settings:{...slippageSetting('taskEditSlippage'),percent:$('taskEditPercent').value,sellEnabled:$('taskEditSell').checked,...(preapprovalSupported?{preApprove:$('taskEditPreApprove').checked}:{} )},confirmed:true}),failed=r.results.filter(x=>!x.changed);await onSaved();
    if(failed.length){$('taskEditMessage').textContent=`已修改 ${r.changed} 个；`+failed.map(x=>x.message).join('；');editing=editing.filter(x=>failed.some(f=>f.kind===x.kind&&f.id===x.id));}
    else{$('editTaskDialog').close();notify('已修改 '+r.changed+' 个任务的卖出设置');}
   }catch(e){$('taskEditMessage').textContent=e.message;}finally{editBusy=false;$('saveTaskEdit').disabled=false;}
@@ -173,11 +178,11 @@ export function createTaskDialogs({api,notify,onSaved,document:doc=document}){
  $('confirmAddTask').addEventListener('click',async()=>{
   if(adding||loading)return;const p=selected(),accounts=[...$('taskAddWallets').querySelectorAll('input:checked:not(:disabled)')].map(e=>Number(e.value));if(!p||!accounts.length){$('taskAddMessage').textContent='请选择至少一个可用钱包';return;}
   adding=true;$('confirmAddTask').disabled=true;$('taskAddMessage').textContent='正在重新核验并添加任务…';
-  try{const r=await api('tasks/add',{requestId,candidateId:p.id,accounts,action:$('taskAction').value,percent:$('taskAddPercent').value,confirmed:true}),failed=r.results.filter(x=>!x.created&&!x.duplicate);await onSaved();
+  try{const r=await api('tasks/add',{requestId,candidateId:p.id,accounts,...slippageSetting('taskAddSlippage'),action:$('taskAction').value,percent:$('taskAddPercent').value,...(preapprovalSupported?{preApprove:$('taskAction').value!=='claim'&&$('taskAddPreApprove').checked}:{}),confirmed:true}),failed=r.results.filter(x=>!x.created&&!x.duplicate);await onSaved();
    if(failed.length)$('taskAddMessage').textContent=`已添加 ${r.created} 个；`+failed.map(x=>x.account+' 号：'+x.message).join('；');
    else{$('addTaskDialog').close();notify(r.created?'已添加 '+r.created+' 个任务，开始监测开盘':'任务已经添加，没有重复创建');}
   }catch(e){$('taskAddMessage').textContent=e.message;}finally{adding=false;$('confirmAddTask').disabled=false;}
  });
  for(const [button,dialog]of [['closeTaskEdit','editTaskDialog'],['cancelTaskEdit','editTaskDialog'],['closeAddTask','addTaskDialog'],['cancelAddTask','addTaskDialog']])$(button).addEventListener('click',()=>$(dialog).close());
- return {add,edit};
+ return {add,edit,setPreapprovalSupported(value){preapprovalSupported=value;for(const id of ['taskEditPreApprove','taskAddPreApprove'])if($(id))$(id).disabled=!value;}};
 }

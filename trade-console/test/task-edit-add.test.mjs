@@ -69,3 +69,15 @@ test('late tasks count unique tokens, rollback failed disk writes, and stop when
 test('concurrent different add requests cannot duplicate the same wallet and project',async t=>{
  const h=harness(t);const results=await Promise.all([h.add.add(h.input),h.add.add({...h.input,requestId:'second-request-id'})]);assert.equal(results.reduce((n,r)=>n+r.created,0),2);assert.equal(h.corla.jobs.size,2);assert.equal(h.s.execs,0);
 });
+test('sell slippage up to 99% is explicit, stored in new tasks and preserved when omitted from edits',async t=>{
+ const h=harness(t),r=await h.add.add({...h.input,slippageBps:9900}),j=h.corla.jobs.get(r.results[0].id);assert.equal(j.policy.sell.slippageBps,9900);assert.match(j.authorization,/99%/);
+ editCorla(h.corla,j.id,{percent:'100'});assert.equal(j.policy.sell.slippageBps,9900);editCorla(h.corla,j.id,{percent:'100',slippageBps:9000});assert.equal(j.policy.sell.slippageBps,9000);
+ for(const bad of [-1,9901,10000,'9000',NaN]){assert.throws(()=>h.add.add({...h.input,slippageBps:bad}));assert.throws(()=>editCorla(h.corla,j.id,{percent:'100',slippageBps:bad}));}assert.equal(h.s.execs,0);
+});
+test('editing pending-task slippage invalidates an old unsigned preview without changing committed peers',async t=>{
+ const h=harness(t),c=await h.opening.check({asset:token,accounts:[w.account,w2.account],percent:'50'}),j=h.opening.arm(c.id,{confirmed:true});h.s.open=true;
+ Object.assign(j.rows[1],{status:'TRACKING',orderId:'peer',commitStartedAt:1,submittedSettings:{...j.config},submittedPercent:'50'});
+ let release;const prepare=h.engine.prepare;h.engine.prepare=async(...args)=>{await new Promise(r=>release=r);return prepare(...args);};
+ const tick=h.opening.tick(j.id);await new Promise(r=>setImmediate(r));editOpening(h.opening,j.id,{percent:'50',slippageBps:9900});release();await tick;assert.equal(h.s.execs,0);assert.equal(j.rows[0].status,'WAITING');assert.equal(j.rows[1].submittedSettings.slippageBps,5000);
+ h.engine.prepare=prepare;await h.opening.tick(j.id);assert.equal([...h.prepared.values()].at(-1).intent.slippageBps,9900);assert.equal(h.s.execs,1);
+});

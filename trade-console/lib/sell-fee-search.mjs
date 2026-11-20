@@ -12,6 +12,7 @@ export const searchableSellPreviewError=e=>e?.code==='SELL_OUTPUT_BELOW_MIN'||e?
 // transaction. An unresolved/attempted sale forbids any alternate construction.
 export async function findLowFeeSell(order,{rpc,bridge,scan,preparation,preview,planFn=openingPlan,minimumOutput}={}){
  const prior=order.plan,intent=order.intent;
+ if(prior?.recovery?.samePool)return null; // A bounded same-pool retry cannot turn into a different venue.
  if(['PENDING','SUBMITTING','SUBMISSION_UNKNOWN','RECEIPT_REVIEW','CONFIRMED','CONFIRMED_REVIEW','FAILED'].includes(order.status)||intent?.side!=='sell'||!prior?.wallet||!prior.inputToken||!prior.outputToken||!prior.amountIn||!prior.holdingBefore||
   order.orderId||order.txHash||order.steps?.some(e=>e.status!=='CONFIRMED'||e.step?.kind!=='approve'))return null;
  const search=order.feeRouteSearch??={attempts:0,excluded:[],checks:[],status:'searching'};

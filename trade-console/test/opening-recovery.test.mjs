@@ -82,3 +82,68 @@ test('stop during recovery quote prevents fallback submission; missing/changed h
  const h=harness(t);await h.m.tick(h.j.id);let release;h.engine.prepare=async()=>{await new Promise(r=>release=r);return {status:'PREPARED',id:'never',review:[]};};const pending=h.m.tick(h.j.id);await new Promise(r=>setImmediate(r));h.m.stop(h.j.id);release();await pending;assert.equal(h.execs(),1);
  const b=harness(t);await b.m.tick(b.j.id);b.engine.prepare=async()=>({status:'BLOCKED',steps:[],error:{code:'OPENING_RECOVERY_HOLDINGS_CHANGED'}});await b.m.tick(b.j.id);assert.equal(b.j.status,'COMPLETED');await b.m.tick(b.j.id);assert.equal(b.execs(),1);
 });
+test('new task retries only a proven failed original on the same pool, with a finite three-retry budget',async t=>{
+ const h=harness(t);h.j.recoveryVersion=2;
+ for(let n=0;n<4;n++)await h.m.tick(h.j.id);
+ assert.equal(h.execs(),4);assert.equal(h.j.rows[0].recoveryAttempts,3);assert.equal(h.j.rows[0].previousOrders.length,3);assert.equal(h.j.rows[0].status,'FAILED');
+ for(let n=1;n<4;n++)assert.deepEqual(h.plans[n].context.openingRecovery,{sourceId:h.plans[n-1].id,samePool:true});
+ for(let n=0;n<5;n++)await h.m.tick(h.j.id);assert.equal(h.execs(),4);
+});
+test('new task never retries an ambiguous or successful sale, even with unused retries',t=>{
+ for(const status of ['SUBMISSION_UNKNOWN','PENDING','SUBMITTING','CONFIRMED','CONFIRMED_REVIEW']){const h=harness(t);h.j.recoveryVersion=2;const o=original();o.status=status;h.m.autoResult(h.j,h.j.rows[0],o);assert.equal(h.j.rows[0].recoveryAttempts,undefined);assert.equal(h.execs(),0);}
+});
+test('same-pool recovery cannot substitute another liquid venue or change an absolute output floor',async()=>{
+ const h=reads(),o=original();o.plan.opening={...pool,token0:token,token1:WBNB,reserve0:'1000000',reserve1:'200000',block:100};o.steps[1].plan=o.plan;
+ const rpc={call:async tx=>{if(tx.to.toLowerCase()===token.toLowerCase()){const f=ERC20.parseTransaction(tx);return ERC20.encodeFunctionResult(f.name,[1000n]);}const f=V2_ROUTER_ABI.parseTransaction(tx);return V2_ROUTER_ABI.encodeFunctionResult(f.name,[[500n,99n]]);}};
+ const opts={...h.options,samePool:true,scan:async()=>({pools:[o.plan.opening]}),preparation:{...h.options.preparation,venue:async()=>({assets:[]})}};
+ const p=await openingRecoveryPlan(rpc,h.bridge,intent,o,opts);assert.equal(p.kind,'contract');assert.equal(p.opening.pool,pool.pool);assert.equal(p.recovery.samePool,true);assert.equal(h.commands.length,0);
+ await assert.rejects(openingRecoveryPlan(rpc,h.bridge,intent,o,{...opts,scan:async()=>({pools:[{...o.plan.opening,pool:'0x'+'3'.repeat(40)}]})}),/等待/);assert.equal(h.commands.length,0);
+ o.plan.authorizationMinOutput='60';const fixed=await openingRecoveryPlan(rpc,h.bridge,intent,o,opts);assert.equal(fixed.minOutput,'60');assert.equal(fixed.authorizationMinOutput,'60');
+});
+test('pause/restart during version-two recovery retains the exact original and old per-wallet slippage',async t=>{
+ const h=harness(t);h.j.recoveryVersion=2;await h.m.tick(h.j.id);const row=h.j.rows[0];assert.equal(row.submittedSettings.slippageBps,5000);
+ h.j.config.slippageBps=9900;h.m.persist();const restored=new OpeningSell(h.options);t.after(()=>restored.close());const j=restored.jobs.get(h.j.id);assert.equal(j.status,'PAUSED');restored.resume(j.id);await restored.tick(j.id);
+ assert.equal(h.execs(),2);assert.equal(j.rows[0].submittedSettings.slippageBps,5000);assert.equal(h.plans[1].context.openingRecovery.samePool,true);
+});
+test('background original tracker and task poller cannot consume retries twice or close an active recovery',async t=>{
+ const h=harness(t);h.j.recoveryVersion=2;const r=h.j.rows[0],o=original('tracker-original');Object.assign(r,{status:'TRACKING',orderId:o.id,commitStartedAt:1});h.orders.set(o.id,o);
+ h.m.reconcileOrder(o);assert.equal(r.status,'WAITING');assert.equal(r.recoveryAttempts,1);assert.equal(h.j.status,'ARMED');
+ h.m.autoResult(h.j,r,o);h.m.reconcileOrder(o);assert.equal(r.recoveryAttempts,1);assert.equal(r.previousOrders.length,1);assert.equal(r.status,'WAITING');
+ r.orderId='new-attempt';r.commitStartedAt=2;r.status='TRACKING';h.m.autoResult(h.j,r,o);assert.equal(r.status,'TRACKING');assert.equal(r.orderId,'new-attempt');
+});
+
+test('same-pool recovery reads holding and identity once, still rejects changed holdings or identity',async()=>{
+ const h=reads(),o=original(),counts={balance:0,token:0};let balance=1000n,fingerprint='fixture';
+ const rpc={call:async tx=>{if(tx.to.toLowerCase()===token.toLowerCase()){const f=ERC20.parseTransaction(tx);if(f.name==='balanceOf')counts.balance++;return ERC20.encodeFunctionResult(f.name,[f.name==='balanceOf'?balance:1000n]);}const f=V2_ROUTER_ABI.parseTransaction(tx);return V2_ROUTER_ABI.encodeFunctionResult(f.name,[[f.args[0],99n]]);}};
+ const opts={samePool:true,scan:async()=>({pools:[pool]}),preparation:{token:async()=>{counts.token++;return {decimals:3,identity:{fingerprint}};},venue:async()=>({assets:[]})}};
+ const p=await openingRecoveryPlan(rpc,h.bridge,intent,o,opts);assert.equal(p.amountIn,'500');assert.deepEqual(counts,{balance:1,token:1});assert.equal(h.commands.length,0);
+ balance=900n;await assert.rejects(openingRecoveryPlan(rpc,h.bridge,intent,o,opts),e=>e.code==='OPENING_RECOVERY_HOLDINGS_CHANGED');
+ balance=1000n;fingerprint='changed';await assert.rejects(openingRecoveryPlan(rpc,h.bridge,intent,o,opts),e=>e.code==='OPENING_RECOVERY_IDENTITY_CHANGED');assert.equal(h.commands.length,0);
+});
+
+test('scheduled receipt polling keeps ticking for peers while one original read hangs',async t=>{
+ const h=harness(t),gate={};gate.promise=new Promise(r=>gate.resolve=r);h.m.autoSchedule=true;h.m.now=Date.now;h.j.expiresAt=Date.now()+60000;h.j.status='TRACKING';let peerReads=0,slowReads=0;
+ h.j.rows=[{account:1,status:'TRACKING',orderId:'slow',commitStartedAt:1},{account:2,status:'TRACKING',orderId:'peer',commitStartedAt:1}];
+ h.engine.follow=async id=>{if(id==='slow'){slowReads++;await gate.promise;return {id,status:'CONFIRMED'};}peerReads++;return {id,status:peerReads>1?'CONFIRMED':'PENDING'};};
+ h.m.scheduleFollow(h.j);
+ try{const until=Date.now()+3500;while(h.j.rows[1].status!=='CONFIRMED'&&Date.now()<until)await new Promise(r=>setTimeout(r,25));assert.equal(h.j.rows[1].status,'CONFIRMED');assert.equal(slowReads,1);assert.equal(peerReads,2);}
+ finally{h.m.close();gate.resolve();while(h.m.followBusy.size)await new Promise(r=>setTimeout(r,5));}
+ assert.equal(h.m.followRows.size,0);
+});
+
+test('failed recovery journal never schedules another sell from fire or background reconciliation',async t=>{
+ for(const via of ['fire','background','follow']){
+  const h=harness(t);h.m.autoSchedule=true;h.j.recoveryVersion=2;const persist=h.m.persist.bind(h.m);
+  h.m.persist=()=>{if(h.j.rows.some(r=>r.recoveryAttempts))throw Object.assign(Error('synthetic disk failure'),{code:'EIO'});return persist();};
+  if(via==='fire')await assert.rejects(h.m.fire(h.j,h.j.rows[0]),e=>e.code==='EIO');
+  else {const o=original('tracked');Object.assign(h.j.rows[0],{orderId:o.id,status:'TRACKING',commitStartedAt:1});if(via==='background')assert.throws(()=>h.m.reconcileOrder(o),e=>e.code==='EIO');else {h.orders.set(o.id,o);await assert.rejects(h.m.followPending(h.j),e=>e.code==='EIO');assert.equal(h.m.followBusy.size,0);assert.equal(h.m.followRows.size,0);}}
+  await new Promise(r=>setTimeout(r,65));assert.equal(h.m.retryTimers.size,0);assert.equal(h.execs(),via==='fire'?1:0);assert.equal(h.j.rows[0].status,'REVIEW');assert.equal(h.j.rows[0].error.code,'TASK_STATE_WRITE_FAILED');assert.equal(h.m.rowBusy.size,0);
+ }
+});
+
+
+test('pause and close during coalesced receipt persistence retain current paused state',async t=>{
+ const h=harness(t),r=h.j.rows[0];h.j.status='TRACKING';Object.assign(r,{status:'TRACKING',orderId:'completed',commitStartedAt:1});h.orders.set('completed',{id:'completed',status:'CONFIRMED'});
+ const pending=h.m.followPending(h.j);await new Promise(r=>setImmediate(r));assert.equal(r.status,'CONFIRMED');h.m.pause(h.j.id);h.m.close();await pending;
+ const saved=JSON.parse(fs.readFileSync(h.m.file,'utf8'))[0];assert.equal(saved.status,'PAUSED');assert.equal(saved.rows[0].status,'CONFIRMED');assert.equal(h.m.followWrite,null);assert.equal(h.m.followBusy.size,0);assert.equal(h.execs(),0);
+});

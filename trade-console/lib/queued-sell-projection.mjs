@@ -10,7 +10,7 @@ import {V2_ROUTER_ABI} from './opening-dex.mjs';
 export function projectQueuedSale(plan,preceding=[]){
  try{
   const pool=plan.opening,bps=plan.slippage?.bps;
-  if(pool?.kind!=='v2'||pool.legs?.length>1||pool.path?.length>2||!Number.isInteger(bps)||bps<=0||bps>5000)return plan;
+  if(pool?.kind!=='v2'||pool.legs?.length>1||pool.path?.length>2||!Number.isInteger(bps)||bps<=0||bps>9900)return plan;
   const prior=preceding.filter(p=>p&&same(p.token,plan.token)&&same(p.opening?.pool,pool.pool)&&p.wallet!==plan.wallet);
   if(!prior.length||prior.length>8||prior.some(p=>p.opening?.kind!=='v2'||p.opening?.legs?.length>1))return plan;
   const fee=plan.poolFees?.poolFeePpm;

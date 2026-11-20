@@ -55,7 +55,7 @@ test('near-simultaneous wallet handoffs share one verified positive watch snapsh
  const entry=f.detector.watchRecent.values().next().value,at=entry.startedAt;assert.equal(entry.startedAt,at);
  entry.startedAt-=251;assert.notEqual(await f.detector.scan(token,{...opts,reuseMs:60000}),opened);assert.equal(scans,3,'caller cannot extend the 250 ms cap');
  await f.detector.scan(token,{...opts,currency:'BNB'});assert.equal(scans,4);await f.detector.scan(token);assert.equal(scans,5,'manual fresh scans are unaffected');
- const latest=f.detector.watchRecent.get(token.toLowerCase()+':AUTO:watch');latest.snapshot={...latest.snapshot};await f.detector.scan(token,opts);assert.equal(scans,6,'unverified snapshot cannot be reused');
+ const latest=f.detector.watchRecent.get(token.toLowerCase()+':AUTO:watch:primary');latest.snapshot={...latest.snapshot};await f.detector.scan(token,opts);assert.equal(scans,6,'unverified snapshot cannot be reused');
 });
 test('failed watch read invalidates completed cache and a slow scan cannot renew its start age',async()=>{
  const f=fixture();f.open();const opts={watch:true,reuseMs:250};await f.detector.scan(token,opts);
@@ -143,4 +143,21 @@ test('post-approval quote is overlapped, single-use, and never reused after repr
   e.primeOpeningRefresh(o,{step:plan.steps[0]},plan);await e.openingRefreshes.get(o.id).promise;const prior=reads;await e.freshOpeningSale(o,{repriced:true});assert.ok(reads>prior);
   e.primeOpeningRefresh(o,{step:plan.steps[0]},plan);await e.openingRefreshes.get(o.id).promise;balance=999n;o.plan={...plan,holdingBefore:'999',amountIn:'499'};assert.equal((await e.freshOpeningSale(o)).amountIn,'499');
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('real primary opening plan starts preview during audit, but cannot complete until audit finishes',async()=>{
+ const f=fixture();f.open();
+ f.detector.quoteDiscovery={primary:async()=>{},known:()=>[],discover:async()=>[],knownRoutes:()=>[{...d,pool:pair,quote:WBNB,declaredByToken:true}]};
+ const snapshot=await f.detector.scan(token,{watch:true}),auditGate=deferred(),previewStarted=deferred(),previewGate=deferred();let calls=0,done=false;
+ const base=f.rpc.call,amount=50000n,output=amount*9975n*2000000n/(1000000n*10000n+amount*9975n);
+ f.rpc.call=async tx=>{if(same(tx.to,token)){const fn=ERC20.parseTransaction(tx);return ERC20.encodeFunctionResult(fn.name,[fn.name==='balanceOf'?100000n:1000000n]);}if(same(tx.to,d.router))return V2_ROUTER_ABI.encodeFunctionResult('getAmountsOut',[[amount,output]]);return base(tx);};
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'primary-preview-audit-')),e=new Engine({rpc:f.rpc,bridge:{ready:async()=>{},call:async()=>assert.fail('no real wallet')},data:dir,live:false});
+ e.openingPreparation={token:async()=>({identity:{token,fingerprint:'fixed'},decimals:18}),venue:async()=>({assets:[]})};e.auditFn=async()=>{await auditGate.promise;return {available:true,taxes:{sellTax:'0'}};};e.checkInstantGuards=async()=>{};
+ e.preview=async plan=>{calls++;previewStarted.resolve();await previewGate.promise;const raw={requestId:'synthetic-primary',simulationResult:{simulationCode:'000000000',balanceChanges:[{owner:plan.wallet,contractAddress:plan.outputToken,change:String(output)}]}};return {raw,at:Date.now(),review:verifyPreview(raw,plan,plan.steps[0])};};
+ try{
+  const pending=e.prepare({account:w.account,asset:token,side:'sell',percent:'50',slippageBps:5000,currency:'AUTO',openingOnly:true},'audit-overlap',{openingSnapshot:snapshot,instantExecution:true}).then(o=>{done=true;return o;});
+  await Promise.race([previewStarted.promise,new Promise((_,reject)=>setTimeout(()=>reject(Error('preview waited behind audit')),700))]);
+  assert.equal(done,false);previewGate.resolve();await tick();assert.equal(done,false,'audit must finish before PREPARED');
+  auditGate.resolve();const o=await pending;assert.equal(o.status,'PREPARED',JSON.stringify(o.error));assert.equal(o.timing.primaryPreviewOverlapped,true);assert.equal(calls,1,'no second official preview');
+  assert.equal((await e.execute(o.id,{})).status,'SIMULATED');assert.equal(e.get(o.id).executeCalls,0);
+ }finally{auditGate.resolve();previewGate.resolve();fs.rmSync(dir,{recursive:true,force:true});}
 });

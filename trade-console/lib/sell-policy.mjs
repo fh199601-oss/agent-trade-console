@@ -28,7 +28,7 @@ export function quotedSlippage(intent,quote){
 export function directSlippage(intent,result){
  if(result.error){
   const e=result.error;
-  if(intent.slippageMode==='auto'&&e.responseReceived===true&&String(e.code)==='100'&&/^No liquidity available(?:, please try again later\.)?$/i.test(e.message||'')&&Number.isInteger(intent.slippageBps)&&intent.slippageBps>=0&&intent.slippageBps<=5000)
+  if(intent.slippageMode==='auto'&&e.responseReceived===true&&String(e.code)==='100'&&/^No liquidity available(?:, please try again later\.)?$/i.test(e.message||'')&&Number.isInteger(intent.slippageBps)&&intent.slippageBps>=0&&intent.slippageBps<=9900)
    return {mode:'auto',bps:Math.min(100,intent.slippageBps),capBps:intent.slippageBps,source:'verified-direct-fallback'};
   throw e;
  }

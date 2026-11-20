@@ -122,3 +122,19 @@ body[data-verification=isolated]:before{content:'隔离验证 · 所有钱包与
 .fee-review{padding:14px 18px;margin:16px 0;border:1px solid var(--line,#384532);border-radius:12px}.fee-review-required{border-color:#b67c39;background:#382d1d;color:#f4cc8c}.fee-review p{margin:8px 0}.fee-review .mono{overflow-wrap:anywhere;font-size:12px}
 
 #candidates[data-platform="stars"]{max-height:320px;overflow-y:auto;overscroll-behavior:auto}
+
+.fast-sale-panel{margin-top:24px}.fast-layout{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:36px}.fast-settings,.fast-trigger{display:grid;gap:14px;align-content:start;min-width:0}.fast-trigger{border-left:1px solid var(--border,#34412f);padding-left:36px}.fast-layout h3{margin:8px 0}.fast-layout input,.fast-layout select{width:100%;min-width:0}.fast-policy{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:10px}.fast-policy article{padding:16px;border-radius:12px;background:rgba(175,232,91,.06);display:flex;flex-direction:column;gap:8px}.fast-policy span,.fast-policy small{font-size:13px;color:var(--muted)}.fast-policy strong{font-size:17px}.fast-actions,.fast-task-title{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-top:22px}.fast-actions{padding-top:20px;border-top:1px solid var(--border,#34412f)}.fast-actions .primary{flex-shrink:0}.fast-jobs{max-height:360px;overflow:auto;overscroll-behavior:auto}.fast-job{border-top:1px solid var(--border,#34412f);padding:16px 0}.fast-job summary{cursor:pointer}.fast-job p{font-size:14px;color:var(--muted)}
+@media(max-width:900px){.fast-layout{grid-template-columns:1fr;gap:20px}.fast-trigger{padding:20px 0 0;border-left:0;border-top:1px solid var(--border,#34412f)}.fast-actions{align-items:stretch;flex-direction:column}.fast-policy{gap:8px}.fast-policy article{padding:12px}.fast-policy strong{font-size:14px}}
+
+.fast-policy label,.fast-key[open]{display:grid;gap:.5rem}.fast-policy select{width:100%;min-width:0}.fast-start{width:100%;min-height:48px;margin:14px 0}.fast-key summary{cursor:pointer}.fast-key input{max-width:100%}#fastResults p,#fastHoldings p{margin:5px 0}
+.trigger-choices{display:flex;gap:8px;flex-wrap:wrap}.trigger-choices button{flex:1 1 auto}
+
+.fast-amount{display:flex;align-items:center;gap:.45rem}.fast-amount>span{white-space:nowrap}
+.fast-wallet-list{--row-height:2.5rem;max-height:calc(5 * var(--row-height));overflow-y:auto;overscroll-behavior-y:auto}
+.fast-wallet-list:empty{display:none}.fast-wallet-list>label,.fast-wallet-list>.fast-result{box-sizing:border-box;display:flex;align-items:center;min-height:var(--row-height);margin:0;gap:.65rem;border-bottom:1px solid var(--border,#34412f);font-size:.875rem}
+.fast-wallet-list>label{cursor:pointer}.fast-wallet-list input[type=checkbox]{width:1.1rem;height:1.1rem;flex:none;accent-color:var(--lime,#b5ef71)}
+.fast-job-line{display:flex;align-items:start;gap:.65rem;border-top:1px solid var(--border,#34412f);padding:.55rem 0}.fast-job-line details{flex:1;min-width:0;padding:.35rem 0;border:0}.fast-job-actions{display:flex;flex-wrap:wrap;gap:.4rem}.fast-job-actions button{padding:.35rem .65rem}.fast-delete{color:var(--red,#ffac93)}
+#fastTrigger{flex:1;min-width:6rem}.fast-trigger .searchrow button{white-space:nowrap}
+
+.fast-deployment:not([hidden]){display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;padding:1rem 0;border-bottom:1px solid var(--border,#34412f)}
+.fast-deployment .helper{flex-basis:100%;overflow-wrap:anywhere}

@@ -15,7 +15,7 @@ function fixture(payment='BNB'){
  const context={n,cost,out,nativeRequired:required,payment,now,maxUsdt:51n*10n**18n,maxBnb:required*102n/100n,slippageBps:100};return {q,context};
 }
 test('BAGENT routing only accepts the exact website and known contracts',()=>{
- for(const s of ['https://bagent.club/','https://bagent.club/?ref=xzz.ai',BAGENT.config.mint,BAGENT.config.token])assert.equal(bagentInput(s),true);
+ for(const s of ['https://bagent.club/','https://bagent.club/?ref=example.ai',BAGENT.config.mint,BAGENT.config.token])assert.equal(bagentInput(s),true);
  for(const s of ['https://bagent.club.evil.com','https://user@bagent.club','http://bagent.club','https://bagent.club:444','https://other.club'])assert.equal(bagentInput(s),false);
 });
 test('BAGENT sales preserve the token address instead of selecting its Mint contract',async()=>{

@@ -139,3 +139,17 @@ test('engine re-quotes within confirmed cap, freezes full target, resumes origin
   const calls=quantities.length;await engine.execute(prepared.id,{authorization:'duplicate synthetic'});assert.equal(quantities.length,calls);
  }
 });
+
+test('balance-based max clamps native/USDT quotas while explicit numeric requests retain their cap',async()=>{
+ for(const native of [true,false]){
+  const f=fixture();f.row.nativePayment=native;f.row.quote=native?f.root.wrappedNative:USDT;
+  f.s.balance=3500000000000000n;f.s.nativeBalance=native?f.s.balance:1000000000000000n;
+  const p=await binanciansPlan(f.rpc,{...f.intent,maxBnb:'0.0034',maxUsdt:'0.0035'},w,f.resolved,{client:f.client,wallets:[w,other],balanceFill:true});
+  assert.equal(p.quantity,3);assert.equal(p.fill.targetQuantity,3);assert.equal(p.steps.at(-1).value,native?'3000000000000000':'0');
+  await assert.rejects(binanciansPlan(f.rpc,{...f.intent,quantity:4,maxBnb:'0.0034',maxUsdt:'0.0035'},w,f.resolved,{client:f.client,balanceFill:true}),{code:'BUDGET_LIMIT'});
+ }
+});
+test('balance-based max reserves Gas even when native balance exactly equals all mint prices',async()=>{
+ const f=fixture();f.s.balance=10000000000000000n;
+ const p=await binanciansPlan(f.rpc,{...f.intent,maxBnb:'0.01'},w,f.resolved,{client:f.client,balanceFill:true});assert.equal(p.quantity,9);assert.ok(BigInt(p.amountIn)+BigInt(p.gasReserve.raw)<=f.s.balance);
+});

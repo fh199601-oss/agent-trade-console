@@ -41,9 +41,12 @@ export async function discoverBagent(rpc,input){
 }
 export async function inspectBagent(rpc,resolved,wallets){
  await verifyBagent(rpc);const quotas=await Promise.all(wallets.map(async w=>{try{const s=await bagentState(rpc,w);return {...w,paidRemaining:String(s.remaining),freeRemaining:'0',used:String(s.used),invites:String(s.invites),extraQuota:String(s.extra),referrer:s.referrer,unitPriceUsdt:'10',sourceVerified:false};}catch(e){return {...w,error:e.message,errorCode:e.code};}}));
- const ref=await getJson(BAGENT.origin+'/api/referrals/xzz.ai');
- if(!same(ref.address,wallet(1).address))throw fail('官网邀请链接与 1 号钱包不符');
- return {...resolved,quotas,referral:{detected:true,account:1,address:ref.address,appliesTo:[2,3,4],status:'ready',bindingVerified:true,url:BAGENT.origin+'/?ref=xzz.ai',valueKind:'agentId',note:'需单独绑定；满5个有效付费邀请增加1份付费额度'},at:Date.now()};
+ let referral={detected:true,status:'unavailable',url:null,note:'邀请信息暂不可用；Mint 仍可单独检查'};
+ try{
+  const inviter=wallet(1),[id,valid]=await read(rpc,C.mint,M,'agentOf',[inviter.address]);
+  if(valid&&id>0n)referral={detected:true,account:1,address:inviter.address,appliesTo:wallets.filter(w=>w.account!==1).map(w=>w.account),status:'ready',bindingVerified:true,url:null,valueKind:'agentId',note:'已核对本机 1 号钱包的链上邀请身份'};
+ }catch{}
+ return {...resolved,quotas,referral,at:Date.now()};
 }
 export function validateBagentQuote(q,{n,cost,out,nativeRequired=0n,payment,now,maxUsdt,maxBnb,slippageBps}){
  const native=payment==='BNB',method=native?'mintWithBNB':'mint';
@@ -70,29 +73,36 @@ export function validateBagentQuote(q,{n,cost,out,nativeRequired=0n,payment,now,
  l.maxCost=cost;l.minTokens=out;
  return {value,usdDebit,data:M.encodeFunctionData(method,[n,l]),limits:l};
 }
-export async function bagentPlan(rpc,intent,w,resolved,{officialPreview=false}={}){
+export async function bagentPlan(rpc,intent,w,resolved,{officialPreview=false,balanceFill=false}={}){
  if(intent.routeId&&intent.routeId!=='bagent:mint')throw fail('BAGENT Mint 入口选择无效','MINT_ROUTE_INVALID');
  if(intent.scope==='free')throw fail('此入口是付费 Mint，无免费额度','NO_FREE_MINT');
  if(intent.slippageBps<0||intent.slippageBps>100)throw fail('BAGENT 当前适配最高允许1%滑点');
  const [proof,s]=await Promise.all([verifyBagent(rpc),bagentState(rpc,w)]);
  if(!s.remaining)throw fail('本钱包当前可用额度已打满','NO_QUOTA');
- const n=intent.quantity==='max'?min(s.remaining,500n):BigInt(intent.quantity);
+ let n=intent.quantity==='max'?min(s.remaining,500n):BigInt(intent.quantity);
+ const auto=balanceFill&&intent.quantity==='max',payment=intent.currency==='USDT'?'USDT':'BNB';
+ if(auto){const cap=parseUnits(payment==='USDT'?intent.maxUsdt||'0':intent.maxBnb||'0',18);let lo=0n,hi=n;
+  while(lo<hi){const mid=(lo+hi+1n)/2n,cost=mid*10n**19n,raw=payment==='USDT'?cost:((await read(rpc,C.mint,M,'bnbRequired',[cost]))[0]*(10000n+BigInt(intent.slippageBps))+9999n)/10000n;if(raw<=cap)lo=mid;else hi=mid-1n;}n=lo;
+  if(!n)throw fail(payment+' 余额不足以认购 1 份（已预留 Gas）','INSUFFICIENT_FUNDS');
+ }
  if(n>s.remaining||n<=0n)throw fail('本次份数超过当前钱包额度','NO_QUOTA');
  if(s.total+n>=s.openAt)throw fail('本批可能触发开池，超出当前已核验阶段','BAGENT_PHASE_CHANGED');
  const [[cost,out],[chainCost]]=await Promise.all([read(rpc,C.mint,M,'quoteMint',[n]),read(rpc,C.mint,M,'costOf',[n])]);
  if(cost!==n*10n**19n||chainCost!==cost||out!==n*s.units)throw fail('固定阶段价格或到账数量改变');
- const maxUsdt=parseUnits(intent.maxUsdt||'0',18),maxBnb=parseUnits(intent.maxBnb||'0',18),payment=intent.currency==='USDT'?'USDT':'BNB';
+ let maxUsdt=balanceFill&&payment==='BNB'?cost:parseUnits(intent.maxUsdt||'0',18),maxBnb=parseUnits(intent.maxBnb||'0',18);
  if(cost>maxUsdt)throw fail('全部当前额度的费用超过本次预算','BUDGET_LIMIT');
  const q=await getJson(BAGENT.origin+'/api/mint/quote',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({address:w.address,shares:Number(n),paymentToken:payment,slippageBps:intent.slippageBps})});
  const [header,[nativeRequired]]=await Promise.all([rpc.send('eth_getBlockByNumber',['latest',false]),payment==='BNB'?read(rpc,C.mint,M,'bnbRequired',[cost]):[0n]]);
+ if(balanceFill&&payment==='BNB'&&nativeRequired>0n)maxUsdt=(cost*(10000n+BigInt(intent.slippageBps))+9999n)/10000n+cost/nativeRequired+1n;
  const checked=validateBagentQuote(q,{n,cost,out,nativeRequired,payment,now:BigInt(header.timestamp),maxUsdt,maxBnb,slippageBps:intent.slippageBps});
- const steps=[],inviter=wallet(1),useReferral=intent.referral==='account1'&&[2,3,4].includes(w.account);
+ const steps=[],useReferral=intent.referral==='account1'&&w.account!==1;
  let referral=null;
  if(useReferral){
-  const [[refId,valid],web]=await Promise.all([read(rpc,C.mint,M,'agentOf',[inviter.address]),getJson(BAGENT.origin+'/api/referrals/xzz.ai')]);
-  if(!valid||refId===s.id||!same(web.address,inviter.address)||String(refId)!==web.agentId)throw fail('1号邀请身份不匹配');
+  const inviter=wallet(1);
+  const [refId,valid]=await read(rpc,C.mint,M,'agentOf',[inviter.address]).catch(()=>{throw fail('邀请身份读取失败','REFERRAL_UNAVAILABLE');});
+  if(!valid||refId===0n||refId===s.id)throw fail('1号邀请身份不匹配');
   if(!same(s.referrer,ZeroAddress)&&(!same(s.referrer,inviter.address)||s.referrerId!==refId))throw fail('本钱包已经绑定其他邀请人，不能改绑');
-  referral={address:inviter.address,agentId:String(s.id),referrerId:String(refId),url:BAGENT.origin+'/?ref=xzz.ai'};
+  referral={address:inviter.address,agentId:String(s.id),referrerId:String(refId),url:null};
   if(same(s.referrer,ZeroAddress))steps.push({kind:'referral',to:C.mint,value:'0',data:M.encodeFunctionData('bindReferrer',[inviter.address]),binding:referral});
  }
  const nativeBalance=await rpc.getBalance(w.address);
@@ -102,14 +112,14 @@ export async function bagentPlan(rpc,intent,w,resolved,{officialPreview=false}={
   if(allowance<cost)steps.push({kind:'approve',to:USDT,value:'0',spender:C.mint,allowance:String(cost),data:ERC20.encodeFunctionData('approve',[C.mint,cost])});
  }
  const step={kind:'mint',to:C.mint,value:String(checked.value),data:checked.data};
- if(nativeBalance<checked.value+parseUnits('0.0005',18))throw fail('BNB余额不足支付本笔及Gas预留','GAS_BALANCE_LOW');
+ if(nativeBalance<checked.value+(balanceFill?0n:parseUnits('0.0005',18)))throw fail('BNB余额不足支付本笔及Gas预留','GAS_BALANCE_LOW');
  if(!steps.some(x=>x.kind==='approve'))await rpc.call({from:w.address,to:C.mint,data:step.data,value:checked.value});
  return {kind:'contract',route:'bagent:mint',token:C.token,wallet:w.address,inputToken:payment==='BNB'?BNB:USDT,outputToken:C.token,amountIn:String(payment==='BNB'?checked.value:cost),minOutput:String(out),quantity:Number(n),...proof,metaVerified:false,requireAssetCredit:true,expectedAsset:{token:C.token,kind:'Erc20',amount:String(out)},budgetCurrency:payment,quota:{remaining:String(s.remaining),used:String(s.used),invites:String(s.invites),extra:String(s.extra)},referral,bagent:{agentId:String(s.id),mintedBefore:String(s.used),cost:String(cost),maxUsdtDebit:String(checked.usdDebit),payment,deadline:String(checked.limits.deadline),sourceVerified:false},fill:{continue:false},review:['BAGENT Mint实现未公开验证源码；已固定当前代码与依赖，仍需官方模拟及实际到账核验。',...(payment==='BNB'?['BNB直接支付，1%报价余量会被合约收取且不退还；该余量计入本次预算。']:[])],steps:[...steps,step]};
 }
 export async function refreshBagentMint(rpc,plan,intent){
- const fresh=await bagentPlan(rpc,{...intent,quantity:plan.quantity},wallet(intent.account),plan.resolved);
+ const fresh=await bagentPlan(rpc,{...intent,quantity:plan.quantity},wallet(intent.account),plan.resolved,{balanceFill:!!plan.mintFunding?.full});
  if(fresh.quantity!==plan.quantity||fresh.identity.fingerprint!==plan.identity.fingerprint||fresh.minOutput!==plan.minOutput||fresh.bagent.mintedBefore!==plan.bagent.mintedBefore||fresh.bagent.payment!==plan.bagent.payment||fresh.steps.some(s=>s.kind!=='mint'))throw fail('BAGENT 后续步骤的额度、邀请、授权或资产状态发生变化');
- return {...fresh,project:plan.project,resolved:plan.resolved,steps:plan.steps.map(s=>s.kind==='mint'?fresh.steps.at(-1):s)};
+ return {...fresh,mintFunding:plan.mintFunding,referral:plan.referral?.fallback?{...fresh.referral,fallback:true}:fresh.referral,project:plan.project,resolved:plan.resolved,steps:plan.steps.map(s=>s.kind==='mint'?fresh.steps.at(-1):s)};
 }
 export async function verifyBagentBinding(rpc,step){
  const r=await read(rpc,C.mint,M,'referralOf',[BigInt(step.binding.agentId)]);

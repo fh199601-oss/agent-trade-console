@@ -31,3 +31,11 @@ test('mismatched original is still a hard review and cannot be mislabeled as a t
  engine.write({id:'bad-original',intent:{account:bound.account,side:'mint'},status:'PENDING',createdAt:Date.now(),timing:{},plan:f.plan,steps:[{index:0,step:f.step,status:'PENDING',txHash:f.hash,submittedAt:1}]});
  assert.equal((await engine.follow('bad-original')).status,'RECEIPT_REVIEW');assert.equal((await engine.reconcileAccount(bound.account)).ready,false);
 });
+test('receipt observer reports unchanged only for an empty successful poll; missing hash and mismatches require persistence',async t=>{
+ const f=fixture('claim'),data=fs.mkdtempSync(path.join(os.tmpdir(),'receipt-unchanged-'));t.after(()=>fs.rmSync(data,{recursive:true,force:true}));let receipt=null;
+ const engine=new Engine({data,bridge:{call:()=>assert.fail('cannot send')},rpc:{getTransactionReceipt:async()=>receipt,getTransaction:async()=>f.tx}});
+ const o={status:'PENDING',plan:f.plan,steps:[{index:0,step:f.step,status:'PENDING',txHash:f.hash}]},before=structuredClone(o);
+ assert.equal(await engine.observeContract(o,o.steps[0],0),false);assert.deepEqual(o,before);
+ receipt={...f.receipt,to:token};assert.notEqual(await engine.observeContract(o,o.steps[0],0),false);assert.equal(o.status,'RECEIPT_REVIEW');
+ const missing={...structuredClone(before),steps:[{index:0,step:f.step,status:'PENDING'}]};assert.notEqual(await engine.observeContract(missing,missing.steps[0],0),false);assert.equal(missing.status,'SUBMISSION_UNKNOWN');
+});

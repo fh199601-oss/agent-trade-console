@@ -2,8 +2,10 @@ import {percentOf,same,wallet} from './common.mjs';
 const terminal=new Set(['DONE','STOPPED','COMPLETED','CANCELLED','EXPIRED','DELETED']);
 export const editableSaleRow=r=>!r.commitStartedAt&&!r.recovery&&!r.submittedPercent&&['WAITING','PREPARING','PAUSED'].includes(r.status);
 export function taskSellSettings(input){
- if(!input||Object.keys(input).some(k=>!['percent','sellEnabled'].includes(k))||input.sellEnabled!==undefined&&typeof input.sellEnabled!=='boolean')throw Error('任务修改参数无效');
- const percent=String(input.percent??'50');percentOf(100000000n,percent);return {percent,sellEnabled:input.sellEnabled!==false};
+ if(!input||Object.keys(input).some(k=>!['percent','sellEnabled','preApprove','slippageBps'].includes(k))||input.sellEnabled!==undefined&&typeof input.sellEnabled!=='boolean')throw Error('任务修改参数无效');
+ if(input.preApprove!==undefined&&typeof input.preApprove!=='boolean')throw Error('提前授权选项无效');
+ if(input.slippageBps!==undefined&&(!Number.isInteger(input.slippageBps)||input.slippageBps<0||input.slippageBps>9900))throw Error('卖出滑点范围 0–99%');
+ const percent=String(input.percent??'50');percentOf(100000000n,percent);return {percent,sellEnabled:input.sellEnabled!==false,...(input.slippageBps===undefined?{}:{slippageBps:input.slippageBps}),...(input.preApprove===undefined?{}:{preApprove:input.preApprove})};
 }
 function rollback(j,old){for(const k of Object.keys(j))delete j[k];Object.assign(j,old);}
 export function editOpening(manager,id,settings,{linked=false,revision}={}){
@@ -13,8 +15,8 @@ export function editOpening(manager,id,settings,{linked=false,revision}={}){
  if(revision!==undefined&&revision!==(j.revision||0))throw Error('任务设置已变化，请刷新后重新修改');
  if(j.bindings.some(w=>!same(wallet(w.account).address,w.address)))throw Error('钱包绑定已变化');
  const pending=j.rows.filter(editableSaleRow);if(!pending.length)throw Error('该任务已进入提交或原单核对阶段，不能改写已提交的卖出');
- const old=structuredClone(j);j.config={...j.config,percent:s.percent};j.revision=(j.revision||0)+1;delete j.preflight;
- j.updatedAt=manager.now();j.authorization+='；用户修改尚未提交的钱包卖出比例为 '+s.percent+'% 当前持仓';j.message='卖出比例已改为 '+s.percent+'%；已提交钱包继续核对原单';
+ const old=structuredClone(j);j.config={...j.config,percent:s.percent,...(s.slippageBps===undefined?{}:{slippageBps:s.slippageBps}),...(s.preApprove===undefined?{}:{preApprove:s.preApprove})};j.revision=(j.revision||0)+1;delete j.preflight;
+ j.updatedAt=manager.now();if(s.slippageBps!==undefined)j.authorization+='；用户设置未提交卖出的固定滑点 '+s.slippageBps/100+'%';if(s.preApprove===true)j.authorization+='；用户启用开盘前主池限额授权，Gas 另计';j.authorization+='；用户修改尚未提交的钱包卖出比例为 '+s.percent+'% 当前持仓';j.message='卖出比例已改为 '+s.percent+'%；已提交钱包继续核对原单';
  try{manager.persist();}catch(e){rollback(j,old);throw e;}return j;
 }
 export function editCorla(manager,id,settings,{revision}={}){
@@ -29,7 +31,9 @@ export function editCorla(manager,id,settings,{revision}={}){
  // Synchronous policy transaction: no scheduler can interleave a new handoff.
  try{
   if(child)editOpening(manager.opening,child.id,s,{linked:true});
-  j.policy={...j.policy,sell:s.sellEnabled?{...(j.policy.sell||{slippageBps:5000,currency:'AUTO'}),percent:s.percent}:null};j.revision=(j.revision||0)+1;j.updatedAt=manager.now();
+  j.policy={...j.policy,sell:s.sellEnabled?{...(j.policy.sell||{slippageBps:5000,currency:'AUTO'}),percent:s.percent,...(s.slippageBps===undefined?{}:{slippageBps:s.slippageBps}),...(s.preApprove===undefined?{}:{preApprove:s.preApprove})}:null};j.revision=(j.revision||0)+1;j.updatedAt=manager.now();
+  if(s.slippageBps!==undefined)j.authorization+='；用户设置未提交卖出的固定滑点 '+s.slippageBps/100+'%';
+  if(s.preApprove===true)j.authorization+='；用户启用开盘前主池限额授权，Gas 另计';
   j.authorization+='；用户修改领取后操作：'+(s.sellEnabled?'按当前持仓卖出 '+s.percent+'%':'仅领取，不自动卖出');j.message=s.sellEnabled?'领取后卖出比例已改为 '+s.percent+'%':'已设置为仅自动领取全部';manager.persist();return j;
  }catch(e){rollback(j,old);if(child){rollback(child,oldChild);try{manager.opening.persist();}catch{child.status='PAUSED';j.status='PAUSED';}}throw e;}
 }

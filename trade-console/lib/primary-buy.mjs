@@ -16,7 +16,7 @@ export function reverseBuyPool(p,token){
 export async function primaryBuyPlan(rpc,intent,seed,{scan=(t,o)=>new OpeningPools(rpc).scan(t,o),converter=conversions(rpc),slippagePromise}={}){
  // Box an independently requested policy so a scan error cannot orphan it.
  const policy=Promise.resolve(slippagePromise||seed.slippage).then(value=>({value}),error=>({error}));
- const [snapshot,asset]=await Promise.all([scan(seed.token,{currency:intent.currency}),converter.prep?.token(seed.token)]);
+ const [snapshot,asset]=await Promise.all([scan(seed.token,{currency:intent.currency,primaryFirst:false}),converter.prep?.token(seed.token)]);
  const payment=native(seed.inputToken)?WBNB:seed.inputToken;
  const pools=snapshot.pools.filter(p=>p.liquid&&same(p.quote,payment)&&['v2','v3','infinity-cl'].includes(p.kind));
  if(!pools.length)throw Object.assign(Error(snapshot.routeIssue||'未找到付款币对应的可核验买入池；不会交给聚合器改走未知池子，未提交交易'),{code:'BUY_ROUTE_UNAVAILABLE'});

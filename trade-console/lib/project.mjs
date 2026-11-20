@@ -28,8 +28,9 @@ import {recognizeSourceSale,sourceSaleState} from './source-sale.mjs';
 import {recognizeProtectedSale,protectedSaleState} from './protected-sale.mjs';
 import {inspectCorla} from './corla.mjs';
 import {inspectBinancians} from './binancians.mjs';
-import {inspectStars} from './stars.mjs';
 import {inspectBagent} from './bagent.mjs';
+import {inspectStars} from './stars.mjs';
+import {inspectPap} from './pap.mjs';
 let defaultExperience;
 export async function inspectProject(rpc,bridge,asset,{experience=defaultExperience??=new ExperienceStore(),learn=false}={}){
  return profiled('inspect',async()=>{try{const result=await inspectImpl(rpc,bridge,asset,experience,learn);return {...result,diagnostics:snapshot()};}catch(e){e.diagnostics=snapshot();throw e;}});
@@ -39,6 +40,7 @@ async function inspectImpl(rpc,bridge,asset,experience,learn,resolvedOverride=nu
   if(resolved.platform==='corla')return resolved.address?inspectCorla(rpc,resolved,bindings()):resolved;
   if(resolved.platform==='binancians')return inspectBinancians(rpc,resolved,bindings());
   if(resolved.platform==='bagent')return inspectBagent(rpc,resolved,bindings());
+  if(resolved.platform==='pap')return inspectPap(rpc,resolved,bindings());
   if(resolved.platform==='stars')return inspectStars(rpc,resolved,bindings());
   resolvedOverride=resolved;
  }

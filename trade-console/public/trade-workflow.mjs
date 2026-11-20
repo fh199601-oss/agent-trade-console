@@ -15,7 +15,7 @@ export function mergeTradeUpdate(current,update){
 }
 export const isReady=o=>['PREPARED','READY_TO_CONTINUE'].includes(o.status);
 export const canExecute=(o,ack=false)=>isReady(o)&&(ack||!o.review?.length);
-export const independentOrder=o=>['buy','sell'].includes(o.intent.side)||o.intent.side==='mint'&&(o.plan?.resolved?.platform==='corla'&&['corla:mint','corla:claim','corla:refund'].includes(o.plan?.route)||o.plan?.resolved?.platform==='binancians'&&o.plan?.route==='binancians:mint'||o.plan?.resolved?.platform==='stars'&&o.plan?.route==='stars:mint');
+export const independentOrder=o=>['buy','sell','mint'].includes(o.intent.side);
 
 // Receipt tracking has no submit callback, new ID, or trade construction path.
 export async function followSubmittedOrder(order,follow,{onUpdate=()=>{},wait=ms=>new Promise(r=>setTimeout(r,ms)),attempts=30}={}){
@@ -27,28 +27,23 @@ export async function followSubmittedOrder(order,follow,{onUpdate=()=>{},wait=ms
  return current;
 }
 
-// One server workflow per click/wallet: a slow wallet's preparation must not
-// hold up a ready wallet. The server retains simulation, risk and balance checks.
-export async function runInstantTrades(rows,run,{onResult=()=>{}}={}){
- const seen=new Set();
- return Promise.all(rows.map(async o=>{
-  if(!['buy','sell'].includes(o.intent.side)||seen.has(o.id))return o;
-  seen.add(o.id);let result;
-  try{result=await run(o);}catch(e){result={...o,status:e.details?.requestAccepted===false?'BLOCKED':'SUBMISSION_UNKNOWN',error:{message:e.message,code:e.code||'CLIENT_RESULT_UNKNOWN',details:e.details}};}
-  onResult(result);return result;
- }));
+// All dispatches keep their own stable ID. Transport failure only marks
+// unreturned rows unknown; already streamed results are never overwritten.
+async function independentRequests(rows,eligible,run,{onResult=()=>{},runMany,preparation=false}={}){
+ const seen=new Set(),selected=rows.filter(o=>{if(!eligible(o)||seen.has(o.id))return false;seen.add(o.id);return true;}),results=new Map();
+ const errorResult=(o,e)=>({...o,status:preparation||e.details?.requestAccepted===false?'BLOCKED':'SUBMISSION_UNKNOWN',error:{message:e.message,code:e.code||'CLIENT_RESULT_UNKNOWN',details:e.details}});
+ const accept=(o,result)=>{if(results.has(o.id))return;results.set(o.id,result);onResult(result);};
+ if(runMany&&selected.length>1){
+  const byId=new Map(selected.map(o=>[o.id,o]));let failure;
+  try{await runMany(selected,event=>{const o=byId.get(event.id);if(!o)throw Error('返回了不匹配的原单');accept(o,event.value||errorResult(o,{...event.error,details:event.details}));});}
+  catch(e){failure=e;}
+  for(const o of selected)if(!results.has(o.id))accept(o,errorResult(o,failure||Error('未收到本钱包结果，请核对原单')));
+ }else await Promise.all(selected.map(async o=>{let result;try{result=await run(o);}catch(e){result=errorResult(o,e);}accept(o,result);}));
+ return rows.map(o=>results.get(o.id)||o);
 }
-
-// Independent wallets must not block each other on a pending or failed order.
-export async function executeIndependent(rows,submit,{ack=false,onResult=()=>{}}={}){
- const seen=new Set();
- return Promise.all(rows.map(async o=>{
-  if(!independentOrder(o)||!canExecute(o,ack)||seen.has(o.id))return o;
-  seen.add(o.id);let result;
-  try{result=await submit(o,ack);}catch(e){result={...o,status:e.details?.requestAccepted===false?'BLOCKED':'SUBMISSION_UNKNOWN',error:{message:e.message,code:e.code||'CLIENT_RESULT_UNKNOWN',details:e.details}};}
-  onResult(result);return result;
- }));
-}
+export function prepareIndependent(rows,prepare,options={}){return independentRequests(rows,()=>true,prepare,{...options,preparation:true});}
+export function runInstantTrades(rows,run,options={}){return independentRequests(rows,o=>['buy','sell'].includes(o.intent.side),run,options);}
+export function executeIndependent(rows,submit,{ack=false,...options}={}){return independentRequests(rows,o=>independentOrder(o)&&canExecute(o,ack),o=>submit(o,ack),options);}
 
 export function tradeResultMessage(rows){
  const labels={CONFIRMED:'已确认成交',CONFIRMED_REVIEW:'已上链，金额待核验',PARTIAL:'部分完成，剩余未提交',PENDING:'已提交，等待确认',SUBMISSION_UNKNOWN:'提交状态待核对',SUBMITTING:'正在提交',SKIPPED:'无持仓，已跳过',PREPARED:'待确认',READY_TO_CONTINUE:'待继续确认',SIMULATED:'模拟完成，未提交',BLOCKED:'检查未通过',FAILED:'交易失败，可重新点击',REJECTED:'币安未接受，可重新发起'};

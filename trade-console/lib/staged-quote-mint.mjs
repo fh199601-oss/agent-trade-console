@@ -85,7 +85,7 @@ export async function stagedQuoteState(rpc,intent,meta,w,p=recognizeStagedQuoteM
  if(st.freeRound!==(st.started&&!st.expired&&freeRound)||st.open===pre)throw fail('MINT_STATE','阶段状态互相矛盾，请重新读取');
  const ended=st.expired||st.soldOut,free=st.started&&!ended&&freeRound&&u.hasAgentId&&!u.freeUsed?1n:0n;
  const paid=st.started&&!ended&&!freeRound?(pre&&u.hasAgentId?min(u.limitLeft,positive(openCap-st.sold),st.sharesLeft):pre?0n:st.sharesLeft):0n;
- const useUsdt=intent.scope!=='free'&&parseUnits(intent.maxBnb||'0',18)===0n&&parseUnits(intent.maxUsdt||'0',18)>0n;
+ const useUsdt=intent.scope!=='free'&&(intent.currency==='USDT'||parseUnits(intent.maxBnb||'0',18)===0n&&parseUnits(intent.maxUsdt||'0',18)>0n);
  if(useUsdt&&(!p.usdtGetter||!same(await get(p.usdtGetter),USDT)))throw fail('MINT_ADAPTER_INCOMPLETE','尚未核验此入口的 USDT 付款分支');
  const s={name:p.kind,token,assetKind:'Erc20',block,free,paid,txCap:500n,unboundedPaid:!pre,inputToken:useUsdt?USDT:BNB,referral:null};
  s.info={block,phase:ended?'ended':!st.started?'not-started':freeRound?'free':pre?'paid-pre-open':'paid-open',freeRemaining:String(free),paidRemaining:pre?String(paid):null,unboundedPaid:!pre,budgetCurrency:useUsdt?'USDT':'BNB',paymentToken:s.inputToken,paymentDecimals:18,currency:useUsdt?'USDT':'BNB',notes:!freeRound&&!ended?['免费阶段已结束；当前为付费认购']:[]};

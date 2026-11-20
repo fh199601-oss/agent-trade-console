@@ -60,7 +60,7 @@ test('paid max budgets use exact price times remaining quota, per-wallet maximum
 test('policy validation forbids claim-sale on buy, invalid percentages, hidden keys, disabled claim',()=>{
  const base={account:bindings()[0].account,asset:mint,side:'mint',quantity:'max',maxBnb:'1',scope:'paid'};
  assert.equal(validateIntent({...base,claimSell:{}}).claimSell.percent,'50');
- for(const extra of [{autoClaim:'true'},{autoClaim:false,claimSell:{}},{claimSell:{percent:101}},{claimSell:{slippageBps:5001}},{claimSell:{to:token}},{side:'buy',amount:'1',autoClaim:true}])assert.throws(()=>validateIntent({...base,...extra}));
+ for(const extra of [{autoClaim:'true'},{autoClaim:false,claimSell:{}},{claimSell:{percent:101}},{claimSell:{slippageBps:9901}},{claimSell:{to:token}},{side:'buy',amount:'1',autoClaim:true}])assert.throws(()=>validateIntent({...base,...extra}));
  assert.equal(openingConfig({asset:token,accounts:[bindings()[0].account]}).percent,'50');
 });
 test('only authorized live subscription can enroll; preview and simulation never arm',t=>{

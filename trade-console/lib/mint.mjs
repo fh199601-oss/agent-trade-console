@@ -25,11 +25,12 @@ import {assistMint,applyChainEvidence,adaptiveQuoteWithLearning} from './chain-a
 import {socialSalePlan} from './social-sale.mjs';
 import {sourceSalePlan} from './source-sale.mjs';
 import {protectedSalePlan} from './protected-sale.mjs';
-import {corlaPlan} from './corla.mjs';
-import {binanciansPlan} from './binancians.mjs';
-import {starsPlan} from './stars.mjs';
+import {corlaPlan,corlaClient} from './corla.mjs';
 import {fundedMintPlan,balanceMint} from './mint-funding.mjs';
+import {binanciansPlan} from './binancians.mjs';
 import {bagentPlan} from './bagent.mjs';
+import {starsPlan} from './stars.mjs';
+import {papPlan} from './pap.mjs';
 import {probeFreeBatch} from './free-mint-probe.mjs';
 const REGISTRY='0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F';
 const templates=[
@@ -38,11 +39,20 @@ const templates=[
  {name:'bianren_core',detect:['e38fd349','fd326592'],signature:'mintWithBnb(uint256,address,uint256)',price:'costOf(uint256)'}
 ];
 function selects(code){const b=Buffer.from(code.slice(2),'hex'),set=new Set();for(let i=0;i<b.length;i++){const op=b[i];if(op>=0x60&&op<=0x7f){if(op===0x63)set.add(b.subarray(i+1,i+5).toString('hex'));i+=op-0x5f;}}return set;}
-export async function mintPlan(rpc,bridge,intent,target,resolved={source:'用户输入 CA'},experienceStore=null,{sourceLoader=sourceFor,chainLearner=null,officialPreview=false,quantityCeiling=500}={}){
- if(resolved.platform==='stars')return measure('starsMintPlan',()=>fundedMintPlan(rpc,intent,wallet(intent.account),next=>starsPlan(rpc,next,wallet(intent.account),{balanceFill:balanceMint(intent),resolved}),{quantityCeiling}));
- if(resolved.platform==='bagent')return measure('bagentMintPlan',()=>bagentPlan(rpc,intent,wallet(intent.account),resolved,{officialPreview}));
- if(resolved.platform==='corla')return measure('corlaMintPlan',()=>corlaPlan(rpc,intent,wallet(intent.account),resolved,{officialPreview}));
- if(resolved.platform==='binancians')return measure('binanciansMintPlan',()=>binanciansPlan(rpc,intent,wallet(intent.account),resolved,{officialPreview,wallets:bindings()}));
+export async function mintPlan(rpc,bridge,intent,target,resolved={source:'用户输入 CA'},experienceStore=null,{sourceLoader=sourceFor,chainLearner=null,officialPreview=false,fundingPolicy=false,quantityCeiling=500,balanceFill=false}={}){
+ if(fundingPolicy){
+  let payment=null;
+  if(balanceMint(intent)&&intent.scope!=='free'&&resolved.platform==='corla'){
+   const client=corlaClient(rpc),row=await client.locate(resolved.address,{explicit:true});
+   if(row){const state=await client.state(row,wallet(intent.account));payment={token:state.currency==='BNB'?BNB:state.quote,decimals:state.payment.decimals};}
+  }
+  return fundedMintPlan(rpc,intent,wallet(intent.account),next=>mintPlan(rpc,bridge,next,target,resolved,experienceStore,{sourceLoader,chainLearner,officialPreview,balanceFill:balanceMint(intent)}),{quantityCeiling,payment});
+ }
+ if(resolved.platform==='pap')return measure('papMintPlan',()=>papPlan(rpc,intent,wallet(intent.account)));
+ if(resolved.platform==='bagent')return measure('bagentMintPlan',()=>bagentPlan(rpc,intent,wallet(intent.account),resolved,{officialPreview,balanceFill}));
+ if(resolved.platform==='stars')return measure('starsMintPlan',()=>starsPlan(rpc,intent,wallet(intent.account),{balanceFill,resolved}));
+ if(resolved.platform==='corla')return measure('corlaMintPlan',()=>corlaPlan(rpc,intent,wallet(intent.account),resolved,{officialPreview,balanceFill}));
+ if(resolved.platform==='binancians')return measure('binanciansMintPlan',()=>binanciansPlan(rpc,intent,wallet(intent.account),resolved,{officialPreview,wallets:bindings(),balanceFill}));
  if(intent.quoteToken!==undefined)throw Object.assign(Error('其他付款币预算目前仅适用于 Corla 专用入口'),{code:'MINT_ROUTE_INVALID'});
  const w=wallet(intent.account),meta={...await sourceLoader(rpc,target),abiHints:resolved.abiHints,frontendCalls:resolved.frontendCalls},experience=experienceStore?.lookup(meta.identity,{...intent,wallet:w.address});
  try{const plan=await measure('mintPlan',()=>buildMintPlan(rpc,bridge,intent,target,resolved,w,meta,experience,experienceStore,{sourceLoader,chainLearner}));plan.experience??=experience||null;return plan;}

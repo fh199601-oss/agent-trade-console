@@ -1,3 +1,4 @@
+import {netTransfer} from './net-transfer.mjs';
 // Fixed, factory-verified routes. This is a planner: no signing/broadcast here.
 import {infinityQuote} from './infinity.mjs';
 import {infinityBuySteps} from './infinity-buy.mjs';
@@ -65,7 +66,7 @@ export class TradeConversions{
   catch(e){if(!prepared||e.code!=='QUOTE_CONVERSION_UNAVAILABLE')throw e;this.topologies.delete(this.key(input,output));const fresh=new Map(),result=await this.build({...args,graph:fresh});this.remember(input,output,fresh);return result;}
  }
  async build({inputToken,outputToken,amount,owner,slippageBps,preferredPool,quotedOutput,maxHops=2,graph,routeCandidates,refreshProvenance=p=>p}){
-  amount=BigInt(amount);if(amount<=0n||!Number.isInteger(slippageBps)||slippageBps<0||slippageBps>5000)throw Error('兑换金额或滑点无效');
+  amount=BigInt(amount);if(amount<=0n||!Number.isInteger(slippageBps)||slippageBps<0||slippageBps>9900)throw Error('兑换金额或滑点无效');
   const ni=native(inputToken),no=native(outputToken),input=ni?WBNB:inputToken,output=no?WBNB:outputToken;
   if(same(input,output)){
    if(ni===no)throw Error('不需要重复兑换同种资产');
@@ -140,7 +141,7 @@ export class TradeConversions{
  }
 }
 export function conversionSettlement({receipt,wallet:owner,state,plan,step}){
- const logs=(receipt.logs||[]).flatMap(l=>{try{return [{...WRAPPED.parseLog(l),address:l.address}];}catch{return [];}});
+ const logs=(receipt.logs||[]).flatMap((l,index)=>{try{return [{...WRAPPED.parseLog(l),address:l.address,asset:l.address,index}];}catch{return [];}});
  if(state.wrap){
   if(!same(step.to,WBNB))throw Error('包装回执目标不符');const matches=logs.filter(e=>same(e.address,WBNB)&&e.name===(state.wrap==='deposit'?'Deposit':'Withdrawal')&&same(e.args[state.wrap==='deposit'?'dst':'src'],owner));
   if(matches.length!==1||matches[0].args.wad!==BigInt(plan.amountIn))throw Error('WBNB 包装回执金额不符');return {amountIn:matches[0].args.wad,amountOut:matches[0].args.wad};
@@ -150,6 +151,6 @@ export function conversionSettlement({receipt,wallet:owner,state,plan,step}){
  const deposits=logs.filter(e=>same(e.address,WBNB)&&e.name==='Deposit'&&same(e.args.dst,d.router));
  if(deposits.length!==1||deposits[0].args.wad!==BigInt(step.value))throw Error('兑换回执未证明 BNB 包装金额');
  const lastPool=state.legs?.at(-1)?.pool||state.pool;
- const amountOut=logs.filter(e=>same(e.address,plan.outputToken)&&e.name==='Transfer'&&same(e.args.from,lastPool)&&same(e.args.to,owner)).reduce((n,e)=>n+e.args.value,0n);
+ const amountOut=netTransfer(logs,plan.outputToken,lastPool,owner);
  if(amountOut<=0n)throw Error('兑换回执没有本钱包的输出资产到账');return {amountIn:BigInt(step.value),amountOut};
 }

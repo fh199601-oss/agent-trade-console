@@ -6,6 +6,9 @@ import {OpeningSources} from './opening-sources.mjs';
 export const QUOTE_GETTERS=['quoteToken','quoteAsset','quote'];
 export const PAIR_GETTERS=['pair','uniswapV2Pair','pancakePair','liquidityPair','lpPair','mainPair','pool'];
 export const HINT_ABI=new Interface([...QUOTE_GETTERS,...PAIR_GETTERS].map(m=>`function ${m}() view returns(address)`));
+const marketFlags=['trading','tradingOpen','tradingEnabled','mintComplete','mintCompleted','mintFinished','openBlock','tradingStartBlock'];
+const fallbackProbe='unknownMarketProbe';
+const marketAbi=new Interface([...marketFlags,fallbackProbe].map(name=>`function ${name}() view returns(uint256)`));
 const PAIR_ABI=new Interface(['function token0() view returns(address)','function token1() view returns(address)','function factory() view returns(address)','function fee() view returns(uint24)']);
 const valid=a=>/^0x[\da-f]{40}$/i.test(a)&&!same(a,ZeroAddress)&&!same(a,BNB);
 const unique=items=>[...new Map(items.map(q=>[q.toLowerCase(),q])).values()].slice(0,12);
@@ -14,6 +17,7 @@ export class OpeningQuotes{
  constructor(rpc,{now=Date.now,sources=typeof rpc.send==='function'?new OpeningSources(rpc):null}={}){Object.assign(this,{rpc,now,sources});this.cache=new Map();this.pending=new Map();this.primaryPending=new Map();this.routes=new Map();this.external=new Map();this.unknown=new Map();}
  known(token){return unique([...(this.cache.get(token.toLowerCase())?.quotes||[]),...this.knownRoutes(token).map(p=>p.quote)]);}
  knownRoutes(token){return this.routes.get(token.toLowerCase())||[];}
+ market(token){return this.cache.get(token.toLowerCase())?.market;}
  unsupported(token){return this.unknown.get(token.toLowerCase())||[];}
  adoptCompleted(token,other){
   const key=token.toLowerCase();
@@ -22,18 +26,21 @@ export class OpeningQuotes{
   if(!other||other===this||this.pending.has(key)||other.pending.has(key)||this.primaryPending.has(key)||other.primaryPending?.has(key))return false;
   const entry=other.cache.get(key),old=this.cache.get(key),age=this.now()-entry?.at;
   if(!entry||age<0||age>=(entry.quotes.length||other.knownRoutes(token).length?15000:2000)||old&&old.at>=entry.at)return false;
-  this.cache.set(key,{at:entry.at,quotes:[...entry.quotes]});
+  this.cache.set(key,{...entry,quotes:[...entry.quotes]});
   this.routes.set(key,other.knownRoutes(token).map(p=>({...p})));
   this.external.set(key,new Map(other.external.get(key)||[]));
   this.unknown.set(key,other.unsupported(token).map(p=>({...p})));
   while(this.cache.size>128){const evict=this.cache.keys().next().value;for(const m of [this.cache,this.routes,this.external,this.unknown])m.delete(evict);}
   return true;
  }
- async primary(token){
+ async primary(token,{watch=false}={}){
   const key=token.toLowerCase(),old=this.cache.get(key);
-  if(old&&this.now()-old.at>=0&&this.now()-old.at<(old.quotes.length||this.knownRoutes(token).length?15000:2000))return this.known(token);
+  // A mint-phase pool can already hold liquidity. Refresh its declaration
+  // within a polling window even when an earlier getter named a nonzero pair.
+  const ttl=watch||old?.market?.closed?250:old?.quotes.length||this.knownRoutes(token).length?15000:2000;
+  if(old&&this.now()-old.at>=0&&this.now()-old.at<ttl)return this.known(token);
   if(this.primaryPending.has(key))return this.primaryPending.get(key);
-  const work=this.read(token).then(quotes=>{this.cache.set(key,{at:this.now(),quotes});if(this.cache.size>128){const evict=this.cache.keys().next().value;this.cache.delete(evict);this.routes.delete(evict);this.external.delete(evict);}return this.known(token);});
+  const work=this.read(token).then(result=>{this.cache.set(key,{at:this.now(),...result});if(this.cache.size>128){const evict=this.cache.keys().next().value;this.cache.delete(evict);this.routes.delete(evict);this.external.delete(evict);}return this.known(token);});
   this.primaryPending.set(key,work);try{return await work;}finally{this.primaryPending.delete(key);}
  }
  async discover(token){
@@ -56,13 +63,29 @@ export class OpeningQuotes{
   if(this.routes.size>128){const evict=this.routes.keys().next().value;this.routes.delete(evict);this.external.delete(evict);}
  }
  async read(token){
-  const methods=[...QUOTE_GETTERS,...PAIR_GETTERS],first=await openingReads(this.rpc,methods.map(method=>({to:token,abi:HINT_ABI,method})));
-  const values=first.results.map(r=>r.status==='fulfilled'&&valid(r.value[0])?address(r.value[0]):null);
+  const methods=[...QUOTE_GETTERS,...PAIR_GETTERS];
+  const first=await openingReads(this.rpc,[...methods.map(method=>({to:token,abi:HINT_ABI,method})),
+   ...[...marketFlags,fallbackProbe].map(method=>({to:token,abi:marketAbi,method,canonical:true}))]);
+  const observed=first.results.slice(methods.length),required=new Set(this.market(token)?.required||[]);
+  let closed=false;
+  // A fallback returning a word for arbitrary selectors cannot attest a flag.
+  if(observed.at(-1).status!=='fulfilled'){
+   marketFlags.forEach((name,i)=>{
+    const result=observed[i];
+    if(result.status!=='fulfilled'){if(required.has(name))closed=true;return;}
+    const value=result.value[0],blockFlag=name==='openBlock'||name==='tradingStartBlock';
+    if(!blockFlag&&value>1n){if(required.has(name))closed=true;return;}
+    required.add(name);
+    if(blockFlag ? value===0n||value>BigInt(first.block) : value===0n)closed=true;
+   });
+  }else if(required.size)closed=true;
+  const market={closed,block:first.block,required:[...required]};
+  const values=first.results.slice(0,methods.length).map(r=>r.status==='fulfilled'&&valid(r.value[0])?address(r.value[0]):null);
   const quotes=values.slice(0,QUOTE_GETTERS.length).filter(Boolean),pairs=unique(values.slice(QUOTE_GETTERS.length).filter(Boolean));
   await this.readPairs(token,pairs,first.block);
   // Keep provenance separate from index hints. Factory validation still occurs
   // in OpeningPools; a token getter alone is not an official/safe-pool proof.
   const key=token.toLowerCase();this.routes.set(key,this.knownRoutes(token).map(p=>({...p,declaredByToken:pairs.some(a=>same(a,p.pool))})));
-  return unique(quotes.filter(q=>!same(q,token)));
+  return {quotes:unique(quotes.filter(q=>!same(q,token))),market};
  }
 }

@@ -3,6 +3,7 @@ import {normalizeMintQuantity} from './mint-quantity.mjs';
 function decimal(raw,places){const s=raw.toString().padStart(places+1,'0');return places?(s.slice(0,-places)+'.'+s.slice(-places)).replace(/\.?0+$/,''):s;}
 export function corlaBudget(project,accounts,scope,quantity){
  if(project?.budgetPolicy==='stars-fixed-quote')return stagedBudget(project,accounts,scope,quantity);
+ if(project?.budgetPolicy==='pap-fixed-quote')return stagedBudget(project,accounts,scope,quantity);
  if(project?.budgetPolicy==='current-wallet-quote')return currentWalletBudget(project,accounts,scope,quantity);
  if(project?.budgetPolicy==='verified-staged-quote')return stagedBudget(project,accounts,scope,quantity);
  if(project?.platform==='binancians')return binanciansBudget(project,accounts,scope,quantity);
@@ -36,7 +37,10 @@ function binanciansBudget(project,accounts,scope,quantity){
 // Only automatic price caps may be refreshed before confirmation. The caller
 // supplies a stable snapshot so edits during a request cannot change its scope.
 export async function refreshMintBudget({project,asset,accounts,scope,quantity,manual=false},inspect){
- const staged=['verified-staged-quote','current-wallet-quote'].includes(project?.budgetPolicy);
+ // PAPER computes exact fixed-price affordability inside each wallet plan.
+ // A group budget refresh must not delay or block the other wallets.
+ if(project?.platform==='pap')return null;
+ const staged=['verified-staged-quote','current-wallet-quote','pap-fixed-quote'].includes(project?.budgetPolicy);
  if(manual||!staged&&(project?.platform!=='binancians'||normalizeMintQuantity(quantity)!=='max')||!['all','paid'].includes(scope))return null;
  const fresh=await inspect(asset);
  if(staged&&fresh?.budgetPolicy!==project.budgetPolicy||fresh?.platform!==project.platform||String(fresh.address).toLowerCase()!==String(project.address).toLowerCase()||String(fresh.token).toLowerCase()!==String(project.token).toLowerCase())throw Error('预算刷新时项目入口或到账代币发生变化，请重新识别');

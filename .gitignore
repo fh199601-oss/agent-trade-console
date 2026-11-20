@@ -35,3 +35,12 @@ PORTABLE.json
 **/last-launch.json
 **/rpc-settings.json
 !licenses/python-build-standalone/LICENSE.sqlite.txt
+**/personal-deployment.json*
+**/fast-deployment*.json*
+**/fast-trigger/
+**/fast-sale-mainnet-jobs.json*
+**/fast-sale-managed-address.json*
+**/fast-sale-settings.json*
+**/originals.json*
+**/fast-sale-v1/
+**/trigger.dpapi

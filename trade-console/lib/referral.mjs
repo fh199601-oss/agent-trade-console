@@ -50,7 +50,8 @@ export function detectReferralHints(rows,source){
 
 export function addressReferral(meta,route,intent){
  if(!route.roles.includes('zero'))return null;
- const inviter=wallet(1),use=intent.referral!=='none'&&[2,3].includes(intent.account);
+ const use=intent.referral!=='none'&&[2,3].includes(intent.account);
+ let inviter;try{inviter=wallet(1);}catch{if(use)throw Object.assign(Error('未配置 1 号邀请钱包'),{code:'REFERRAL_UNAVAILABLE'});inviter={address:ZeroAddress};}
  const evidence=(meta.frontendCalls||[]).filter(c=>same(c.address,meta.address)&&c.method===route.method);
  const frontend=route.frontend&&evidence.length&&evidence.every(c=>!c.referralAmbiguous&&c.referral?.some(r=>r.kind==='address'&&r.transport==='query'&&route.roles[r.index]==='zero'))?evidence[0]:null;
  const learned=route.referralEvidence?.kind==='historical-referrer-transition'&&route.referralEvidence.method===route.method&&same(route.referralEvidence.target,meta.address)&&route.referralEvidence.fingerprint===meta.hash&&route.roles[route.referralEvidence.index]==='zero';
@@ -75,7 +76,8 @@ export async function resolveReferral(rpc,bridge,resolved,meta,prior=null){
  const functions=meta?.abi?new Interface(meta.abi).fragments.filter(f=>f.type==='function'):[];
  const addressArgs=functions.filter(f=>!['view','pure'].includes(f.stateMutability)&&/mint|claim|buy/i.test(f.name)&&f.inputs.some(p=>p.type==='address'&&referralParameter(p.name)));
  if(!prior&&!hints.detected&&!addressArgs.length)return resolved.pageError?{detected:null,status:'unavailable',url:null,note:'网站未成功读取，本次无法判断是否存在邀请制度'}:{detected:false,status:'not-detected',url:null,note:'本次未检测到邀请制度；后续若发现新规则会重新核验'};
- const inviter=wallet(1),r={detected:true,account:1,address:inviter.address,appliesTo:[2,3],bindingVerified:false,...prior};
+ let inviter;try{inviter=wallet(1);}catch{return {detected:true,status:'inactive',url:null,note:'未配置 1 号邀请钱包，Mint 仍按当前钱包检查'};}
+ const r={detected:true,account:1,address:inviter.address,appliesTo:[2,3],bindingVerified:false,...prior};
  if(r.active===false)return {...r,status:'inactive',url:null};
  let source;try{source=websiteUrl(resolved.source).href;}catch{}
  if(!source)return {...r,status:r.url?'ready':'needs-website',note:r.note||'请用项目网址识别邀请链接格式'};
