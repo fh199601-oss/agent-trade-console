@@ -37,6 +37,8 @@ test('same simulated latency: three auto-claim dispatches save sequential identi
  const results=[];
  for(const overlap of [false,true]){
   const f=await fixture(t),code=f.rpc.getCode,call=f.bridge.call;
+  // Measure the simulated network schedule independently of the host filesystem queue.
+  f.engine.writeAsync=async order=>f.engine.write(order);
   f.rpc.getCode=async(...a)=>{await wait(160);return code(...a);};f.bridge.call=async(...a)=>{await wait(a[1][1]==='preview'?260:80);return call(...a);};
   const start=Date.now(),orders=await advance(Promise.all([0,1,2].map(n=>f.run(n,{overlap}))));
   assert.ok(orders.every(o=>o.status==='CONFIRMED'),JSON.stringify(orders.map(o=>o.error)));assert.equal(f.calls.submits,3);

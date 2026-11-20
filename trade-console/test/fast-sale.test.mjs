@@ -57,7 +57,7 @@ test('nonce not reserved for unopened project; concurrent trigger signing uses c
  await Promise.all([trigger.broadcast('ready1'),trigger.broadcast('ready2')]);assert.deepEqual(sent.map(s=>s.nonce),[0,1]);assert.ok(sent.every(s=>s.chainId===31337n&&s.value===0n));assert.equal(journal.get('unopened').nonce,undefined);
 });
 test('private journal uses restrictive files and does not overwrite an existing active writer',()=>{
- const dir=fs.mkdtempSync(path.join(os.tmpdir(),'fast-private-'));try{const journal=new PrivateJournal(dir);journal.put({id:'test',nonce:0});assert.equal(fs.statSync(path.join(dir,'originals.json')).mode&0o777,0o600);assert.throws(()=>new PrivateJournal(dir),/占用/);journal.close();const reopened=new PrivateJournal(dir);assert.equal(reopened.get('test').nonce,0);reopened.close();}finally{fs.rmSync(dir,{recursive:true,force:true});}
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'fast-private-'));try{const journal=new PrivateJournal(dir);journal.put({id:'test',nonce:0});if(process.platform!=='win32')assert.equal(fs.statSync(path.join(dir,'originals.json')).mode&0o777,0o600);assert.throws(()=>new PrivateJournal(dir),/占用/);journal.close();const reopened=new PrivateJournal(dir);assert.equal(reopened.get('test').nonce,0);reopened.close();}finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
 
 test('claim confirmation during pause is retained and prepared only on explicit resume',async()=>{

@@ -111,6 +111,8 @@ test('three-wallet timing comparison includes preparation and keeps normal RPC d
  const results=[];
  for(const overlap of [false,true]){
   const f=await fixture(t,{side:'sell'}),rpcCall=f.rpc.call,bridgeCall=f.bridge.call;
+  // Measure the simulated network schedule independently of the host filesystem queue.
+  f.engine.writeAsync=async order=>f.engine.write(order);
   f.rpc.call=async(...args)=>{await wait(160);return rpcCall(...args);};
   f.bridge.call=async(a,args,options)=>{await wait(args[1]==='preview'?260:80);return bridgeCall(a,args,options);};
   const start=Date.now(),orders=await advance(Promise.all(wallets.slice(0,3).map(async(w,n)=>{

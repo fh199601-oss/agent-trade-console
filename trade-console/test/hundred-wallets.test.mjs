@@ -105,7 +105,7 @@ test('100-wallet thin pool re-quotes after changing prices, never widens slippag
 test('one slow preview does not prevent the other 99 wallets from dispatching',async t=>{
  const f=await fixture(t,{slowAccount:1});const until=Date.now()+12000;while(f.sent.length<99&&Date.now()<until)await tick();
  const before=f.sent.length;f.slowGate.resolve();await bounded(f.allSent.promise,12000);f.receiptGate.resolve();const results=await f.running;
- assert.equal(before,99);assert.equal(results.filter(o=>o.status==='CONFIRMED').length,100);assert.equal(f.sent.length,100);
+ assert.equal(before,99);assert.equal(results.filter(o=>o.status==='CONFIRMED').length,100,JSON.stringify(results.filter(o=>o.status!=='CONFIRMED').map(o=>[o.intent.account,o.status,o.error])));assert.equal(f.sent.length,100);
 });
 test('100-wallet warmup is bounded and fair; foreground consumption cancels queued work',async()=>{
  const seen=[],gates=new Map(),cache=new TradePreparation({plan:async i=>{seen.push(i.account);const gate=deferred();gates.set(i.account,gate);await gate.promise;return record(i.account).plan;},preview:async()=>({raw:{requestId:'unsigned-only'},at:Date.now()})});
