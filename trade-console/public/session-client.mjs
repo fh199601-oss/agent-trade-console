@@ -2,6 +2,8 @@
 // Never retry a submitted operation on a transport error or an unknown reply.
 const readPosts=new Set(['ready','refresh-wallets','follow','prepare','select-mint-route','opening/check','reconcile']);
 const failure=v=>Object.assign(Error(v?.error?.message||v?.error||'本地服务响应无效'),{details:v?.details,code:v?.error?.code,serverRejected:true});
+// Each fast-sale write is named explicitly and is never automatically replayed.
+const fastSalePaths=new Set(['settings','setup','unlock','generated','import-key','export-key','backup','authorize','confirm-ratings','start','control','deployment/preview','deployment/execute','deployment/check'].map(s=>'fast-sale/'+s));
 export function createConsoleClient({fetchImpl=(...args)=>fetch(...args),onSession=()=>{}}={}){
  let session=null,loading=null;
  async function send(path,body,token){
@@ -18,7 +20,7 @@ export function createConsoleClient({fetchImpl=(...args)=>fetch(...args),onSessi
   })();loading.finally(()=>{loading=null;}).catch(()=>{});return loading;
  }
  async function request(path,body){
-  if(!/^(?:[a-z][a-z0-9-]*(?:\?.*)?|opening\/(?:check|arm|stop)|fast-sale\/(?:settings|setup|unlock|generated|import-key|export-key|backup|authorize|start|control)|tasks\/(?:resume|pause|delete|restore|edit|candidates|add))$/.test(path)||path==='bootstrap')throw Error('本地接口路径无效');
+  if(!fastSalePaths.has(path)&&(!/^(?:[a-z][a-z0-9-]*(?:\?.*)?|opening\/(?:check|arm|stop)|tasks\/(?:resume|pause|delete|restore|edit|candidates|add))$/.test(path)||path==='bootstrap'))throw Error('本地接口路径无效');
   if(!session)await refreshSession();
   const used=session.token,{response,value}=await send(path,body,used);
   if(response.ok)return value;

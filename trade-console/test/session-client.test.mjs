@@ -53,3 +53,22 @@ test('opening read/arm endpoints are supported but arbitrary subpaths and auto r
  let token='a'.repeat(64),arms=0,checks=0;const c=createConsoleClient({fetchImpl:async(url,opts)=>{if(url.endsWith('bootstrap'))return Response.json(boot(token));if(url.endsWith('opening/check'))checks++;if(url.endsWith('opening/arm'))arms++;return opts.headers['x-console-token']!==token?expired():Response.json({ok:true});}});
  await c.refreshSession();token='b'.repeat(64);assert.deepEqual(await c.request('opening/check',{}),{ok:true});assert.equal(checks,2);token='c'.repeat(64);await assert.rejects(c.request('opening/arm',{id:'stable',confirmed:true}),e=>e.code==='SESSION_REFRESHED_RETRY');assert.equal(arms,1);await assert.rejects(c.request('opening/../../execute',{}),/路径无效/);
 });
+
+test('极速确认及个人部署通过真实会话客户端到达本地 HTTP，写请求不会在会话更新后重发',async t=>{
+ const data=fs.mkdtempSync(path.join(os.tmpdir(),'fast-session-'));
+ const {personalExecutor}=await import('../lib/delegated-sale/personal-address.mjs');
+ const {TAX_BSC_SALE}=await import('../lib/delegated-sale/bsc.mjs');
+ const payer='0x'+'b'.repeat(40),executor=personalExecutor(payer),token='0x'+'c'.repeat(40);
+ fs.writeFileSync(path.join(data,'fast-deployment.json'),JSON.stringify({chainId:56,payer,executor,executorHash:TAX_BSC_SALE.executorHash}));
+ const seen=[],service={status:()=>({enabled:false}),confirmRatings:async b=>{seen.push(b);return {ok:true};}};
+ const app=createServer({data,engine:{list:()=>[],running:new Set()},rpc:{},bridge:{},live:true,walletBindings:()=>[{account:1,address:payer}],fastSale:service});
+ await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));
+ t.after(async()=>{await new Promise(resolve=>app.server.close(resolve));fs.rmSync(data,{recursive:true,force:true});});
+ const base='http://127.0.0.1:'+app.server.address().port;let expiredToken=false;
+ const c=createConsoleClient({fetchImpl:(url,options)=>fetch(base+url,{...options,headers:{...options.headers,...(expiredToken&&url!=='/api/bootstrap'?{'x-console-token':'invalid-test-token'}:{})}})});
+ const input={id:'synthetic',asset:token,field:'approval',reviews:[{account:1,ticket:'synthetic-ticket'}]};
+ assert.deepEqual(await c.request('fast-sale/confirm-ratings',input),{ok:true});assert.deepEqual(seen,[input]);
+ for(const name of ['preview','execute','check'])await assert.rejects(c.request('fast-sale/deployment/'+name,{}),e=>e.serverRejected&&!/路径无效/.test(e.message));
+ for(const name of ['confirm-ratings/extra','deployment/anything','deployment/../execute'])await assert.rejects(c.request('fast-sale/'+name,{}),/路径无效/);
+ expiredToken=true;await assert.rejects(c.request('fast-sale/confirm-ratings',input),e=>e.code==='SESSION_REFRESHED_RETRY');assert.equal(seen.length,1);
+});

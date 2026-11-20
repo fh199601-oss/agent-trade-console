@@ -103,7 +103,11 @@ export function createFastSalePanel({api,getSelection,document:doc=document}){
     const reviews=rows.filter(r=>r.status===status&&r.ratingReview?.field===field).map(r=>({account:r.account,ticket:r.ratingReview.ticket}));
     if(!reviews.length||job.deletedAt||!['AUTHORIZING','REGISTERING','ARMED'].includes(job.status))continue;
     const button=node('button','确认 '+reviews.length+' 个钱包的'+label,'secondary');button.type='button';button.disabled=busy;
-    button.onclick=()=>action(async()=>{await api('fast-sale/confirm-ratings',{id:job.id,asset:job.asset,field,reviews});say('请查看逐钱包处理结果。');},true);
+    button.onclick=()=>action(async()=>{
+     const result=await api('fast-sale/confirm-ratings',{id:job.id,asset:job.asset,field,reviews});
+     const renewed=result.rows.some(r=>r.status===status&&reviews.some(previous=>previous.account===r.account&&previous.ticket!==r.ratingReview?.ticket));
+     say(renewed?'部分钱包的预览已到期或有变化，已更新金额和评级。请核对后再次确认。':'请查看逐钱包处理结果。');
+    },true);
     results.append(button);
    }}
  }
