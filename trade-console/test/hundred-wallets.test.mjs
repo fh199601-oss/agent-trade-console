@@ -363,7 +363,12 @@ test('100 opening originals: one stalled follow cannot hold 99 next checks or a 
  const m=new OpeningSell({data,engine,autoSchedule:true,now:()=>now}),j={id:'follow-isolation',status:'TRACKING',recoveryVersion:2,bindings:wallets,config:{asset:token,accounts:wallets.map(w=>w.account),percent:'100',slippageBps:300,currency:'WBNB'},expiresAt:now+60000,rows:wallets.map(w=>({account:w.account,status:'TRACKING',attempts:1,orderId:'original-'+w.account,commitStartedAt:1}))};m.jobs.set(j.id,j);
  t.after(()=>{gate.resolve();m.close();fs.rmSync(data,{recursive:true,force:true});});
  const first=m.followPending(j);const until=Date.now()+3000;while(counts.size<100&&Date.now()<until)await tick();assert.equal(counts.size,100);
- await wait(70);now+=600;await m.followPending(j);
+ // Let the first pass release its per-wallet journal locks before advancing the fake clock.
+ const deadline=Date.now()+10000;
+ while(m.followRows.size>1&&Date.now()<deadline)await wait(5);
+ assert.equal(m.followRows.size,1);
+ now+=600;await m.followPending(j);
+ while(j.rows[1].status!=='CONFIRMED'&&Date.now()<deadline)await wait(5);
  assert.equal(j.rows.filter(r=>r.status==='CONFIRMED').length,99,'99 wallets advance without waiting for the hung original');
  assert.equal(sends,1,'only the proven failed sale is retried');assert.equal(counts.get(1),1,'same original never polled concurrently');assert.equal(j.rows[0].status,'TRACKING');assert.equal(m.followBusy.has(j.id),true);
  gate.resolve();await first;assert.equal(j.rows.filter(r=>r.status==='CONFIRMED').length,100);assert.equal(m.followRows.size,0);assert.equal(m.followBusy.size,0);

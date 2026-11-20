@@ -38,16 +38,23 @@ export function createFastSalePanel({api,getSelection,document:doc=document}){
  function renderRows(wrap,rows,job){
   const list=node('div','','fast-wallet-list');
   for(const r of rows){
-   const text=r.account+' 号 · '+(belowMinimum(r)?'未成交':labels[r.status]||'准备中');
+   const original=r.status==='APPROVAL_PENDING'?r.approval:r.status==='REGISTRATION_PENDING'?r.registration:null;
+   let pending='';
+   if(original?.hash)pending='已广播，等待链上确认';
+   else if(original?.status==='PENDING_CONFIRMATION')pending='等待币安 App 确认';
+   else if(original?.orderId)pending=original.appConfirmation===true?'币安预览要求 App 确认，原单已受理':'币安已受理，等待交易哈希。可在 App 查看原单';
+   else if(original)pending='正在核对提交结果';
+   const text=r.account+' 号 · '+(pending||(belowMinimum(r)?'未成交':labels[r.status]||'准备中'));
    const f=r.status==='SOLD'&&r.fill;
    const quote=f?.nativePaid?'BNB':job.venue?.quoteSymbol==='BNB'?'WBNB':job.venue?.quoteSymbol||'计价币';
-   const info=f?units(f.amount,job.venue?.tokenDecimals)+' 枚 · 到账 '+units(f.output,job.venue?.quoteDecimals)+' '+quote:belowMinimum(r)&&r.plan?.minOut?'低于本钱包最低到账 '+units(String(r.plan.minOut),job.venue?.quoteDecimals)+' '+(job.venue?.quoteSymbol||'计价币'):r.message;
+   const info=f?units(f.amount,job.venue?.tokenDecimals)+' 枚 · 到账 '+units(f.output,job.venue?.quoteDecimals)+' '+quote:belowMinimum(r)&&r.plan?.minOut?'低于本钱包最低到账 '+units(String(r.plan.minOut),job.venue?.quoteDecimals)+' '+(job.venue?.quoteSymbol||'计价币'):pending?'':r.message;
    const row=node('div',text+(info?' · '+info:''),'fast-result');
    if(/^0x[\da-f]{64}$/i.test(r.receipt||'')){
     const link=node('a','链上回执 ↗');link.href='https://bscscan.com/tx/'+r.receipt;link.target='_blank';link.rel='noopener noreferrer';row.append(link);
    }
    if(r.ratingReview&&['APPROVAL_REVIEW','REGISTRATION_REVIEW'].includes(r.status)){
     const preview=node('details','');preview.append(node('summary','钱包预览详情'));
+    if(typeof r.ratingReview.appConfirmation==='boolean')row.append(node('span',r.ratingReview.appConfirmation?' 本笔需要币安 App 确认。':' 币安预览允许直接提交。'));
     const amount=units(String(r.cap),job.venue.tokenDecimals);
     if(r.ratingReview.field==='approval')row.append(node('span',' 本次授权 '+amount+' 枚。'));
     preview.append(node('p','持币钱包 '+r.address+' · 代币 '+job.asset),node('p','执行合约 '+job.executor+' · 授权额度 '+amount+' 枚'));
@@ -322,9 +329,11 @@ export function createFastSalePanel({api,getSelection,document:doc=document}){
  }));
  $('fastRefresh').addEventListener('click',refresh);
  $('fastAuthorize').addEventListener('click',()=>action(async()=>{
-  const k=selectionKey(),old=jobFor();if(requestKey!==k||!requestId||old&&['REVIEW','COMPLETED'].includes(old.status)){requestId=crypto.randomUUID();requestKey=k;}
+  const appFreeOnly=$('fastAppFreeOnly').checked;
+  if(appFreeOnly&&state.appFreeApprovals!==true)throw Error('此后端尚未支持免 App 模式，请在原单结束后更新后端。');
+  const k=selectionKey()+'/'+appFreeOnly,old=jobFor();if(requestKey!==k||!requestId||old&&['REVIEW','COMPLETED'].includes(old.status)){requestId=crypto.randomUUID();requestKey=k;}
   if(old?.status==='AUTHORIZED'){say('本批次已经授权，可设置卖出条件并开始任务。');return;}
-  say('正在核验主池并逐钱包授权…');await api('fast-sale/authorize',{asset:asset(),accounts:accounts(),id:requestId});say('请查看下方逐钱包结果。');
+  say('正在核验主池并逐钱包授权…');await api('fast-sale/authorize',{asset:asset(),accounts:accounts(),id:requestId,appFreeOnly});say('请查看下方逐钱包结果。');
  },true));
  $('fastStart').addEventListener('click',()=>action(async()=>{
   const job=jobFor();if(!job)throw Error('请先授权所选钱包');

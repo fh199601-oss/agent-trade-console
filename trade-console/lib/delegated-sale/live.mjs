@@ -59,7 +59,7 @@ export class LiveFastSale extends FastSaleService {
   for(const j of this.jobs)if(j.status==='REGISTERING'){j.pausedFrom='REGISTERING';j.status='PAUSED';j.message='登记过程中服务重启，请核对原单后恢复';}
   this.persist();
  }
- status(){return {mode:'LIVE',enabled:true,taxAware:this.adapter.taxAware,managedSupported,privateKeyActions:managedSupported,generatedAddress:this.generatedAddress,managedAddress:this.managedAddress,managedAddresses:[...this.managedAddresses],executor:this.adapter.executor,trigger:this.trigger?.wallet?.address,jobs:this.visibleJobs()};}
+ status(){return {mode:'LIVE',enabled:true,appFreeApprovals:true,taxAware:this.adapter.taxAware,managedSupported,privateKeyActions:managedSupported,generatedAddress:this.generatedAddress,managedAddress:this.managedAddress,managedAddresses:[...this.managedAddresses],executor:this.adapter.executor,trigger:this.trigger?.wallet?.address,jobs:this.visibleJobs()};}
  async refreshPastFills(){
   if(this.fillLookup)return this.fillLookup;
   this.fillRetry??=new Map();
@@ -249,19 +249,33 @@ export class LiveFastSale extends FastSaleService {
   const preview=await this.bridge.call(r.account,['contract-call','preview','--binanceChainId','56','--from',r.address,'--to',step.to,'--value','0','--inputData',step.data]);
   verifyPreview(preview,{wallet:r.address,amountIn:'0'},{...step,value:'0'});
   const ratings=addressRatingReview(preview,j,r,field,step);
-  const digest=JSON.stringify([field,r.address,j.executor,step.to,keccak256(step.data),ratings]);
+  const appConfirmation=typeof preview.requireConfirmation==='boolean'?preview.requireConfirmation:null;
   if(!this.canSubmit(j,field))throw Error('任务已暂停或删除');
+  if(field==='approval'&&j.appFreeOnly&&appConfirmation!==false){
+   delete r.ratingReview;
+   r.status='SKIPPED';
+   r.message=appConfirmation?'币安要求在 App 确认，已按免 App 模式跳过，此钱包没有提交授权。':'币安未说明能否免 App 确认，此钱包没有提交授权。';
+   return;
+  }
+  const digest=JSON.stringify([field,r.address,j.executor,step.to,keccak256(step.data),ratings,appConfirmation]);
   if(ratings&&(!consent||consent.ticket!==r.ratingReview?.ticket||consent.digest!==digest||consent.until<Date.now())){
-   r.ratingReview={ticket:randomUUID(),digest,until:Date.now()+120000,ratings,field};
+   r.ratingReview={ticket:randomUUID(),digest,until:Date.now()+120000,ratings,field,appConfirmation};
    r.status=field==='approval'?'APPROVAL_REVIEW':'REGISTRATION_REVIEW';
    r.message='币安模拟通过，仅返回地址评级。请核对下方预览。';return;
   }
   if(consent&&!ratings)throw Error('钱包风险预览已变化，请重新核对本次操作');
   delete r.ratingReview;
   if(!this.canSubmit(j,field))throw Error('任务已停止，该钱包尚未提交');
-  const orig=r[field]={requestId:preview.requestId,to:step.to,dataHash:keccak256(step.data),status:'SUBMITTING'};
+  const orig=r[field]={requestId:preview.requestId,to:step.to,dataHash:keccak256(step.data),appConfirmation,status:'SUBMITTING'};
   this.persist();
-  const record=res=>{orig.hash=res?.txHash;orig.orderId=res?.orderId;orig.status=orig.hash?'PENDING':'UNKNOWN';this.persist();};
+  delete r.message;
+  const record=res=>{
+   if(res?.orderId)orig.orderId=res.orderId;
+   if(res?.txHash)orig.hash=res.txHash;
+   if(res?.status==='PENDING_CONFIRMATION')orig.appConfirmation=true;
+   orig.status=orig.hash?'PENDING':res?.status==='PENDING_CONFIRMATION'?'PENDING_CONFIRMATION':'UNKNOWN';
+   this.persist();
+  };
   try{record(await this.bridge.call(r.account,['contract-call','execute','--requestId',preview.requestId],{onLateResponse:late=>{if(late.data)record(late.data);}}));}
   catch(e){orig.status=e.dispatched===false?'NOT_SENT':'UNKNOWN';orig.message=message(e);this.persist();if(orig.status==='NOT_SENT')throw e;}
  }
@@ -303,14 +317,15 @@ export class LiveFastSale extends FastSaleService {
    this.persist();
   }finally{this.probes.delete(j.id);}
  }
- async enroll({id,asset,wallets}){
+ async enroll({id,asset,wallets,appFreeOnly=false}){
+  if(typeof appFreeOnly!=='boolean')throw Error('请选择有效的授权确认方式');
   asset=getAddress(asset);if(typeof id!=='string'||!requestKey.test(id)||!wallets.length||wallets.length>100)throw Error('授权批次或钱包数量无效');
   const existing=this.jobs.find(j=>j.id===id);
-  if(existing){if(existing.deletedAt)throw Error('该任务已删除');if(!same(existing.asset,asset)||walletSet(existing.rows)!==walletSet(wallets))throw Error('批次钱包或代币已发生变化');return structuredClone(existing);}
+  if(existing){if(existing.deletedAt)throw Error('该任务已删除');if(Boolean(existing.appFreeOnly)!==appFreeOnly||!same(existing.asset,asset)||walletSet(existing.rows)!==walletSet(wallets))throw Error('批次钱包或代币已发生变化');return structuredClone(existing);}
   const venue=await this.adapter.verifiedVenue(asset);
   if(venue.blockedReason)throw Error(venue.blockedReason);
   if(this.jobs.some(j=>activePhase(j)&&same(j.asset,asset)&&j.rows.some(r=>!['FAILED','SKIPPED','SOLD','EXPIRED'].includes(r.status)&&wallets.some(w=>same(w.address,r.address)))))throw Error('所选钱包已有此币的授权批次，请查看下方原任务');
-  const j={id,asset,executor:this.adapter.executor,venue,status:'AUTHORIZING',createdAt:Date.now(),rows:wallets.map(w=>({...w,status:'WAIT_AUTH'})),settings:{},batches:[]};
+  const j={id,asset,appFreeOnly,executor:this.adapter.executor,venue,status:'AUTHORIZING',createdAt:Date.now(),rows:wallets.map(w=>({...w,status:'WAIT_AUTH'})),settings:{},batches:[]};
   this.jobs.push(j);this.persist();
   await this.continueWallets(j,'approval');return structuredClone(j);
  }
@@ -356,7 +371,10 @@ export class LiveFastSale extends FastSaleService {
     }
     if(!this.canSubmit(j,'approval'))return;
     r.cap=String(n);r.attempts=0;
-    if(allowance===n){r.status='AUTHORIZED';r.message='当前余额已有等额授权';}
+    if(allowance>=n&&allowance<(1n<<112n)){
+     delete r.ratingReview;
+     r.status='AUTHORIZED';r.message='已核实并复用现有授权，本次计划上限为当前余额。';
+    }
     else{
      r.status='APPROVAL_PENDING';await this.walletCall(j,r,'approval',{kind:'approve',to:asset,spender:this.adapter.executor,allowance:r.cap,data:ERC20.encodeFunctionData('approve',[this.adapter.executor,n])},consents?.get(r.account));
     }

@@ -49,7 +49,7 @@ function setup(t,deployment=personal){
  const service=new LiveFastSale({rpc,bridge,data:dir,managedRoot:dir,bindings:()=>wallets,deployment});
  service.adapter.verifiedVenue=async()=>venue;
  const sent=[];service.trigger={wallet:{address:trigger},warm:async()=>{},prepare:async()=>({status:'PREPARED'}),broadcast:async key=>{sent.push(key);return {status:'PENDING',hash:id(key)};}};
- return {service,asset,trigger,wallets,calls,sent,venue};
+ return {service,asset,trigger,wallets,calls,sent,venue,limits};
 }
 test('扣税版使用独立执行地址，旧有原单保留，37% 按执行时持仓计算',async t=>{
  assert.equal(activeDeployment({...personal,executorHash:id('invalid runtime')}),null);
@@ -181,4 +181,41 @@ test('地址评级预览逐钱包确认，仅执行已核对的精确授权与�
  assert.equal(j.rows[0].status,'REGISTRATION_REVIEW');assert.equal(calls.length,1);
  await service.confirmRatings(payload('registration',[j.rows[0]]));
  assert.equal(j.status,'ARMED');assert.deepEqual(calls.map(c=>c.name),['approve','registerSale']);
+});
+
+test('免 App 授权按钱包独立筛选，复用足额授权，核对原单时不会重提',async t=>{
+ const {service,asset,wallets,limits,calls}=setup(t);
+ const selected=wallets.slice(1),call=service.bridge.call.bind(service.bridge),previewed=[];
+ limits.set(selected[0].address,500n);
+ service.bridge.call=async(account,args)=>{
+  const p=await call(account,args);
+  if(args[1]==='preview'){previewed.push(account);p.requireConfirmation=account===3;}
+  return p;
+ };
+ const input={id:'direct-only',asset,wallets:selected,appFreeOnly:true};
+ const j=await service.authorize(input);
+ assert.deepEqual(j.rows.map(r=>r.status),['AUTHORIZED','SKIPPED','AUTHORIZED']);
+ assert.deepEqual(previewed.sort(),[3,4]);assert.deepEqual(calls.map(c=>c.account),[4]);
+ assert.equal(j.rows[0].cap,'400');assert.equal(limits.get(selected[0].address),500n);
+ assert.match(j.rows[1].message,/App 确认/);assert.equal(j.rows[1].approval,undefined);
+ await service.authorize(input);await service.reconcile(service.jobs[0]);assert.equal(calls.length,1);
+});
+
+test('免 App 模式遇到未知确认要求时跳过；服务端在执行时改判须保留原单',async t=>{
+ const {service,asset,wallets}=setup(t);const call=service.bridge.call.bind(service.bridge);let executions=0;
+ service.bridge.call=async(account,args)=>{
+  if(args[1]==='preview'){
+   const p=await call(account,args);
+   if(account===3)p.requireConfirmation=false;
+   return p;
+  }
+  executions++;return {status:'PENDING_CONFIRMATION',orderId:'fixture-original'};
+ };
+ const input={id:'late-app-policy',asset,wallets:wallets.slice(1,3),appFreeOnly:true};
+ const j=await service.authorize(input);
+ assert.deepEqual(j.rows.map(r=>r.status),['SKIPPED','APPROVAL_PENDING']);
+ assert.match(j.rows[0].message,/未说明/);
+ assert.equal(j.rows[1].approval.status,'PENDING_CONFIRMATION');
+ assert.equal(j.rows[1].approval.orderId,'fixture-original');assert.equal(j.rows[1].approval.appConfirmation,true);
+ await service.authorize(input);await service.reconcile(service.jobs[0]);assert.equal(executions,1);
 });
