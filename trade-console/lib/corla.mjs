@@ -1,7 +1,7 @@
 // Corla's factory registry is the authority for membership. Website text, token
 // suffixes and successful third-party calls alone never authorize a target.
 import fs from 'node:fs';
-import {Interface,keccak256,ZeroAddress,randomBytes,hexlify} from 'ethers';
+import {Interface,id,keccak256,ZeroAddress,randomBytes,hexlify} from 'ethers';
 import {address,BNB,USDT,ERC20,read,same,parseUnits,formatUnits} from './common.mjs';
 import {codeIdentity} from './discovery.mjs';
 import {corlaHint} from '../public/corla-input.mjs';
@@ -9,6 +9,7 @@ export const CORLA=JSON.parse(fs.readFileSync(new URL('./corla-protocol.json',im
 export const CORLA_FACTORY=new Interface(CORLA.factoryAbi);
 export const CORLA_MINT=new Interface([...CORLA.mintAbi,...CORLA.errors]);
 const TRANSFER=new Interface(['event Transfer(address indexed from,address indexed to,uint256 value)']);
+const AUTO_DISTRIBUTION_SLOT=id('corla.storage.AutoDistribution.v1');
 const fail=(code,message,details)=>Object.assign(Error(message),{code,details});
 async function simulateCorla(rpc,step,w,block){try{return await rpc.call({to:step.to,from:w.address,value:BigInt(step.value),data:step.data},block);}catch(e){
  if(/insufficient funds|insufficient balance/i.test(e.message))throw fail('BUDGET_LIMIT','当前钱包 BNB 余额不足以支付本次认购费用和 Gas');
@@ -37,13 +38,23 @@ export class CorlaClient{
   if(identity.fingerprint!==root.fingerprint||!same(impl,root.mintImplementation)||keccak256(code)!==root.mintImplementationHash)throw fail('CORLA_VERSION_CHANGED','Corla 工厂或实现已更新，当前版本需重新核验；不会改走历史重放');
   return identity;
  });}
- async dependencies(root,fresh=false){return this.cached('dependencies:'+root.address,fresh?0:15000,async()=>Promise.all((root.dependencies||[]).map(async pin=>{
-  // Reviewed immutable delegate targets are part of the protocol identity too.
-  // A valid main implementation does not make an altered settlement module safe.
+ async moduleIdentity(pin,fresh){return this.cached('module:'+pin.address+':'+pin.codeHash,fresh?0:15000,async()=>{
   const identity=await this.identity(this.rpc,pin.address);
   if(identity.implementation||identity.beacon||keccak256(identity.code||'0x')!==pin.codeHash)throw fail('CORLA_VERSION_CHANGED','Corla 结算模块已变化，需要重新核验');
   return identity;
- })));}
+ });}
+ async dependencies(root,fresh=false){return Promise.all((root.dependencies||[]).map(pin=>this.moduleIdentity(pin,fresh)));}
+ async distributionIdentity(root,mint,fresh){
+  const pin=root.autoDistributionModule;
+  if(!pin)return null;
+  // CorlaAutoStorage.State packs the enabled bool then the 20-byte module.
+  // Projects created before this feature have a completely empty slot.
+  const word=await this.rpc.send('eth_getStorageAt',[mint,AUTO_DISTRIBUTION_SLOT,'latest']);
+  if(/^0x0{64}$/i.test(word))return null;
+  if(!/^0x0{22}[a-f0-9]{40}0[01]$/i.test(word)||!same('0x'+word.slice(-42,-2),pin.address))
+   throw fail('CORLA_VERSION_CHANGED','此项目的自动分发模块与已核验版本不符');
+  return this.moduleIdentity(pin,fresh);
+ }
  remember(root,record){const row={root,record};this.records.set(record.mint.toLowerCase(),row);if(!same(record.expectedToken,ZeroAddress))this.records.set(record.expectedToken.toLowerCase(),row);return row;}
  async directory(root){return this.cached('directory:'+root.address,1200,async()=>{
   const [,[count]]=await Promise.all([this.factory(root),this.get(root.address,CORLA_FACTORY,'deploymentCount')]);const old=this.counts.get(root.address)||0n;
@@ -80,7 +91,7 @@ export class CorlaClient{
  }
  async verify(row,{fresh=false}={}){
   const {root,record}=row;return this.cached('verify:'+record.mint,fresh?0:10000,async()=>{
-   const [factoryIdentity,identity,[mapped],[index],[expected]]=await Promise.all([this.factory(root,fresh),this.identity(this.rpc,record.mint),this.get(root.address,CORLA_FACTORY,'mintForLaunchSalt',[record.launchSalt]),this.get(root.address,CORLA_FACTORY,'deploymentIndexPlusOne',[record.mint]),this.get(record.mint,CORLA_MINT,'expectedToken')]);
+   const [factoryIdentity,identity,[mapped],[index],[expected],distribution]=await Promise.all([this.factory(root,fresh),this.identity(this.rpc,record.mint),this.get(root.address,CORLA_FACTORY,'mintForLaunchSalt',[record.launchSalt]),this.get(root.address,CORLA_FACTORY,'deploymentIndexPlusOne',[record.mint]),this.get(record.mint,CORLA_MINT,'expectedToken'),this.distributionIdentity(root,record.mint,fresh)]);
    if(!same(mapped,record.mint)||!index||!same(identity.implementation,root.mintImplementation)||keccak256(identity.implementationCode||'0x')!==root.mintImplementationHash)throw fail('CORLA_NOT_VERIFIED','Corla 工厂登记或代理实现不匹配');
    if(!same(expected,record.expectedToken)){
     // Unlocked legacy deployments populate their token once, at launch.
@@ -90,7 +101,8 @@ export class CorlaClient{
     if(!same(record.expectedToken,ZeroAddress)||same(expected,ZeroAddress)||!same(next.expectedToken,expected)||immutable.some(k=>String(next[k]).toLowerCase()!==String(record[k]).toLowerCase()))throw fail('CORLA_NOT_VERIFIED','Corla 开盘代币与原工厂登记不匹配');
     row.record=next;this.remember(root,next);
    }
-   return {identity,factoryIdentity,dependencies:await this.dependencies(root,fresh)};
+   const dependencies=await this.dependencies(root);
+   return {identity,factoryIdentity,dependencies:distribution?[...dependencies,distribution]:dependencies};
   });
  }
  async terms(row){return this.cached('terms:'+row.record.mint,10000,async()=>{

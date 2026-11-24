@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {Interface,keccak256,ZeroAddress} from 'ethers';
+import {Interface,id,keccak256,ZeroAddress} from 'ethers';
 import {CORLA,CORLA_FACTORY as F,CORLA_MINT as M,CorlaClient,corlaInput,discoverCorla,corlaPlan,corlaReceipt,corlaRefundReceipt,corlaClient} from '../lib/corla.mjs';
 import {hash,ERC20,USDT,BNB,bindings} from '../lib/common.mjs';
 import {IMPL_SLOT,BEACON_SLOT,discover} from '../lib/discovery.mjs';
@@ -56,6 +56,27 @@ test('changed or proxied delegate modules block before simulation and failed che
  await assert.rejects(client.verify({root,record:state.record},{fresh:true}),{code:'CORLA_VERSION_CHANGED'});
  rpc.getCode=original;const originalIdentity=client.identity;client.identity=async(...a)=>{const x=await originalIdentity(...a);return a[1]===module?{...x,implementation:impl}:x;};
  await assert.rejects(client.dependencies(root,true),{code:'CORLA_VERSION_CHANGED'});
+});
+test('project distribution module is checked independently of factory and Mint identities',async()=>{
+ const {rpc,client,root,row,state}=fixture(),module=addr(8);
+ root.autoDistributionModule={address:module,codeHash:keccak256('0x6000600500')};
+ const packed=(address,enabled)=>'0x'+'0'.repeat(22)+address.slice(2)+enabled;
+ const original=rpc.send,slot=id('corla.storage.AutoDistribution.v1');
+ let config=packed(module,'01');
+ rpc.send=async(method,args)=>method==='eth_getStorageAt'&&args[0]===mint&&args[1]===slot?config:original(method,args);
+ const plan=await corlaPlan(rpc,intent,w,{address:mint},{client});
+ assert.ok(plan.protocolIdentities.some(i=>i.target===module));
+ config=packed(module,'00');
+ assert.equal((await client.verify(row,{fresh:true})).dependencies[0].target,module);
+ config='0x'+'0'.repeat(64);
+ assert.deepEqual((await client.verify(row,{fresh:true})).dependencies,[]);
+ for(config of [packed(addr(9),'01'),packed(ZeroAddress,'01'),packed(module,'02'),'0x']){
+  await assert.rejects(client.verify(row,{fresh:true}),{code:'CORLA_VERSION_CHANGED'});
+ }
+ config=packed(module,'01');
+ const getCode=rpc.getCode;rpc.getCode=async a=>a===module?'0x60006007':getCode(a);
+ await assert.rejects(client.verify(row,{fresh:true}),{code:'CORLA_VERSION_CHANGED'});
+ assert.equal(state.simulations,1);
 });
 test('terminated phase is distinct from waiting for launch and cannot create a claim',async()=>{
  const {client,state,row,rpc}=fixture();state.status=6n;

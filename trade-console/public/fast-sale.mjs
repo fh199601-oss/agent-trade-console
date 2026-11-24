@@ -7,7 +7,7 @@ function units(raw,decimals){
  const s=raw.padStart(decimals+1,'0'),fraction=s.slice(-decimals).replace(/0+$/,'');
  return s.slice(0,-decimals)+(fraction?'.'+fraction:'');
 }
-const labels={APPROVAL_REVIEW:'待核对授权',REGISTRATION_REVIEW:'待核对登记',AUTHORIZED:'授权成功',AUTHORIZING:'正在授权',WAIT_AUTH:'等候授权',APPROVAL_PENDING:'授权原单待核对',REGISTERING:'正在登记钱包计划',REGISTRATION_PENDING:'计划原单待核对',READY:'已就绪',ARMED:'监测中',WAIT_CLAIM:'等待领取到账',WAIT_TAX:'等待税率回落',FAILED:'失败',PENDING:'卖出原单待核对',SOLD:'已卖出',REVIEW:'需要核对',RETRY:'待重试',EXPIRED:'已过期',PAUSED:'已暂停',COMPLETED:'已结束',SKIPPED:'已跳过'};
+const labels={WAIT_OPEN_REGISTRATION:'已启动 · 等待主池开盘后登记',APPROVAL_REVIEW:'待核对授权',REGISTRATION_REVIEW:'待核对登记',AUTHORIZED:'授权成功',AUTHORIZING:'正在授权',WAIT_AUTH:'等候授权',APPROVAL_PENDING:'授权原单待核对',REGISTERING:'正在登记钱包计划',REGISTRATION_PENDING:'计划原单待核对',READY:'已就绪',ARMED:'监测中',WAIT_CLAIM:'等待领取到账',WAIT_TAX:'等待税率回落',FAILED:'失败',PENDING:'卖出原单待核对',SOLD:'已卖出',REVIEW:'需要核对',RETRY:'待重试',EXPIRED:'已过期',PAUSED:'已暂停',COMPLETED:'已结束',SKIPPED:'已跳过'};
 const belowMinimum=r=>r.status==='REVIEW'&&(r.reason==='MINIMUM_NOT_MET'||r.message==='报价低于钱包最低到账');
 export function createFastSalePanel({api,getSelection,document:doc=document}){
  const $=id=>doc.getElementById(id);
@@ -67,7 +67,7 @@ export function createFastSalePanel({api,getSelection,document:doc=document}){
  }
  function buttons(){
   const job=jobFor(),live=state.mode==='LIVE'&&state.enabled;
-  $('fastAuthorize').disabled=busy||!live||!venue||!!venue.blockedReason||!same(holdings?.token,asset())||!accounts().length||!!job&&['AUTHORIZING','REGISTERING','ARMED','PAUSED'].includes(job.status);
+  $('fastAuthorize').disabled=busy||!live||!venue||!!venue.blockedReason||!same(holdings?.token,asset())||!accounts().length||!!job&&['AUTHORIZING','WAIT_OPEN_REGISTRATION','REGISTERING','ARMED','PAUSED'].includes(job.status);
   const target=triggerAddress(),usable=validCA(target)&&same(target,state.trigger||state.managedAddress);
   const ready=validCA(target)&&same(target,state.trigger);
   const keyActions=live&&state.privateKeyActions;
@@ -98,7 +98,8 @@ export function createFastSalePanel({api,getSelection,document:doc=document}){
   $('fastUnit').textContent=venue?.quoteSymbol||'计价币';
   let hint=validation||'每个钱包单独核对最低到账，单位为 '+venue.quoteSymbol+'。';
   if(!state.taxAware&&/^[1-9]\d?$/.test($('fastPercent').value)&&Number($('fastPercent').value)%25!==0)hint+=' 自定义比例按开始任务时的持仓折算为固定数量；执行时最多卖到该数量或剩余持仓。';
-  if(venue?.marketPending&&!venue.blockedReason)hint+=' 预定主池地址已核验。代币到账后可授权并点击「开始任务」提前登记，开盘后自动触发。';
+  if(venue?.registerAfterOpening)hint+=' 现在即可授权并开始监测。此执行合约在主池开放交易后自动登记。登记确认且主池有流动性时卖出。最长等候时间为所选有效期，链上计划自登记起计时。';
+  else if(venue?.marketPending&&!venue.blockedReason)hint+=' 预定主池地址已核验。代币到账后可授权并点击「开始任务」提前登记，开盘后自动触发。';
   if(state.taxAware&&venue)hint+=' 按主池实收和钱包税后到账结算。转账税与池费合计达到 50% 时，该钱包等待税率回落。';
   if(venue?.transferMismatch)hint+=' 此主池已有转账实收不符的卖出回执，极速合约无法处理该次扣费，可在快捷交易预览。';
   if(venue?.tax)hint+=' 核验买入税 '+venue.tax.buyBps/100+'%，卖出税 '+venue.tax.sellBps/100+'%。';
@@ -225,10 +226,11 @@ export function createFastSalePanel({api,getSelection,document:doc=document}){
    const count=j.rows.filter(r=>r.status==='SOLD').length,below=j.rows.filter(belowMinimum).length;
    const summaryStatus=j.status==='REVIEW'&&below&&j.rows.every(r=>belowMinimum(r)||['SOLD','FAILED','EXPIRED','SKIPPED'].includes(r.status))?(count?'部分成交':'未成交'):labels[j.status]||j.status;
    box.append(node('summary',j.asset.slice(0,8)+'…'+j.asset.slice(-6)+' · '+summaryStatus+(j.settings?.percent?' · 卖出比例 '+j.settings.percent+'%':'')+' · '+(j.status==='COMPLETED'||count?count+'/'+j.rows.length+' 个钱包成交':j.rows.length+' 个钱包')+(below?' · '+below+' 个未达最低到账':'')+(failed?' · '+failed+' 个失败':'')));
+   if(j.message)box.append(node('p',j.message,'helper'));
    renderRows(box,j.rows,j);
    const line=node('div','','fast-job-line'),actions=node('div','','fast-job-actions');
    const add=(label,command)=>{const button=node('button',label,'secondary'+(command==='delete'?' fast-delete':''));button.type='button';button.disabled=controlling.has(j.id);button.onclick=()=>controlJob(j,command);actions.append(button);};
-   if(j.status==='PAUSED')add('恢复','resume');else if(['ARMED','REGISTERING','AUTHORIZING','AUTHORIZED'].includes(j.status))add('暂停','pause');
+   if(j.status==='PAUSED')add('恢复','resume');else if(['ARMED','WAIT_OPEN_REGISTRATION','REGISTERING','AUTHORIZING','AUTHORIZED'].includes(j.status))add('暂停','pause');
    add('删除','delete');line.append(box,actions);wrap.append(line);
   }
   if(!s.jobs?.length)wrap.append(node('p','暂无极速卖出任务','helper'));
@@ -239,7 +241,7 @@ export function createFastSalePanel({api,getSelection,document:doc=document}){
     if(!deployBusy)try{await api('fast-sale/deployment/check',{});}catch(e){say(e.message);}
     await refresh();
    },3500);
-  }else if(s.jobs?.some(j=>['REGISTERING','ARMED','AUTHORIZING'].includes(j.status)||j.rows.some(r=>['APPROVAL_PENDING','REGISTRATION_PENDING','PENDING'].includes(r.status))))timer=setTimeout(refresh,1800);
+  }else if(s.jobs?.some(j=>['WAIT_OPEN_REGISTRATION','REGISTERING','ARMED','AUTHORIZING'].includes(j.status)||j.rows.some(r=>['APPROVAL_PENDING','REGISTRATION_PENDING','PENDING'].includes(r.status))))timer=setTimeout(refresh,1800);
  }
  async function refresh(){const id=++tick;try{const s=await api('fast-sale');if(id===tick)render(s);}catch(e){say(e.message);}}
  async function action(fn,showProgress=false){
@@ -337,7 +339,10 @@ export function createFastSalePanel({api,getSelection,document:doc=document}){
  },true));
  $('fastStart').addEventListener('click',()=>action(async()=>{
   const job=jobFor();if(!job)throw Error('请先授权所选钱包');
-  say('正在登记钱包计划…');await api('fast-sale/start',{id:job.id,asset:asset(),accounts:accounts(),selectedOnly:true,settings:config()});say('已提交开始请求，逐钱包进度见下方。');
+  const appFreeOnly=$('fastAppFreeOnly').checked;
+  if(appFreeOnly&&state.appFreeRegistration!==true)throw Error('当前后端仅支持免 App 授权，请更新后再登记。');
+  say('正在登记钱包计划…');const result=await api('fast-sale/start',{id:job.id,asset:asset(),accounts:accounts(),selectedOnly:true,settings:config(),appFreeOnly});
+  say(result.status==='WAIT_OPEN_REGISTRATION'?'任务已启动，正在监测主池开盘。':result.rows.every(r=>['SKIPPED','FAILED'].includes(r.status))?'本次没有钱包完成登记，请查看逐钱包原因。':'逐钱包登记进度见下方。');
  },true));
  if(validCA(asset()))lookupTimer=setTimeout(loadAsset,0);
  return {refresh,selectionChanged};

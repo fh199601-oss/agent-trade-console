@@ -26,7 +26,7 @@
 ```text
 请在我的电脑安装并打开 AGENT 本地交易台。仓库 https://github.com/fh199601-oss/agent-trade-console ，正式下载页 https://github.com/fh199601-oss/agent-trade-console/releases/latest 。
 
-自动识别 macOS 或 Windows 以及芯片架构，下载 v1.8.1 或更高正式版对应的便携 ZIP 和 .sha256，验证后解压。阅读包内 AGENTS.md、START_HERE.md、WALLET_SETUP.md、WALLET_SAFETY.md、STARTUP.md。使用包内 Python 运行 setup.py。若已有安装，按升级说明保留原目录、账号映射、任务及部署记录。已有运行中任务时先告诉我会影响哪些任务。
+自动识别 macOS 或 Windows 以及芯片架构，下载 v1.8.2 或更高正式版对应的便携 ZIP 和 .sha256，验证后解压。阅读包内 AGENTS.md、START_HERE.md、WALLET_SETUP.md、WALLET_SAFETY.md、STARTUP.md。使用包内 Python 运行 setup.py。若已有安装，按升级说明保留原目录、账号映射、任务及部署记录。已有运行中任务时先告诉我会影响哪些任务。
 
 接入我自己的账号池。有已知入口就直接用 --wallet-dir、--wallet-entry 或 --wallet-map。否则按安装器做一次有限发现，从原来的主机、Docker 或 WSL 环境调用对应账号原有启动命令，只读核对连接和公开地址。保留原解释器、账号锁和登录状态。不要扫描或打开登录目录、复制会话、索要私钥或读取私人 RPC。若需要我选择多套入口或在币安 App 登录，告诉我需要做哪一步。个别钱包未连上时，先让其余钱包可用。
 

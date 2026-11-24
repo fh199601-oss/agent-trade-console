@@ -219,3 +219,80 @@ test('免 App 模式遇到未知确认要求时跳过；服务端在执行时改
  assert.equal(j.rows[1].approval.orderId,'fixture-original');assert.equal(j.rows[1].approval.appConfirmation,true);
  await service.authorize(input);await service.reconcile(service.jobs[0]);assert.equal(executions,1);
 });
+
+test('免 App 策略覆盖卖出登记：复用已有授权，需 App 和未给结论的钱包不占用其他钱包',async t=>{
+ for(const strictAtEnrollment of [false,true]){
+  const {service,asset,trigger,wallets,calls,limits}=setup(t);
+  const selected=wallets.slice(1),original=service.bridge.call.bind(service.bridge);
+  for(const w of selected)limits.set(w.address,2000n);
+  service.bridge.call=async(account,args)=>{
+   const result=await original(account,args);
+   if(args[1]==='preview'&&account!==3)result.requireConfirmation=account===2;
+   return result;
+  };
+  const {id}=await service.authorize({id:'registration-policy',asset,wallets:selected,appFreeOnly:strictAtEnrollment});
+  assert.equal(calls.length,0);
+  const request={id,asset,accounts:[2,3,4],settings:{trigger,source:'opening',percent:25,expiryHours:6,minOut:'1'}};
+  if(!strictAtEnrollment)request.appFreeOnly=true;
+  const job=await service.start(request);
+  assert.deepEqual(job.rows.map(r=>r.status),['SKIPPED','SKIPPED','READY']);
+  assert.match(job.rows[0].message,/登记模拟通过。币安要求 App 确认/);
+  assert.match(job.rows[1].message,/未说明/);
+  assert.ok(job.rows.slice(0,2).every(r=>!r.registration));
+  await service.start(request);
+  await assert.rejects(service.start({...request,appFreeOnly:false}),/确认方式/);
+  assert.deepEqual(calls.map(c=>[c.account,c.name]),[[4,'registerSale']]);
+ }
+});
+
+test('Mint 期间授权并启动，主池开盘且有储备后自动登记，多次通知只广播一次',async t=>{
+ const {FastSaleRuntime}=await import('../lib/delegated-sale/runtime.mjs');
+ const {service,venue,trigger,wallets,calls,sent,asset}=setup(t,personal);
+ let open=false,liquid=false;
+ service.adapter.verifiedVenue=async()=>({...venue,marketPending:!open,registerAfterOpening:!open,openAtVerification:open&&liquid});
+ service.adapter.opening=async()=>({open:open&&liquid,pair:venue.pair,token:asset});
+ const runtime=new FastSaleRuntime(service);
+ const req={id:'closed',asset,wallets:wallets.slice(1)};
+ await service.authorize(req);
+ const start={id:req.id,asset,accounts:[2,3,4],settings:{trigger,source:'opening',percent:75,minOut:'7',expiryHours:6}};
+ assert.equal((await service.start(start)).status,'WAIT_OPEN_REGISTRATION');
+ assert.equal((await service.start(start)).status,'WAIT_OPEN_REGISTRATION');
+ assert.ok(service.owns(asset,wallets[2].address));
+ await runtime.tick();open=true;await runtime.tick();
+ assert.deepEqual(calls.map(c=>c.name),['approve','approve','approve']);assert.equal(sent.length,0);
+ liquid=true;await Promise.all([runtime.tick(),service.notifyOpening(asset,await service.adapter.opening())]);
+ assert.equal(service.jobs[0].status,'ARMED');assert.deepEqual(calls.slice(3).map(c=>[c.name,c.params[2],c.params[5]]),Array(3).fill(['registerSale',7n,75n]));
+ assert.equal(sent.length,1);await service.notifyOpening(asset,await service.adapter.opening());assert.equal(sent.length,1);
+});
+
+test('等待登记的任务保留截止时间；暂停、删除、重启、主池变化和等候过期均不发送',async t=>{
+ for(const action of ['pause','delete','restart','change','expire']){
+  const {service,venue,trigger,wallets,calls,sent,asset}=setup(t,personal);
+  service.adapter.verifiedVenue=async()=>({...venue,registerAfterOpening:true,marketPending:true});
+  const id='waiting-'+action;await service.authorize({id,asset,wallets:[wallets[1]]});
+  await service.start({id,asset,accounts:[2],settings:{trigger,source:'opening',expiryHours:1}});
+  const snapshot={token:asset,pair:venue.pair,open:true};
+  if(action==='restart'){
+   const reboot=new LiveFastSale({data:service.data,rpc:service.rpc,bridge:service.bridge,managedRoot:service.data,bindings:()=>wallets,deployment:personal});
+   assert.equal(reboot.jobs[0].status,'PAUSED');assert.equal(reboot.jobs[0].pausedFrom,'WAIT_OPEN_REGISTRATION');
+   await reboot.notifyOpening(asset,snapshot);
+  }else{
+   if(['pause','delete'].includes(action))await service.control(id,action);
+   if(action==='change')snapshot.pair=a(33);
+   if(action==='expire')service.now=()=>service.jobs[0].registrationWaitUntil;
+   await service.notifyOpening(asset,snapshot);
+   if(action==='change')assert.equal(service.jobs[0].status,'PAUSED');
+   if(action==='expire')assert.equal(service.jobs[0].rows[0].status,'EXPIRED');
+  }
+  assert.equal(calls.length,1);assert.equal(sent.length,0);
+ }
+});
+
+test('稳定币代理在开始后更换实现时整批暂停，不广播',async t=>{
+ const {service,venue,trigger,wallets,sent,asset}=setup(t,personal);
+ venue.quoteIdentity=id('original implementation');service.adapter.quoteUnchanged=async()=>false;
+ await service.authorize({id:'stable-upgrade',asset,wallets:wallets.slice(1)});
+ await service.start({id:'stable-upgrade',asset,accounts:[2,3,4],settings:{trigger,source:'opening',expiryHours:1}});
+ await service.notifyOpening(asset,{token:asset,pair:venue.pair,open:true});
+ assert.equal(sent.length,0);assert.equal(service.jobs[0].status,'PAUSED');assert.match(service.jobs[0].message,/计价币/);
+});

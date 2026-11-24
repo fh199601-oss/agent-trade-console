@@ -1,3 +1,4 @@
+import {declaredPairQuote,predictedQuote,knownQuoteLabel} from './pending-quote.mjs';
 import {dividendInitHash,dividendRuntimeHash,standardBatch,dividendBatch,needsDividendGas,checkHeelsIdentity,incompatibleGas} from './dividend-gas.mjs';
 import {personalExecutor} from './personal-address.mjs';
 import {Interface,ZeroAddress,id,keccak256,getCreate2Address,solidityPackedKeccak256} from 'ethers';
@@ -62,7 +63,7 @@ export class BscVenue {
    try{return await one(to,method);}
    catch(e){if(e.code==='BAD_DATA'||e.code==='CALL_EXCEPTION'||/revert|invalid opcode/i.test(e.message))return null;throw e;}
   };
-  let source=token,pair,quote,getter;
+  let source=token,pair,quote,getter,registerAfterOpening=false;
   const sale=await tryOne(token,'sale');
   if(sale&&!same(sale,ZeroAddress)&&same(await tryOne(sale,'token'),token))source=sale;
   const getters=['pair','pancakePair','uniswapV2Pair','lpPair'];
@@ -70,20 +71,39 @@ export class BscVenue {
   const [known,opened]=this.taxAware?await read(this.rpc,this.executor,SALE,'openingState',[token,source]):[true,true];
   if(!known)throw Error('项目没有可核验的开盘状态，暂不能建立极速卖出任务');
   const pairs=new Set(declared.filter(x=>x&&!same(x,ZeroAddress)).map(x=>x.toLowerCase()));
+  if(pairs.size>1)throw Error('项目声明了多个不同交易池，无法核验唯一主池');
   const index=declared.findIndex(x=>x&&!same(x,ZeroAddress));
   if(!opened&&this.taxAware||index<0){
    const slot=index>=0?index:declared.findIndex(x=>x&&same(x,ZeroAddress));
    if(slot<0)throw Error('项目尚未提供可核验的主池声明入口');
    let f=await tryOne(source,'factory');
    if(!f&&this.taxAware){const router=await tryOne(source,'router');if(router&&!same(router,ZeroAddress))f=await tryOne(router,'factory');}
-   const q=await tryOne(source,'wrappedNative')||(this.taxAware&&await tryOne(source,'WBNB'));
-   if(!same(f,TAX_BSC_SALE.factory)||!q||same(q,ZeroAddress)||!this.taxAware&&(!same(q,WBNB)||same(source,token)))throw Error('Mint 期间尚未核实最终主池的工厂与计价币，等待项目正式开盘');
-   const initHash=await one(f,'INIT_CODE_PAIR_HASH');
-   quote=q;getter=getters[slot];
-   const coins=[token,quote].sort((a,b)=>BigInt(a)<BigInt(b)?-1:1);
-   pair=getCreate2Address(f,solidityPackedKeccak256(['address','address'],coins),initHash);
+   const wrapped=await tryOne(source,'wrappedNative');
+   const q=wrapped||(this.taxAware&&await tryOne(source,'WBNB'));
+   getter=getters[slot];
+   if(this.taxAware&&!opened&&index>=0&&(!f||!q)){
+    if(f&&!same(f,TAX_BSC_SALE.factory))throw Error('项目的主池声明或工厂不一致');
+    pair=declared[index];
+    quote=await declaredPairQuote(this.rpc,{pair,token,factory:TAX_BSC_SALE.factory,executor:this.executor});
+    registerAfterOpening=true;
+   }else{
+    if(!same(f,TAX_BSC_SALE.factory)||!this.taxAware&&(!same(q,WBNB)||same(source,token)))throw Error('Mint 期间尚未核实最终主池的工厂与计价币，等待项目正式开盘');
+    quote=q;
+    if(this.taxAware&&!opened&&index<0){
+     quote=await predictedQuote(this.rpc,source,token);
+     registerAfterOpening=!same(quote,q);
+    }
+    if(!quote||same(quote,ZeroAddress))throw Error('Mint 期间尚未核实主池计价币');
+    const initHash=await one(f,'INIT_CODE_PAIR_HASH');
+    const coins=[token,quote].sort((a,b)=>BigInt(a)<BigInt(b)?-1:1);
+    pair=getCreate2Address(f,solidityPackedKeccak256(['address','address'],coins),initHash);
+    // If both getters exist but wrapped native is merely a constant, the
+    // issuer's actual factory pair determines the quote.
+    if(!opened&&this.taxAware&&pairs.size===1&&!same(pair,declared[index])&&(!wrapped||same(source,token))){
+     pair=declared[index];quote=await declaredPairQuote(this.rpc,{pair,token,factory:f,executor:this.executor});registerAfterOpening=true;
+    }
+   }
   }else{
-   if(pairs.size>1)throw Error('项目声明了多个不同交易池，无法核验唯一主池');
    pair=declared[index];getter=getters[index];
    const [a,b]=await Promise.all([one(pair,'token0'),one(pair,'token1')]);
    if(!same(a,token)&&!same(b,token))throw Error('项目主池未包含所选代币');
@@ -94,18 +114,24 @@ export class BscVenue {
    if(tokenPools.some(p=>p&&!same(p,ZeroAddress)&&!same(p,pair)))throw Error('代币与发行合约声明的主池不一致');
   }
   const contracts=[...new Set([token,quote,source])];
+  let quoteIdentity;
   const hashed=new Map(await Promise.all(contracts.map(async a=>{
    const identity=await codeIdentity(this.rpc,a);
-   if(identity.implementation||identity.beacon)throw Error('此主池涉及代理合约，目前无法锁定执行代码');
+   if(identity.implementation||identity.beacon){
+    if(!same(a,quote)||same(a,token)||same(a,source)||!knownQuoteLabel(a))throw Error('此主池涉及未支持的代理合约，无法锁定执行代码');
+    quoteIdentity=identity.fingerprint;
+   }
    return [a,keccak256(identity.code)];
   })));
   const [tokenHash,quoteHash,sourceHash]=[token,quote,source].map(a=>hashed.get(a));
   const v={token,quote,pair,source,getter:id(getter+'()').slice(0,10),tokenHash,quoteHash,sourceHash,verified:true};
-  await read(this.rpc,this.executor,SALE,'verify',[v,true]);
+  if(quoteIdentity)v.quoteIdentity=quoteIdentity;
+  if(registerAfterOpening)v.registerAfterOpening=true;
+  else await read(this.rpc,this.executor,SALE,'verify',[v,true]);
   const [[decimals],[tokenDecimals]]=await Promise.all([read(this.rpc,quote,ERC20,'decimals'),read(this.rpc,token,ERC20,'decimals').catch(()=>[])]);
   if(decimals>36n)throw Error('主池计价币精度异常');
   if(tokenDecimals!==undefined&&tokenDecimals<=36n)v.tokenDecimals=Number(tokenDecimals);
-  v.quoteDecimals=Number(decimals);v.quoteSymbol=same(quote,WBNB)?'BNB':String((await read(this.rpc,quote,ERC20,'symbol').catch(()=>['计价币']))[0]).slice(0,18);
+  v.quoteDecimals=Number(decimals);v.quoteSymbol=knownQuoteLabel(quote)||String((await read(this.rpc,quote,ERC20,'symbol').catch(()=>['计价币']))[0]).slice(0,18);
   v.marketPending=this.taxAware&&!opened;
   if(index>=0&&opened){
    const [r0,r1]=await read(this.rpc,pair,view,'getReserves');
@@ -119,6 +145,9 @@ export class BscVenue {
    if(!this.dividendGas)v.blockedReason=incompatibleGas;
   }
   this.venues.set(token.toLowerCase(),v);return v;
+ }
+ async quoteUnchanged(v){
+  return !v.quoteIdentity||(await codeIdentity(this.rpc,v.quote)).fingerprint===v.quoteIdentity;
  }
  async transferCompatibility(v,owner,amount){
   // Simulate the same spender and pool balance delta the deployed executor checks.
@@ -160,7 +189,8 @@ export class BscVenue {
    if(verified.status==='rejected')throw verified.reason;
    if(reserves.status==='rejected')throw reserves.reason;
    const [a,b]=reserves.value;
-   return {open:same(declared,v.pair)&&a>0n&&b>0n,pair:v.pair,token:v.token,block};
+   const registrationReady=same(declared,v.pair);
+   return {open:registrationReady&&a>0n&&b>0n,registrationReady,pair:v.pair,token:v.token,block};
   }
   await read(this.rpc,this.executor,SALE,'verify',[v,false]);
   const [a,b]=await read(this.rpc,v.pair,view,'getReserves');

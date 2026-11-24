@@ -121,7 +121,9 @@ for(const upgrade of [false,true])test('个人合约从'+(upgrade?'旧版升级'
   const venue={token:address(8),quote:address(9),quoteSymbol:'BNB',quoteDecimals:18,tokenDecimals:9,tax:{buyBps:100,sellBps:200},marketPending:true};
   first.app.fastSale.adapter.verifiedVenue=async token=>{assert.equal(token,venue.token);return venue;};
   const readVenue=()=>fetch(first.root+'/api/fast-venue?ca='+venue.token,{headers:{'x-console-token':first.app.token}}).then(res=>res.json());
-  assert.deepEqual(await readVenue(),{...venue,dividendGas:true,transferMismatch:false});
+  assert.deepEqual(await readVenue(),{...venue,dividendGas:true,transferMismatch:false,registerAfterOpening:false});
+  venue.registerAfterOpening=true;
+  assert.equal((await readVenue()).registerAfterOpening,true);
   venue.blockedReason='主池身份尚未核实';assert.equal((await readVenue()).blockedReason,venue.blockedReason);
  }finally{await first.close();}
  const restarted=await start();

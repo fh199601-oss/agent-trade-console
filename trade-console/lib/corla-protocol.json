@@ -1,25 +1,41 @@
 {
   "source": "https://flap.sh/apps/corla?lang=zh",
-  "artifact": "v20261105100423838_mint-launchpad_bf58371898a4",
+  "artifact": "v20261123054956968_mint-launchpad_81754d7cd122",
   "chainId": 56,
   "factories": [
     {
       "id": "corla-mint-factory",
       "address": "0xfba753f8b890eb35caa000c427f99ed5903ea517",
       "version": "5",
-      "mintImplementation": "0x9a2E15A581CE87F5D586745dA78b9AeB01633583",
-      "mintImplementationHash": "0x14a2b6569fbf22f98704500d13da0142ebe67017c1b42b42b5bbba37abb647f8",
-      "fingerprint": "16a330080e976d85fa345618768bc42202bff59c5abf0b71b34d26d0061f6f58",
+      "mintImplementation": "0xE962f0Ac1C027dc5d50d0508c2BD67c021350CD2",
+      "mintImplementationHash": "0x534f636d5a6c8b7965c5cef16892ca79db23696631d3fc9b862d6451ed46b72d",
+      "fingerprint": "c7ddd463625873d15f2b03dff63ce5cc5c6b69785e38afad2a257a6f8b40a89c",
       "dependencies": [
         {
-          "address": "0x17aa48af116d3195e449e31c617dfe5a4d48151b",
-          "codeHash": "0xb9ebf0b2b681643a402a7ae437085632bc95e51e2fc5909b8af8d8286198e944"
+          "address": "0xc11ad733a13e3047192b0372fc50f2014b6bf2af",
+          "codeHash": "0x1166e1c89847825dbcb05c6eed802d9c494c53d67908838a2226ff1eb6424474"
         },
         {
-          "address": "0xd8cd6aed1fef34f947b99d369bf73fbaab4612c2",
-          "codeHash": "0x8e5824dcb77317e5f97fd380d8e96803cd662cf9fd6a8dec3add98c33360eaa2"
+          "address": "0x16350f97d34be3ce4bc96ce9e4f403ee9785b999",
+          "codeHash": "0xc241fd1cc69ffb9903fcbdebcac7f45de4e9b26ba9ef22f83d44810003928feb"
+        },
+        {
+          "address": "0x0ab9efb3ac1bf55fecbe97c41488a39bcc30b16d",
+          "codeHash": "0x17d24145011f93ebfd8bf5ef9a2138e88e0dd55855593ade08389173b10886f8"
+        },
+        {
+          "address": "0x8a06f1aba04b93974ce60e147ae4523e5a1a6afb",
+          "codeHash": "0xce4ad7a4561f738b83a12667d6c0edd44c1e821577fa12ad3970548ec3ddfcea"
+        },
+        {
+          "address": "0x9d124ebdc1b7c7f5e0ba0a3631f7b57d9de0ad04",
+          "codeHash": "0xe9fa485a11374d8a62b86651903682b692dabf350b89544d56d415fa3e9bd844"
         }
-      ]
+      ],
+      "autoDistributionModule": {
+        "address": "0xc5cf935665a3313f8720c1c42114787e23277fe1",
+        "codeHash": "0x847bfc39ba0c15b5cb1fd9fce53c6c2141913099deaa76ad5befb8798c0c3ff2"
+      }
     },
     {
       "id": "corla-mint-factory-legacy-v7",
@@ -250,5 +266,5 @@
       ]
     }
   ],
-  "reviewedAt": "2026-11-07"
+  "reviewedAt": "2026-11-24"
 }

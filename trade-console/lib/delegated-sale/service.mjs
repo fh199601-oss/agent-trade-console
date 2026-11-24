@@ -111,7 +111,7 @@ export class FastSaleService {
  owns(asset,owner){return this.jobs.some(j=>!j.deletedAt&&same(j.asset,asset)&&j.rows.some(r=>same(r.address,owner)&&r.plan&&this.now()/1000<=r.plan.deadline&&!['FAILED','SOLD','EXPIRED'].includes(r.status)));}
  async onClaimOrder(o){
   const owner=o?.plan?.wallet,token=o?.plan?.outputToken;
-  if(!this.jobs.some(j=>same(j.asset,token)&&['PREPARING','REGISTERING','ARMED','PAUSED'].includes(j.status)&&j.settings.source==='after-claim'&&j.rows.some(r=>same(r.address,owner)&&['WAIT_AUTH','REGISTRATION_PENDING','AUTHORIZED','WAIT_CLAIM'].includes(r.status))))return false;
+  if(!this.jobs.some(j=>same(j.asset,token)&&['PREPARING','WAIT_OPEN_REGISTRATION','REGISTERING','ARMED','PAUSED'].includes(j.status)&&j.settings.source==='after-claim'&&j.rows.some(r=>same(r.address,owner)&&['WAIT_AUTH','REGISTRATION_PENDING','AUTHORIZED','WAIT_CLAIM'].includes(r.status))))return false;
   if(o.status!=='CONFIRMED'||o.plan.route!=='corla:claim')throw Error('领取原单未确认');
   const step=o.steps?.findLast(s=>s.status==='CONFIRMED'&&BigInt(s.received||0)>0n&&s.txHash);
   if(!step)throw Error('领取原单缺少实际到账凭据');
@@ -133,7 +133,7 @@ export class FastSaleService {
  async afterClaim(claim){
   // A UI field, a submitted hash or a simulation preview is not a settled claim.
   if(!await this.adapter.verifyClaim(claim))throw Error('领取回执或实际到账尚未核验，未触发代卖');
-  for(const j of this.jobs.filter(j=>j.settings.source==='after-claim'&&['ARMED','PAUSED','PREPARING','REGISTERING'].includes(j.status)&&same(j.asset,claim.token))){
+  for(const j of this.jobs.filter(j=>j.settings.source==='after-claim'&&['ARMED','PAUSED','PREPARING','WAIT_OPEN_REGISTRATION','REGISTERING'].includes(j.status)&&same(j.asset,claim.token))){
    const r=j.rows.find(r=>same(r.address,claim.owner)&&['WAIT_CLAIM','WAIT_AUTH','AUTHORIZED','REGISTRATION_PENDING'].includes(r.status));if(!r)continue;
    r.claimHash=claim.hash;if(r.plan)r.status='READY';this.persist();
    if(j.status!=='ARMED')continue;
@@ -146,10 +146,15 @@ export class FastSaleService {
   const j=this.jobs.find(j=>j.id===id);if(!j||j.status!=='ARMED'||this.firing.has(id))return;
   this.firing.add(id);
   try{
-   // No quote/holder reads on the trigger path. Every plan settles current
-   // balances/reserves atomically on chain, with the holder's immutable minimum.
    const batches=j.batches.filter(b=>b.status==='PREPARED');
    if(!batches.length)return;
+   // An approved stablecoin proxy can upgrade without changing its shell hash.
+   // Check its implementation once for the batch, not once per holder.
+   if(j.venue.quoteIdentity){
+    const unchanged=await this.adapter.quoteUnchanged(j.venue);
+    if(j.status!=='ARMED'||j.deletedAt)return;
+    if(!unchanged){j.status='PAUSED';j.pausedFrom='ARMED';j.message='计价币的代理实现已升级，请核对后重新建立计划。';this.persist();return;}
+   }
    for(const b of batches)for(const r of j.rows.filter(r=>r.batch===b.id)){r.status='PENDING';r.attempts++;}
    this.persist();
    await Promise.all(batches.map(async b=>{try{Object.assign(b,await this.trigger.broadcast(b.id));}catch(e){b.status=e.noDispatch?'PREPARED':'UNKNOWN';b.message=e.noDispatch?'等待触发端后台预热；尚未提交':'触发提交需核对原单';if(e.noDispatch)for(const r of j.rows.filter(r=>r.batch===b.id)){r.status='READY';r.attempts--;}}this.persist();}));
@@ -215,7 +220,7 @@ export class FastSaleService {
   if(j.deletedAt)throw Error('该任务已删除');
   if(action==='pause'){
    if(j.status==='PAUSED')return structuredClone(j);
-   if(!['ARMED','REGISTERING','AUTHORIZED','AUTHORIZING'].includes(j.status))throw Error('该任务已结束');
+   if(!['ARMED','WAIT_OPEN_REGISTRATION','REGISTERING','AUTHORIZED','AUTHORIZING'].includes(j.status))throw Error('该任务已结束');
    j.pausedFrom=j.status;j.status='PAUSED';j.message='已暂停，已提交的原单继续核对';
   }else{
    if(j.status!=='PAUSED')throw Error('只能恢复已暂停的任务');

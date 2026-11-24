@@ -14,13 +14,15 @@ export class FastSaleRuntime {
      (this.pollTimes??=new Map()).set(j.id,Date.now());void this.service.reconcile(j).catch(this.onError);
     }
    }
-   const jobs=this.service.jobs.filter(j=>j.status==='ARMED'||j.batches.some(b=>['PENDING','UNKNOWN','SUBMITTING'].includes(b.status)));
+   for(const j of this.service.jobs)if(j.status==='WAIT_OPEN_REGISTRATION')this.service.expireOpeningWait(j);
+   const watching=j=>j.status==='ARMED'||j.status==='WAIT_OPEN_REGISTRATION';
+   const jobs=this.service.jobs.filter(j=>watching(j)||j.batches.some(b=>['PENDING','UNKNOWN','SUBMITTING'].includes(b.status)));
    if(!jobs.length)return;
    if(this.service.trigger&&!this.warming&&Date.now()-(this.warmedAt||0)>5000){this.warming=true;void this.service.trigger.warm().then(()=>{this.warmedAt=Date.now();}).catch(e=>this.onError(e)).finally(()=>{this.warming=false;});}
    const work=[];
-   for(const asset of new Set(jobs.filter(j=>j.status==='ARMED').map(j=>j.asset))){
+   for(const asset of new Set(jobs.filter(watching).map(j=>j.asset))){
     if(this.assets.has(asset))continue;this.assets.add(asset);
-    const task=(async()=>{try{const s=await bounded(this.service.adapter.opening(asset),5000);await this.service.notifyOpening(asset,s);}catch(e){this.onError(e);}finally{this.assets.delete(asset);}})();work.push(task);
+    const task=(async()=>{try{const s=await bounded(this.service.adapter.opening(asset),5000);await this.service.notifyOpening(asset,s);}catch(e){this.service.registrationReadFailed?.(asset);this.onError(e);}finally{this.assets.delete(asset);}})();work.push(task);
    }
    for(const j of jobs){
     if(this.jobs.has(j.id))continue;this.jobs.add(j.id);

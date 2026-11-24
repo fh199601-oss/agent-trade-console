@@ -24,6 +24,7 @@ const activePhase=x=>!x.deletedAt&&!['COMPLETED','REVIEW'].includes(x.status);
 const settingsFor=(b,venue,executor)=>validateFastSettings({...b,executor},venue);
 const groupAccounts=accounts=>[...accounts].sort((a,b)=>a-b).join(',');
 const walletSet=rows=>groupAccounts(rows.map(w=>w.account));
+const sameVenue=(a,b)=>['token','pair','quote','source','getter','tokenHash','quoteHash','sourceHash'].every(k=>same(a[k],b[k]))&&a.quoteIdentity===b.quoteIdentity&&a.quoteDecimals===b.quoteDecimals;
 const message=e=>describeError(e);
 async function credentialAction(action,options){
  const client=new TriggerClient(async()=>{throw Error('本地凭据操作不使用节点');});
@@ -59,7 +60,7 @@ export class LiveFastSale extends FastSaleService {
   for(const j of this.jobs)if(j.status==='REGISTERING'){j.pausedFrom='REGISTERING';j.status='PAUSED';j.message='登记过程中服务重启，请核对原单后恢复';}
   this.persist();
  }
- status(){return {mode:'LIVE',enabled:true,appFreeApprovals:true,taxAware:this.adapter.taxAware,managedSupported,privateKeyActions:managedSupported,generatedAddress:this.generatedAddress,managedAddress:this.managedAddress,managedAddresses:[...this.managedAddresses],executor:this.adapter.executor,trigger:this.trigger?.wallet?.address,jobs:this.visibleJobs()};}
+ status(){return {mode:'LIVE',enabled:true,appFreeApprovals:true,appFreeRegistration:true,taxAware:this.adapter.taxAware,managedSupported,privateKeyActions:managedSupported,generatedAddress:this.generatedAddress,managedAddress:this.managedAddress,managedAddresses:[...this.managedAddresses],executor:this.adapter.executor,trigger:this.trigger?.wallet?.address,jobs:this.visibleJobs()};}
  async refreshPastFills(){
   if(this.fillLookup)return this.fillLookup;
   this.fillRetry??=new Map();
@@ -102,7 +103,7 @@ export class LiveFastSale extends FastSaleService {
  selectManaged(address){this.rememberManaged(address,address);}
  assertTriggerSelection(address){
   if(this.jobs.some(j=>j.settings?.trigger&&!same(j.settings.trigger,address)&&(
-   ['ARMED','PAUSED','REGISTERING'].includes(j.status)||j.batches?.some(b=>['SIGNED','SUBMITTING','PENDING','UNKNOWN'].includes(b.status))))){
+   ['ARMED','PAUSED','WAIT_OPEN_REGISTRATION','REGISTERING'].includes(j.status)||j.batches?.some(b=>['SIGNED','SUBMITTING','PENDING','UNKNOWN'].includes(b.status))))){
    throw Error('已有卖出计划绑定其他触发地址，请使用该地址的原触发钱包');
   }
   if(this.trigger&&!same(this.trigger.wallet.address,address)&&(this.starting.size||this.firing.size||this.preparing.size))throw Error('已有任务正在使用当前触发地址');
@@ -238,7 +239,7 @@ export class LiveFastSale extends FastSaleService {
   }finally{this.unlocking=false;}
  }
  owns(asset,owner){
-  return this.jobs.some(j=>same(j.asset,asset)&&['REGISTERING','ARMED','PAUSED'].includes(j.status)&&j.rows.some(r=>same(r.address,owner)&&!['FAILED','SKIPPED','EXPIRED','SOLD'].includes(r.status)&&(!r.plan||this.now()/1000<=r.plan.deadline)));
+  return this.jobs.some(j=>same(j.asset,asset)&&['WAIT_OPEN_REGISTRATION','REGISTERING','ARMED','PAUSED'].includes(j.status)&&j.rows.some(r=>same(r.address,owner)&&!['FAILED','SKIPPED','EXPIRED','SOLD'].includes(r.status)&&(!r.plan||this.now()/1000<=r.plan.deadline)));
  }
  close(){return this.trigger?.close();}
  // Intent is durable before execute. Receipt recovery never calls execute again.
@@ -251,10 +252,14 @@ export class LiveFastSale extends FastSaleService {
   const ratings=addressRatingReview(preview,j,r,field,step);
   const appConfirmation=typeof preview.requireConfirmation==='boolean'?preview.requireConfirmation:null;
   if(!this.canSubmit(j,field))throw Error('任务已暂停或删除');
-  if(field==='approval'&&j.appFreeOnly&&appConfirmation!==false){
+  const directOnly=field==='approval'?j.appFreeOnly:(j.registrationAppFreeOnly??j.appFreeOnly);
+  if(directOnly&&appConfirmation!==false){
    delete r.ratingReview;
    r.status='SKIPPED';
-   r.message=appConfirmation?'币安要求在 App 确认，已按免 App 模式跳过，此钱包没有提交授权。':'币安未说明能否免 App 确认，此钱包没有提交授权。';
+   const operation=field==='approval'?'授权':'卖出计划登记';
+   const code=preview.simulationResult.preCheckCode;
+   const detail=typeof code==='string'&&/^[\w.-]{1,64}$/.test(code)?'钱包预检代码 '+code+'。':'';
+   r.message=operation+'模拟通过。'+(appConfirmation?'币安要求 App 确认。':'币安未说明能否免 App 确认。')+detail+'已跳过本钱包的'+operation+'。';
    return;
   }
   const digest=JSON.stringify([field,r.address,j.executor,step.to,keccak256(step.data),ratings,appConfirmation]);
@@ -341,7 +346,7 @@ export class LiveFastSale extends FastSaleService {
    consents.set(account,review);
   }
   const venue=await this.adapter.verifiedVenue(job.asset);
-  if(venue.blockedReason||!same(venue.pair,job.venue.pair)||['tokenHash','quoteHash','sourceHash'].some(k=>venue[k]!==job.venue[k]))throw Error('主池或合约已变化，请重新核验');
+  if(venue.blockedReason||!sameVenue(venue,job.venue))throw Error('主池或合约已变化，请重新核验');
   if(!this.canSubmit(job,field))throw Error('任务状态已变化');
   await this.continueWallets(job,field,consents);return structuredClone(job);
  }
@@ -381,13 +386,15 @@ export class LiveFastSale extends FastSaleService {
    }catch(e){if(!r.approval&&!this.canSubmit(j,'approval'))r.status='WAIT_AUTH';else{r.status='FAILED';r.message=message(e);}}this.persist();
   });
  }
- async start({id,asset,accounts,settings,selectedOnly=false}){
+ async start({id,asset,accounts,settings,selectedOnly=false,appFreeOnly}){
   const j=this.jobs.find(x=>x.id===id);
+  if(appFreeOnly!==undefined&&typeof appFreeOnly!=='boolean')throw Error('登记确认方式无效');
   const selected=new Set(accounts);
   if(!j||j.deletedAt||!same(asset,j.asset)||!selected.size||selected.size!==accounts.length||accounts.some(n=>!j.rows.some(r=>r.account===n))||!selectedOnly&&selected.size!==j.rows.length)throw Error('代币或选中钱包已改变，请核对授权批次');
   const selectedRows=j.rows.filter(r=>selected.has(r.account));
   const config=settingsFor(settings,j.venue,this.adapter.executor);
-  if(['REGISTERING','ARMED'].includes(j.status)){
+  if(['WAIT_OPEN_REGISTRATION','REGISTERING','ARMED'].includes(j.status)){
+   if(appFreeOnly!==undefined&&appFreeOnly!==Boolean(j.registrationAppFreeOnly??j.appFreeOnly))throw Error('已开始登记，不能覆盖原批次的 App 确认方式');
    if(JSON.stringify(config)!==JSON.stringify(j.settings)||groupAccounts(j.selectedAccounts||j.rows.map(r=>r.account))!==groupAccounts(accounts))throw Error('已启动任务的钱包或参数不能覆盖');
    return structuredClone(j);
   }
@@ -403,15 +410,53 @@ export class LiveFastSale extends FastSaleService {
    if(BigInt(balance)<gasLimit*gasPrice)throw Error('触发地址的 BNB 不足以支付本批卖出的 Gas 上限');
    const v=await this.adapter.verifiedVenue(j.asset);
    if(v.blockedReason)throw Error(v.blockedReason);
-   if(!same(v.pair,j.venue.pair)||v.tokenHash!==j.venue.tokenHash||v.sourceHash!==j.venue.sourceHash||v.quoteHash!==j.venue.quoteHash)throw Error('授权后主池或合约已变化，请核对');
+   if(!sameVenue(v,j.venue))throw Error('授权后主池或合约已变化，请核对');
    if(j.deletedAt||j.status==='PAUSED')throw Error('任务已停止，尚未登记卖出');
    settingsFor(settings,v,this.adapter.executor);
-   j.venue=v;j.settings=config;j.selectedAccounts=[...accounts];j.status='REGISTERING';
+   j.registrationAppFreeOnly=appFreeOnly??Boolean(j.appFreeOnly);
+   j.venue=v;j.settings=config;j.selectedAccounts=[...accounts];j.status=v.registerAfterOpening?'WAIT_OPEN_REGISTRATION':'REGISTERING';
+   if(v.registerAfterOpening)j.registrationWaitUntil=this.now()+config.expiryHours*3600000;
    for(const r of j.rows.filter(r=>!selected.has(r.account))){delete r.ratingReview;r.status='SKIPPED';r.message='开始任务时未选中此钱包';}
    for(const r of j.rows.filter(r=>r.status==='APPROVAL_PENDING')){r.status='SKIPPED';r.message='开始时授权尚未确认，未加入本次卖出';}
    this.persist();
+   if(j.status==='WAIT_OPEN_REGISTRATION')return structuredClone(j);
    await this.continueWallets(j,'registration');return structuredClone(j);
   }finally{this.starting.delete(id);}
+ }
+ expireOpeningWait(j){
+  if(j.status!=='WAIT_OPEN_REGISTRATION'||this.now()<j.registrationWaitUntil)return false;
+  for(const row of j.rows)if(row.status==='AUTHORIZED'){row.status='EXPIRED';row.message='等候开盘已到期，未登记卖出';}
+  j.status='COMPLETED';j.message='等候开盘已到期';this.persist();return true;
+ }
+ registrationReadFailed(asset){
+  const reason='主池状态暂时无法核验，正在自动重新读取。';
+  for(const j of this.jobs)if(j.status==='WAIT_OPEN_REGISTRATION'&&same(j.asset,asset)&&j.message!==reason){j.message=reason;this.persist();}
+ }
+ async registerAtOpening(j,snapshot){
+  if(j.status!=='WAIT_OPEN_REGISTRATION'||this.expireOpeningWait(j)||this.starting.has(j.id)||!same(snapshot?.token,j.asset))return;
+  const changed=()=>{j.status='PAUSED';j.pausedFrom='WAIT_OPEN_REGISTRATION';j.message='主池或合约与开始任务时不一致，已暂停登记。';this.persist();};
+  if((snapshot.open||snapshot.registrationReady||snapshot.changed)&&!same(snapshot.pair,j.venue.pair)){changed();return;}
+  if(!snapshot.open&&!snapshot.registrationReady){if(j.message){delete j.message;this.persist();}return;}
+  if(!this.trigger||!same(this.trigger.wallet?.address,j.settings.trigger))return;
+  this.starting.add(j.id);
+  try{
+   const venue=await this.adapter.verifiedVenue(j.asset);
+   if(j.status!=='WAIT_OPEN_REGISTRATION'||this.expireOpeningWait(j))return;
+   if(venue.blockedReason||!sameVenue(venue,j.venue)){changed();return;}
+   if(venue.marketPending||venue.registerAfterOpening||typeof venue.openAtVerification!=='boolean')return;
+   j.venue=venue;j.status='REGISTERING';delete j.message;this.persist();
+   await this.continueWallets(j,'registration');
+  }finally{this.starting.delete(j.id);}
+ }
+ async notifyOpening(asset,snapshot){
+  const waits=this.jobs.filter(j=>j.status==='WAIT_OPEN_REGISTRATION'&&same(j.asset,asset));
+  await Promise.all([super.notifyOpening(asset,snapshot),...waits.map(async j=>{
+   await this.registerAtOpening(j,snapshot);
+   if(j.status==='ARMED'&&this.adapter.matchesPrimary(j.venue,snapshot)){
+    const fresh=await this.adapter.opening(asset);
+    await super.notifyOpening(asset,fresh);
+   }
+  })]);
  }
  async registerRows(j,consents){
   const v=j.venue,config=j.settings;
@@ -457,10 +502,11 @@ export class LiveFastSale extends FastSaleService {
    return result;
   }
   const phase=j.pausedFrom||'ARMED';
-  if(phase==='ARMED'||phase==='REGISTERING')await this.ensureSigner(j.settings.trigger);
+  if(['ARMED','REGISTERING','WAIT_OPEN_REGISTRATION'].includes(phase))await this.ensureSigner(j.settings.trigger);
   const field=phase==='AUTHORIZING'?'approval':'registration';
   await this.walletWork.get(id+':'+field);
   await super.control(id,action);
+  if(phase==='WAIT_OPEN_REGISTRATION'){this.expireOpeningWait(j);return structuredClone(j);}
   if(this.canSubmit(j,field))await this.continueWallets(j,field);
   return structuredClone(j);
  }
